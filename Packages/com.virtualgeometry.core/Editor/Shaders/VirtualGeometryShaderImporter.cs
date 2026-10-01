@@ -90,7 +90,8 @@ namespace VirtualizedGeometry.Editor{
             File.WriteAllText(path,Template);
             AssetDatabase.ImportAsset(path);
             var importer=(VirtualGeometryShaderImporter)GetAtPath(path);
-            importer.source=shader;importer.SaveAndReimport();
+            // SaveAndReimport は dirty な importer の設定だけを .meta へ書く。印を付けないと source が null のまま再 import される。
+            importer.source=shader;EditorUtility.SetDirty(importer);importer.SaveAndReimport();
             return path;
         }
 

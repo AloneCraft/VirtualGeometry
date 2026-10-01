@@ -6,6 +6,7 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 using Object=UnityEngine.Object;
 
 namespace VirtualizedGeometry.Editor{
@@ -89,16 +90,30 @@ namespace VirtualizedGeometry.Editor{
             // sceneは保存しないため、一時cameraはsceneに置き、次のsceneを開くときに一緒に破棄させる。
             camera=new GameObject("Scene audit camera").AddComponent<Camera>();camera.fieldOfView=60;camera.nearClipPlane=0.01f;
             camera.clearFlags=CameraClearFlags.SolidColor;camera.backgroundColor=Color.black;camera.allowHDR=false;camera.allowMSAA=false;
-            int count=0;var measured=new HashSet<VirtualGeometryMeshAsset>();
+            int count=0,skipped=0;var measured=new HashSet<VirtualGeometryMeshAsset>();
             foreach(VirtualGeometryRenderer renderer in Object.FindObjectsByType<VirtualGeometryRenderer>().OrderBy(found=>found.name,StringComparer.Ordinal)){
                 if(!renderer.isActiveAndEnabled){continue;}
                 count++;
                 if(renderer.MeshAsset==null){Fail(Name(renderer)+": 変換データのない有効なVGの部品がsceneに保存されています。");continue;}
                 if(renderer.GetComponent<MeshFilter>().sharedMesh!=renderer.MeshAsset.ProxyMesh){Fail(Name(renderer)+": MeshFilterに代替Meshが入っていません。");continue;}
+                // 半透明などMaterialがVGで描けない部品は、仕様どおり通常Proxyで描かれ(Rendering.md)、詳細化を待っても終わらないため測らない。
+                // 判定はMaterialだけ(TryResolve)で行い、streaming・予算・設定によるProxyは従来どおり失敗にする。
+                string unsupported=UnsupportedMaterial(renderer);
+                if(unsupported!=null){skipped++;results.Add("SKIP "+Name(renderer)+": Proxy(Material): "+unsupported);continue;}
                 // LODの切り替わりは変換データとstreaming設定で決まるため、同じ変換データの部品は最初の1つだけ測る。
                 if(measured.Add(renderer.MeshAsset)){pending.Enqueue(renderer);}
             }
-            results.Add(scenePath+": VG="+count+", measured assets="+measured.Count);
+            results.Add(scenePath+": VG="+count+", measured assets="+measured.Count+", proxy by material="+skipped);
+        }
+
+        // MaterialがVGで描けない理由。描けるならnull。nullのslotはVGが白いURP Litで埋めるので対象にしない。
+        private static string UnsupportedMaterial(VirtualGeometryRenderer renderer){
+            // 描画前のbatchmodeではURPのRenderPipelineタグが未設定で、URPのSubShaderのpassを引けない。URPが初期化時に入れるのと同じタグを補う。
+            if(string.IsNullOrEmpty(Shader.globalRenderPipeline)&&GraphicsSettings.currentRenderPipeline is UniversalRenderPipelineAsset){Shader.globalRenderPipeline="UniversalPipeline";}
+            foreach(Material material in renderer.GetComponent<MeshRenderer>().sharedMaterials){
+                if(material!=null&&!VirtualGeometryMaterials.TryResolve(material,out _,out _,out string reason)){return reason;}
+            }
+            return null;
         }
 
         // 予算の確認は保存されたままの設定(カリングを含む)で行う。

@@ -46,7 +46,7 @@ GraphicsSettings:
   m_WarmupProgressivelyLimit: -1
   m_CacheMissCollectionPath: CacheMissCollection
   m_SpritesDefaultMaterial: {fileID: 10754, guid: 0000000000000000f000000000000000, type: 0}
-  m_CustomRenderPipeline: {fileID: 11400000, guid: 8cbbdd8f84d2f13429c4437cdcd35b6c, type: 2}
+  m_CustomRenderPipeline: {fileID: 11400000, guid: ff8be2e5a9bbc3f4ba8f6db831f2e592, type: 2}
   m_TransparencySortMode: 0
   m_TransparencySortAxis: {x: 0, y: 0, z: 1}
   m_DefaultRenderingPath: 1

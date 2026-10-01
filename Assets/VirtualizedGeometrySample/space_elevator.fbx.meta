@@ -3,7 +3,172 @@ guid: be99b0b5cd332fa4b85935dec0ec645c
 ModelImporter:
   serializedVersion: 24600
   internalIDToNameTable: []
-  externalObjects: {}
+  externalObjects:
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_Beacon
+    second: {fileID: 2100000, guid: 94e64bee3da92ed4eb86c08b92c753be, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_ClothDark
+    second: {fileID: 2100000, guid: 4828eea59226afd4e9ee9c25489e2cdd, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_Clouds
+    second: {fileID: 2100000, guid: e23d9efc819830742a98035350a8c5c2, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_Concrete
+    second: {fileID: 2100000, guid: eb89149d5e54ee041bc822e698a002fc, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_ConcreteDark
+    second: {fileID: 2100000, guid: 64c815b68600d9c4ea5b28013e6f26b8, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_ContainerA
+    second: {fileID: 2100000, guid: c67b3c05f1e2ad540a1ae496112fbfd5, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_ContainerB
+    second: {fileID: 2100000, guid: 3f24946bd74e9a749995bb98bc41a7d8, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_GlassDark
+    second: {fileID: 2100000, guid: 46ba88689438b2344bb0c0dbeccfefa7, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_Helmet
+    second: {fileID: 2100000, guid: 6078d40266736b943855d68fe76c46d1, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_HelmetYellow
+    second: {fileID: 2100000, guid: 80b0f5b26604a694fab7ec3498841a7d, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_HiVis
+    second: {fileID: 2100000, guid: 29e2071c9459d734788cdc3fdcb23f9c, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_HiVisOrange
+    second: {fileID: 2100000, guid: 1fd29584febd71c49a9ebecdab44ca99, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_Lake
+    second: {fileID: 2100000, guid: d4f8c08806721c740aac45031171be86, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_LampRed
+    second: {fileID: 2100000, guid: 551bc08deefce354b9113fc450e7a45d, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_LampWarm
+    second: {fileID: 2100000, guid: 779d36de867125849b3b5645524b5feb, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_LampWhite
+    second: {fileID: 2100000, guid: 094e2180b43069e4a8112aaf8b2438bb, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_PaintOrange
+    second: {fileID: 2100000, guid: 7c5c65c5d5c25974bbc54e39b9fd8024, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_PaintRed
+    second: {fileID: 2100000, guid: f975041e0a4165a4888b2dce8b6680e9, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_PaintWhite
+    second: {fileID: 2100000, guid: f3ae8cc1fcb75cc4294daa5a71336dd7, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_PaintYellow
+    second: {fileID: 2100000, guid: af303a14fa5859b469ccc957017a9c16, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_Panel
+    second: {fileID: 2100000, guid: 587e5dfc55e336e44a8561b49532c646, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_PanelAlt
+    second: {fileID: 2100000, guid: 4848aee99dcca1542ba09243d90676e5, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_PanelDark
+    second: {fileID: 2100000, guid: 0efa2a37913ddb84194daa8c1ca21a9e, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_Plaza
+    second: {fileID: 2100000, guid: 71283e299f3d24a4e88f962076aa47fe, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_Rubber
+    second: {fileID: 2100000, guid: 20bb3e3d75d779d48be7c2fb941cb126, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_Skin
+    second: {fileID: 2100000, guid: aafc6e6696309594a838ec9869f52665, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_Stencil
+    second: {fileID: 2100000, guid: 59dea22f38dfd574584ecaebe4196bd6, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_Terrain
+    second: {fileID: 2100000, guid: a0ee7244f50caf14eaa94debb37c665e, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_TetherSteel
+    second: {fileID: 2100000, guid: f284d84ff03c1634e91c0cb2aecb65b1, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_TunnelEnd
+    second: {fileID: 2100000, guid: 9edfa6988c48f3d4187a47f01c518504, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_VehicleGrey
+    second: {fileID: 2100000, guid: 6c2868cd944801948af616dd890581f9, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_VehicleWhite
+    second: {fileID: 2100000, guid: a5de0eece594fea44b249ffd355ee8e1, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: SE_GA_VehicleYellow
+    second: {fileID: 2100000, guid: 46c9fd5ad0dc6934c986fa6c1fc59847, type: 2}
   materials:
     materialImportMode: 2
     materialName: 0
@@ -44,8 +209,8 @@ ModelImporter:
     importPhysicalCameras: 1
     importVisibility: 1
     importBlendShapes: 1
-    importCameras: 1
-    importLights: 1
+    importCameras: 0
+    importLights: 0
     nodeNameCollisionStrategy: 1
     fileIdsGeneration: 2
     swapUVChannels: 0
