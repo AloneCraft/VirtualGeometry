@@ -12,3 +12,7 @@ TestResults/
 *.unitypackage
 *.vgpage
 /Bug
+
+# Unityがクラッシュ時に作る復旧scene
+/[Aa]ssets/_Recovery/
+/[Aa]ssets/_Recovery.meta

@@ -18,6 +18,7 @@ namespace VirtualizedGeometry.Editor{
         private const int VirtualLayer=11;
         private const int CaptureSize=640;
         private static Camera camera;
+        private static GameObject referenceObject;
         private static GameObject virtualObject;
         private static VirtualGeometryRenderer virtualRenderer;
         private static VirtualGeometryMeshAsset virtualAsset;
@@ -89,10 +90,12 @@ namespace VirtualizedGeometry.Editor{
                 referenceMaterial.SetFloat("_Cull",0);
                 AssetDatabase.CreateAsset(referenceMaterial,Root+"/Reference.mat");
             }
-            GameObject reference=new GameObject("Normal Mesh Reference");
-            reference.layer=ReferenceLayer;
-            reference.AddComponent<MeshFilter>().sharedMesh=mesh;
-            reference.AddComponent<MeshRenderer>().sharedMaterial=referenceMaterial;
+            referenceObject=new GameObject("Normal Mesh Reference");
+            referenceObject.layer=ReferenceLayer;
+            referenceObject.AddComponent<MeshFilter>().sharedMesh=mesh;
+            referenceObject.AddComponent<MeshRenderer>().sharedMaterial=referenceMaterial;
+            // 参照meshは同じ位置に重なりScene/Game viewでz-fightingするため、保存sceneでは無効にして比較captureの間だけ有効にする。
+            referenceObject.SetActive(false);
             virtualObject=new GameObject("Virtual Geometry Hierarchy");
             virtualObject.layer=VirtualLayer;
             virtualRenderer=virtualObject.AddComponent<VirtualGeometryRenderer>();
@@ -100,6 +103,7 @@ namespace VirtualizedGeometry.Editor{
             virtualRenderer.SetMeshAsset(virtualAsset);
             virtualRenderer.SetLodSettings(2,0);
             virtualRenderer.SetCullingSettings(false,false);
+            virtualRenderer.SetMaterials(referenceMaterial);
 
             EditorSceneManager.SaveScene(camera.gameObject.scene,Root+"/M2.unity");
             EditorBuildSettings.scenes=new[]{new EditorBuildSettingsScene(Root+"/M2.unity",true)};
@@ -126,7 +130,9 @@ namespace VirtualizedGeometry.Editor{
                 float threshold=FindMixedThreshold(page,out VirtualGeometryLodSelectionResult cpuSelection);
                 virtualRenderer.SetLodSettings(threshold,0);
                 camera.cullingMask=1<<ReferenceLayer;
+                referenceObject.SetActive(true);
                 Texture2D reference=M0Validation.Capture(camera,CaptureSize,CaptureSize);
+                referenceObject.SetActive(false);
                 File.WriteAllBytes("TestResults/M2/Reference.png",reference.EncodeToPNG());
                 camera.cullingMask=1<<VirtualLayer;
                 Texture2D virtualImage=M0Validation.Capture(camera,CaptureSize,CaptureSize);

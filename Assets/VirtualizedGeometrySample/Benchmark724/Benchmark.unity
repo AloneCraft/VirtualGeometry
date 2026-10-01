@@ -395,18 +395,9 @@ MonoBehaviour:
   forceUnsupportedBackend: 0
   enableShadowProxy: 0
   enablePhysicsProxy: 0
-  shadingMode: 1
-  surfaces:
-  - BaseColor: {r: 0.65, g: 0.4, b: 0.2, a: 1}
-    BaseMap: {fileID: 0}
-    NormalMap: {fileID: 0}
-    NormalScale: 1
-    Metallic: 0
-    Smoothness: 0.25
-    BaseMapTransform: {x: 1, y: 1, z: 0, w: 0}
+  materials:
+  - {fileID: 2100000, guid: ddeecebaa7ddc0a4394791a6d2c5868d, type: 2}
   meshAsset: {fileID: 11400000, guid: 70b5b3adb6aac1b48afe79e63b043f55, type: 2}
-  materialColors:
-  - {r: 0.05, g: 0.65, b: 0.95, a: 1}
   lodErrorThresholdPixels: 2
   lodHysteresis: 0.1
   debugView: 0

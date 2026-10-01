@@ -152,18 +152,8 @@ MonoBehaviour:
   forceUnsupportedBackend: 0
   enableShadowProxy: 1
   enablePhysicsProxy: 1
-  shadingMode: 0
-  surfaces:
-  - BaseColor: {r: 1, g: 1, b: 1, a: 1}
-    BaseMap: {fileID: 0}
-    NormalMap: {fileID: 0}
-    NormalScale: 1
-    Metallic: 0
-    Smoothness: 0.5
-    BaseMapTransform: {x: 1, y: 1, z: 0, w: 0}
+  materials: []
   meshAsset: {fileID: 11400000, guid: fb33e6cf921862543b56ba7c7d8ce586, type: 2}
-  materialColors:
-  - {r: 0.05, g: 0.65, b: 0.95, a: 1}
   lodErrorThresholdPixels: 0.2
   lodHysteresis: 0
   debugView: 0
@@ -226,18 +216,8 @@ MonoBehaviour:
   forceUnsupportedBackend: 0
   enableShadowProxy: 1
   enablePhysicsProxy: 1
-  shadingMode: 0
-  surfaces:
-  - BaseColor: {r: 1, g: 1, b: 1, a: 1}
-    BaseMap: {fileID: 0}
-    NormalMap: {fileID: 0}
-    NormalScale: 1
-    Metallic: 0
-    Smoothness: 0.5
-    BaseMapTransform: {x: 1, y: 1, z: 0, w: 0}
+  materials: []
   meshAsset: {fileID: 0}
-  materialColors:
-  - {r: 0.05, g: 0.65, b: 0.95, a: 1}
   lodErrorThresholdPixels: 3.4028235e+38
   lodHysteresis: 0
   debugView: 0

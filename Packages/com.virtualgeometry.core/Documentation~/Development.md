@@ -26,6 +26,8 @@ Computeで選択・可視リスト・描画引数を生成し、RenderGraph Rast
 | M5 | Lit、Proxy、UI、複数カメラ、Player、ベンチマーク | Lit/depth/共有Proxy/UI/debug/camera/形状/lifecycle/sample/Player機能検証PASS。1M/3M/10M×3経路のCPU/GPUを各cold/warm 360 samplesで実測。可視swapchain・queue深度1。PASS_V0_1。第三者上流原本は意図的に保持し、Player収録境界を検証 |
 | M6 | Visibility Bufferとソフトウェアラスタライズ | v0.2以降 |
 
+検証sceneでは、同じ位置に重なる比較用の通常Mesh(M1/M2の`Normal Mesh Reference`)を無効のまま保存し、比較captureの間だけ有効にする。Benchmark sceneの3経路(通常Mesh/LODGroup/VG)も無効で保存し、runnerが選んだ1経路だけを有効にする。重なったまま保存するとScene/Game viewでz-fightingが起き、視点移動で点滅する。VGは比較相手と同じMaterialを割り当てる。
+
 最大リスクは混在LODの境界保持とページ置換の原子性。単純な独立クラスタ簡略化を採用しない。
 境界固定・置換グループ単位の選択・常駐粗表現への退避を、実装証拠とテストで確立する。
 

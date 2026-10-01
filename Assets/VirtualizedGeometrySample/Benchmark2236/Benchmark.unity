@@ -136,7 +136,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!23 &7109858
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -225,7 +225,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &199902560
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -242,18 +242,9 @@ MonoBehaviour:
   forceUnsupportedBackend: 0
   enableShadowProxy: 0
   enablePhysicsProxy: 0
-  shadingMode: 1
-  surfaces:
-  - BaseColor: {r: 0.65, g: 0.4, b: 0.2, a: 1}
-    BaseMap: {fileID: 0}
-    NormalMap: {fileID: 0}
-    NormalScale: 1
-    Metallic: 0
-    Smoothness: 0.25
-    BaseMapTransform: {x: 1, y: 1, z: 0, w: 0}
+  materials:
+  - {fileID: 2100000, guid: 6a24f4546763eba45ae7508b7ad08afc, type: 2}
   meshAsset: {fileID: 11400000, guid: d59f19b92347c054ba3bd1eff3528fa2, type: 2}
-  materialColors:
-  - {r: 0.05, g: 0.65, b: 0.95, a: 1}
   lodErrorThresholdPixels: 2
   lodHysteresis: 0.1
   debugView: 0
@@ -614,7 +605,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!205 &957227898
 LODGroup:
   m_ObjectHideFlags: 0

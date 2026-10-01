@@ -24,7 +24,7 @@ debug view(Triangles / Clusters / LOD Level 等)は package の VG Unlit shader 
 
 普段触る項目だけを常に表示し、既定値で足りる項目は「詳細」に折りたたみます。各項目には Tooltip があります。
 
-- 常に表示: Mesh Asset、Lod Error Threshold Pixels(許容する画面誤差。大きいほど早く粗い段へ切り替わる)、Materials(描けない slot があれば理由を表示)、状態欄。Materials は Mesh Asset の submesh 数まで自動で広げ、既存の割り当ては保ちます。
+- 常に表示: Mesh Asset、Lod Error Threshold Pixels(許容する画面誤差。大きいほど早く粗い段へ切り替わる)、Materials(描けない slot は理由を、未設定で既定の白い URP Lit になる slot はその旨を表示)、状態欄。Materials は Mesh Asset の submesh 数まで自動で広げ、既存の割り当ては保ちます。
 - URP Renderer が専用描画できない設定(Virtual Geometry Renderer Feature が無い、Deferred、Depth Priming、Depth Prepass、MSAA)なら、必要な変更を一覧し「URP RendererをVirtual Geometry用に設定」で確認のうえ適用します(Undo 可)。互換を宣言しない他の Renderer Feature は自動では外しません。
 - Material・LOD 閾値・影 / 物理 Proxy の変更は、GPU 資源と Proxy を作り直さずに反映します。Mesh Asset と streaming 設定を変えたときだけ再読込します。
 - 詳細: Lod Hysteresis、影 / 物理 Proxy、Streaming Mode、streaming 予算(GPU geometry、CPU cache、I/O 並列、frame 転送、要求上限、取消 frame)。

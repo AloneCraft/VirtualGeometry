@@ -69,5 +69,4 @@ MonoBehaviour:
   m_Active: 1
   selectionShader: {fileID: 7200000, guid: e30b47f2fa7108b4994463d6f7393574, type: 3}
   surfaceShader: {fileID: 4800000, guid: 9cd05124fe49d3a43b2a1f666e5872a9, type: 3}
-  litShader: {fileID: 4800000, guid: cd8a9dfb7db55a84ba34725835094585, type: 3}
   depthCopyShader: {fileID: 4800000, guid: d6dae50ee9e1bfa4db75f19f99355220, type: 3}

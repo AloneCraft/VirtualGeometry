@@ -48,8 +48,9 @@ namespace VirtualizedGeometry.Editor{
                 materialStatus.style.display=DisplayStyle.None;
                 if(renderer.MeshAsset!=null){
                     var problems=new System.Text.StringBuilder();
-                    if(renderer.Materials==null||renderer.Materials.Length<renderer.MeshAsset.MaterialCount){problems.Append("Material数がsubmesh数("+renderer.MeshAsset.MaterialCount+")より少ないslotは白のURP Litで描きます。\n");}
                     for(int slot=0;slot<renderer.MeshAsset.MaterialCount;slot++){
+                        // 未設定slotは既定の白いURP Litで描くため、見た目の出所が分かるよう明示する。
+                        if(renderer.Materials==null||slot>=renderer.Materials.Length||renderer.Materials[slot]==null){problems.Append("slot ").Append(slot).Append(": Material未設定のため既定の白いURP Litで描きます。\n");}
                         if(!VirtualGeometryMaterials.IsSupported(renderer.GetMaterial(slot),out string reason)){problems.Append("slot ").Append(slot).Append(": ").Append(reason).Append('\n');}
                     }
                     if(problems.Length>0){materialStatus.text=problems.ToString().TrimEnd();materialStatus.style.display=DisplayStyle.Flex;}
