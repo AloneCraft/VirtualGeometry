@@ -1,0 +1,19 @@
+{
+  "name": "com.virtualgeometry.core",
+  "displayName": "Virtualized Geometry",
+  "version": "0.1.0",
+  "unity": "6000.6",
+  "description": "Windows DX12 / URP 向けの静的メッシュ仮想化。GPU LOD・現フレーム HZB・固定予算 streaming・Lit・低密度 Proxy・Editor 変換。v0.1。対応範囲、検証結果、性能と品質の制限は Documentation を参照。",
+  "license": "MIT",
+  "keywords": ["virtualized-geometry", "urp", "gpu-driven", "streaming"],
+  "dependencies": {
+    "com.unity.render-pipelines.universal": "17.6.0",
+    "com.unity.inputsystem": "1.19.0",
+    "com.unity.modules.imageconversion": "1.0.0",
+    "com.unity.modules.physics": "1.0.0"
+  },
+  "samples": [
+    {"displayName": "Practical Lit Streaming", "description": "Create Practical Sample メニューで小型の共有 instance / Lit / streaming / Shadow Proxy scene を生成します。", "path": "Samples~/Practical"},
+    {"displayName": "M0 Indirect Drawing", "description": "Create M0 Validation Scene メニューで基礎 indirect 描画の小型 scene を生成します。", "path": "Samples~/M0"}
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "VirtualizedGeometry.Tests.Editor",
+  "rootNamespace": "VirtualizedGeometry.Tests",
+  "references": ["VirtualizedGeometry.Runtime", "VirtualizedGeometry.Editor", "Unity.RenderPipelines.Core.Runtime", "Unity.RenderPipelines.Universal.Runtime"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"]
+}

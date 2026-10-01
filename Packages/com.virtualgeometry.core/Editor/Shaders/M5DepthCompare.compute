@@ -1,0 +1,12 @@
+#pragma kernel Compare
+Texture2D<float> _ActiveDepth;
+Texture2D<float> _CameraDepth;
+Texture2D<float4> _Normals;
+RWStructuredBuffer<float4> _Results;
+int _Width,_Height,_HasNormals;
+[numthreads(8,8,1)]
+void Compare(uint3 id:SV_DispatchThreadID){
+    if(id.x>=(uint)_Width||id.y>=(uint)_Height){return;}
+    float3 normal=_HasNormals!=0?_Normals.Load(int3(id.xy,0)).xyz:0;
+    _Results[id.y*_Width+id.x]=float4(_ActiveDepth.Load(int3(id.xy,0)),_CameraDepth.Load(int3(id.xy,0)),length(normal),0);
+}

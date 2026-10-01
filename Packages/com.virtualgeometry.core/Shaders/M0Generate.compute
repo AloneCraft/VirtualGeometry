@@ -1,0 +1,15 @@
+#pragma kernel Generate
+#pragma target 5.0
+
+RWStructuredBuffer<float4> _VGVertices;
+RWByteAddressBuffer _VGArguments;
+
+[numthreads(1,1,1)]
+void Generate(uint3 id:SV_DispatchThreadID)
+{
+    // M0専用の既知形状。クラスタ選択を実装したものではない。
+    _VGVertices[0]=float4(-1.5,-1.0,0.0,1.0);
+    _VGVertices[1]=float4(0.0,1.3,0.0,1.0);
+    _VGVertices[2]=float4(1.5,-1.0,0.0,1.0);
+    _VGArguments.Store4(0,uint4(3,1,0,0));
+}

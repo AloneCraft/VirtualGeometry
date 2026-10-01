@@ -1,0 +1,11 @@
+#pragma kernel ReadDepth
+#pragma target 5.0
+Texture2D<float> _Depth;
+RWStructuredBuffer<float> _Output;
+int _Width;
+int _Height;
+[numthreads(8,8,1)]
+void ReadDepth(uint3 id:SV_DispatchThreadID)
+{
+    if(id.x<(uint)_Width && id.y<(uint)_Height) { _Output[id.y*_Width+id.x]=_Depth.Load(int3(id.xy,0)); }
+}

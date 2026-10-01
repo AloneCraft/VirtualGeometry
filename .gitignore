@@ -1,0 +1,14 @@
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Ll]ogs/
+UserSettings/
+Builds/
+TestResults/
+.vs/
+*.csproj
+*.sln
+*.slnx
+*.unitypackage
+*.vgpage
+/Bug

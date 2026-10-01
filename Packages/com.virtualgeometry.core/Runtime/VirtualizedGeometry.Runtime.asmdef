@@ -1,0 +1,5 @@
+{
+  "name": "VirtualizedGeometry.Runtime",
+  "rootNamespace": "VirtualizedGeometry",
+  "references": ["Unity.RenderPipelines.Core.Runtime", "Unity.RenderPipelines.Universal.Runtime", "Unity.InputSystem"]
+}
