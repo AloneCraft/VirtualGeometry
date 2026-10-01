@@ -23,12 +23,12 @@ namespace VirtualizedGeometry.Editor{
         private static void Log(string message,string stack,LogType type){if(type==LogType.Warning||type==LogType.Error||type==LogType.Exception||type==LogType.Assert){errors.Add(message);}}
         private static void Prepare(){
             Directory.CreateDirectory(Root);AssetDatabase.Refresh();
-            string[] names={"Sphere","ThinPlate","ThinColumn","SharpCorners","Hole","UvSeamMaterials","LegacyMaterials"};
-            Mesh[] meshes={Sphere(),Box(new Vector3(4,3,.01f),Quaternion.Euler(0,25,15)),Box(new Vector3(.025f,5,.025f),Quaternion.Euler(0,20,17)),Box(new Vector3(3,3,3),Quaternion.Euler(20,30,10)),Ring(),Seam(),Seam()};
+            string[] names={"Sphere","ThinPlate","ThinColumn","SharpCorners","Hole","UvSeamMaterials"};
+            Mesh[] meshes={Sphere(),Box(new Vector3(4,3,.01f),Quaternion.Euler(0,25,15)),Box(new Vector3(.025f,5,.025f),Quaternion.Euler(0,20,17)),Box(new Vector3(3,3,3),Quaternion.Euler(20,30,10)),Ring(),Seam()};
             for(int i=0;i<names.Length;i++){
-                string path=Root+"/"+names[i]+"Source.asset";var mesh=meshes[i];mesh.name=names[i]+"Source";var previous=AssetDatabase.LoadAssetAtPath<Mesh>(path);
-                if(previous==null){AssetDatabase.CreateAsset(mesh,path);}else{EditorUtility.CopySerialized(mesh,previous);Object.DestroyImmediate(mesh);mesh=previous;}
-                VirtualGeometryConversionService.Convert(mesh,Root+"/"+names[i]+"Converted.asset",new VirtualGeometryBuildSettings{MaxTrianglesPerCluster=16,HierarchyFanout=4,PositionQuantizationBits=0,GenerateHierarchy=names[i]!="LegacyMaterials"});
+                meshes[i].name=names[i];
+                VirtualGeometryValidationModel.Import(meshes[i],Root+"/"+names[i]+".obj",new VirtualGeometryModelSettings{MaxTrianglesPerCluster=16,HierarchyFanout=4,PositionQuantizationBits=0});
+                Object.DestroyImmediate(meshes[i]);
             }
             AssetDatabase.SaveAssets();
         }
@@ -57,14 +57,14 @@ namespace VirtualizedGeometry.Editor{
                 Validate("SharpCorners",false,false);
                 Validate("Hole",false,true);
                 Validate("UvSeamMaterials",true,false);
-                Validate("LegacyMaterials",false,false);
                 if(errors.Count>0){throw new InvalidOperationException(string.Join(" | ",errors));}Finish(null);
             }catch(Exception error){Finish(error);}
         }
         private static void Validate(string name,bool textured,bool hole){
-            var mesh=AssetDatabase.LoadAssetAtPath<Mesh>(Root+"/"+name+"Source.asset");
-            var asset=AssetDatabase.LoadAssetAtPath<VirtualGeometryMeshAsset>(Root+"/"+name+"Converted.asset");
-            var page=VirtualGeometryPageCodec.Read(File.ReadAllBytes(Path.Combine(Application.streamingAssetsPath,asset.PageRelativePath)));
+            var mesh=VirtualGeometryValidationModel.SourceMesh(Root+"/"+name+".obj");
+            var asset=VirtualGeometryValidationModel.Load(Root+"/"+name+".obj");
+            int sourceTriangles=0;for(int m=0;m<mesh.subMeshCount;m++){sourceTriangles+=(int)mesh.GetIndexCount(m)/3;}
+            var page=VirtualGeometryPageCodec.Read(File.ReadAllBytes(VirtualGeometryPagePaths.Resolve(asset.PageRelativePath)));
             var reference=new GameObject(name+" reference");reference.layer=8;var filter=reference.AddComponent<MeshFilter>();filter.sharedMesh=mesh;var ordinary=reference.AddComponent<MeshRenderer>();ordinary.shadowCastingMode=ShadowCastingMode.Off;
             var colors=new[]{new Color(.05f,.65f,.95f,1),new Color(.95f,.35f,.08f,1)};var materials=new Material[mesh.subMeshCount];
             var pattern=new Texture2D(4,4,TextureFormat.RGBA32,false,true){filterMode=FilterMode.Point,wrapMode=TextureWrapMode.Repeat};for(int y=0;y<4;y++){for(int x=0;x<4;x++){pattern.SetPixel(x,y,((x+y)%2==0)?Color.white:new Color(.15f,.35f,.6f));}}pattern.Apply();
@@ -85,17 +85,15 @@ namespace VirtualizedGeometry.Editor{
             if(instance.IsFallbackVisible){throw new InvalidOperationException(name+" used fallback: "+instance.DiagnosticReason);}
             VerifyAttributes(name,mesh,page);
             Mesh cut=null;
-            if(page.Nodes.Length==0){var metrics=instance.ReadMetricsForDiagnostics(camera);if(metrics.DrawCalls!=2||metrics.DrawnTriangles!=mesh.triangles.Length/3){throw new InvalidOperationException("Legacy material draws differ.");}checks.Add(name+": dedicated legacy triangles="+metrics.DrawnTriangles+", material draws="+metrics.DrawCalls+", attributes PASS");}else{
             var cpu=VirtualGeometryLodSelector.Select(page,new VirtualGeometryLodSelectionContext(Matrix4x4.identity,camera.transform.position,true,camera.fieldOfView,camera.orthographicSize,Size,camera.nearClipPlane,float.MaxValue,0),_=>true,null);
-            cut=Cut(page,cpu);filter.sharedMesh=cut;instance.SetLodSettings(float.MaxValue,0);
+            cut=VirtualGeometryValidationModel.CutMesh(page,cpu);filter.sharedMesh=cut;instance.SetLodSettings(float.MaxValue,0);
             var cpuImage=Capture(name+"CpuCoarse",8,out var cpuDepth);var gpuImage=Capture(name+"GpuCoarse",9,out var gpuDepth);Compare(name+" CPU/GPU coarse",cpuImage,gpuImage,cpuDepth,gpuDepth,true);
             var snapshot=instance.ReadbackSelectionForDiagnostics();var actual=new HashSet<int>();for(int i=0;i<snapshot.SelectionFlags.Length;i++){if(snapshot.SelectionFlags[i]!=0){actual.Add(i);}}
             if(!actual.SetEquals(cpu.SelectedNodes)){throw new InvalidOperationException(name+" CPU/GPU node cut differs.");}
             long gpuIndices=0;for(int m=0;m<materials.Length;m++){gpuIndices+=snapshot.Arguments[m*4];if(snapshot.Arguments[m*4]!=cut.GetIndexCount(m)){throw new InvalidOperationException(name+" material index count differs.");}}
             Compare(name+" source/coarse quality",source,gpuImage,sourceDepth,gpuDepth,false);
             if(hole){int center=(Size/2)*Size+Size/2;if(sourceDepth[center]>1e-7f||gpuDepth[center]>1e-7f){throw new InvalidOperationException("Hole was filled.");}checks.Add("Hole center source/coarse depth=0: PASS");}
-            checks.Add(name+": sourceTriangles="+mesh.triangles.Length/3+", coarseTriangles="+gpuIndices/3+", materials="+materials.Length+", nodes="+page.Nodes.Length+", leaf/cut dedicated=true; attributes/CPU nodes/material arguments PASS");
-            }
+            checks.Add(name+": sourceTriangles="+sourceTriangles+", coarseTriangles="+gpuIndices/3+", materials="+materials.Length+", nodes="+page.Nodes.Length+", leaf/cut dedicated=true; attributes/CPU nodes/material arguments PASS");
             instance.SetMeshAsset(null);Object.DestroyImmediate(go);Object.DestroyImmediate(reference);Object.DestroyImmediate(cut);foreach(var material in materials){Object.DestroyImmediate(material);}Object.DestroyImmediate(pattern);instance=null;
         }
         private static Color32[] Capture(string name,int layer,out float[] values){camera.cullingMask=1<<layer;var image=M0Validation.Capture(camera,Size,Size);File.WriteAllBytes(Output+"/"+name+".png",image.EncodeToPNG());var colors=image.GetPixels32();Object.DestroyImmediate(image);values=new float[Size*Size];depth.GetData(values);return colors;}
@@ -106,14 +104,9 @@ namespace VirtualizedGeometry.Editor{
             if(covered<20||(requireExactGeometry&&(missing!=0||xor!=0||maxDepth>1e-6f||maxColor>2))){throw new InvalidOperationException(name+" geometry/material mismatch.");}
         }
         private static void VerifyAttributes(string name,Mesh source,VirtualGeometryPage page){
-            var vertices=source.vertices;var normals=source.normals;var uv=source.uv;
+            // インポート済みモデルのMeshは読み書き無効のため、変換器と同じ読み出しで属性を得る。
+            var input=VirtualGeometryMeshInput.FromMesh(source);var vertices=input.Positions;var normals=input.Normals;var uv=input.UV;
             for(int i=0;i<vertices.Length;i++){bool found=false;foreach(var vertex in page.Vertices){if(vertex.Position==vertices[i]&&vertex.Normal==normals[i]&&vertex.UV==uv[i]){found=true;break;}}if(!found){throw new InvalidOperationException(name+" source vertex attributes lost at "+i);}}
-        }
-        private static Mesh Cut(VirtualGeometryPage page,VirtualGeometryLodSelectionResult selection){
-            var mesh=new Mesh{indexFormat=IndexFormat.UInt32};mesh.vertices=page.Vertices.Select(v=>v.Position).ToArray();mesh.normals=page.Vertices.Select(v=>v.Normal).ToArray();mesh.uv=page.Vertices.Select(v=>v.UV).ToArray();mesh.subMeshCount=page.MaterialCount;
-            var indices=new List<int>[page.MaterialCount];for(int m=0;m<indices.Length;m++){indices[m]=new List<int>();}
-            foreach(int c in selection.SelectedClusters){var cluster=page.Clusters[c];for(uint i=0;i<cluster.IndexCount;i++){indices[cluster.MaterialSlot].Add((int)page.Indices[cluster.FirstIndex+i]);}}
-            for(int m=0;m<indices.Length;m++){mesh.SetTriangles(indices[m],m);}mesh.RecalculateBounds();return mesh;
         }
         private static Mesh Box(Vector3 scale,Quaternion rotation){var go=GameObject.CreatePrimitive(PrimitiveType.Cube);var mesh=Object.Instantiate(go.GetComponent<MeshFilter>().sharedMesh);Object.DestroyImmediate(go);var vertices=mesh.vertices;var normals=mesh.normals;for(int i=0;i<vertices.Length;i++){vertices[i]=rotation*Vector3.Scale(vertices[i],scale);normals[i]=rotation*normals[i];}mesh.vertices=vertices;mesh.normals=normals;mesh.RecalculateBounds();return mesh;}
         private static Mesh Sphere(){

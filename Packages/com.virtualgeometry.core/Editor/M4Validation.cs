@@ -29,14 +29,16 @@ namespace VirtualizedGeometry.Editor{
         private static int faultStep;
         private static string faultPath;
         private static VirtualGeometryMeshAsset faultAsset;
-        private static VirtualGeometryStreamMetadata faultMetadata;
+        private static VirtualGeometryStreamMetadata faultMetadata;private static VirtualGeometryPage faultPage;private static int faultPinnedPages;
         private static VirtualGeometryStreamingStatistics cancelledStatistics;
         private static int step;
         private static int bootstrap;
         private static double started;
         private static long qualityMissFrames;
         private static long peakResident;
-        private static uint coarseIndices;
+        private static uint coarseIndices;private static int slotCount;
+        // 左右の視点で見える範囲がほとんど重ならない距離。移動後は反対側だけで使っていたpageが使われなくなり、退避と戻ったときの再要求が起きる。
+        private const float Side=10;
         private static uint peakIndices;
         private static readonly List<string> checks=new List<string>();
         private static readonly StringBuilder metrics=new StringBuilder();
@@ -59,18 +61,23 @@ namespace VirtualizedGeometry.Editor{
 
         private static void CreateSample(){
             Directory.CreateDirectory(Root);AssetDatabase.Refresh();
-            Mesh source=AssetDatabase.LoadAssetAtPath<Mesh>(Root+"/Source.asset");
-            if(source==null){source=CreateSurface(96,64);AssetDatabase.CreateAsset(source,Root+"/Source.asset");}
-            asset=VirtualGeometryConversionService.Convert(source,Root+"/Converted.asset",new VirtualGeometryBuildSettings{
-                MaxTrianglesPerCluster=32,HierarchyFanout=4,SimplificationRatio=0.5f,PositionQuantizationBits=16,GenerateHierarchy=true,GenerateStreamingPages=true
+            Mesh generated=CreateSurface(96,64);
+            asset=VirtualGeometryValidationModel.Import(generated,Root+"/Source.obj",new VirtualGeometryModelSettings{
+                MaxTrianglesPerCluster=32,HierarchyFanout=4,SimplificationRatio=0.5f,PositionQuantizationBits=16
             });
-            using(var file=File.OpenRead(Path.Combine(Application.streamingAssetsPath,asset.PageRelativePath))){metadata=VirtualGeometryStreamCodec.ReadMetadata(file);}
-            int slots=(int)Math.Min(6,(metadata.UniqueGeometryBytes-1)/metadata.SlotGeometryBytes);
+            Object.DestroyImmediate(generated);
+            using(var file=File.OpenRead(VirtualGeometryPagePaths.Resolve(asset.PageRelativePath))){metadata=VirtualGeometryStreamCodec.ReadMetadata(file);}
+            // 固定pageがProxyの段まで届き(準備直後から縁を固定した段で描く)、その下の2段を細分化でき、3段目は細分化に要る分の半分(片側ぶん)だけ置ける予算。
+            // 1 nodeの細分化には全ての子pageが要るため、1段分の空きでは途中まで読んだ子が残って細分化が止まる。pageは大きさに応じて複数slotを使うため、
+            // 細分化に要る量はslot数(子のpageのslot数の和)で数える。unique geometryより十分小さく、3段目は片側しか置けないため、視点を移すと退避と再要求が起きる。
+            int reserve=VirtualGeometryStreamingController.RefinementReserveSlots(metadata);
+            int slots=(int)Math.Min(VirtualGeometryValidationModel.SlotsToPinProxyLevel(metadata)+reserve+reserve/2,(metadata.UniqueGeometryBytes-1)/metadata.SlotGeometryBytes);
             if(slots<3){throw new InvalidOperationException("Validation archive must allow at least 3 slots below its unique geometry bytes.");}
             settings=new VirtualGeometryStreamingSettings{
-                GpuGeometryBudgetBytes=(long)slots*metadata.SlotGeometryBytes,CpuCacheBudgetBytes=(long)metadata.SlotGeometryBytes*4,
+                GpuGeometryBudgetBytes=(long)slots*metadata.SlotGeometryBytes,CpuCacheBudgetBytes=(long)metadata.MaxPageBytes*4,
                 IoConcurrency=2,TransferBytesPerFrame=2048,RequestQueueCapacity=1,RequestTimeoutFrames=240,IoDelayMilliseconds=25
             };
+            slotCount=VirtualGeometryStreamingController.SlotCountFor(metadata,settings);
             checks.Add("archive pages="+metadata.Pages.Length+", unique geometry="+metadata.UniqueGeometryBytes+", metadata="+metadata.MetadataBytes+
                 ", root bytes="+metadata.Pages[0].ByteCount+", slot bytes="+metadata.SlotGeometryBytes+", slots="+slots+", gpu budget="+settings.GpuGeometryBudgetBytes);
             UniversalRendererData renderer=AssetDatabase.LoadAssetAtPath<UniversalRendererData>(Root+"/M4Renderer.asset");
@@ -96,16 +103,17 @@ namespace VirtualizedGeometry.Editor{
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);
             camera=new GameObject("M4 Camera").AddComponent<Camera>();camera.nearClipPlane=0.1f;camera.farClipPlane=200;camera.fieldOfView=55;
             camera.clearFlags=CameraClearFlags.SolidColor;camera.backgroundColor=Color.black;camera.allowMSAA=false;camera.allowHDR=false;
-            camera.GetUniversalAdditionalCameraData().requiresDepthTexture=true;camera.transform.position=new Vector3(-6,0,-10);
-            streaming=new GameObject("Streaming Geometry").AddComponent<VirtualGeometryRenderer>();streaming.gameObject.layer=11;
-            streaming.SetStreamingConfiguration(VirtualGeometryStreamingMode.Streaming,settings);streaming.SetMeshAsset(asset);
-            streaming.SetLodSettings(0.2f,0);streaming.SetCullingSettings(true,true);
+            camera.GetUniversalAdditionalCameraData().requiresDepthTexture=true;camera.transform.position=new Vector3(-Side,0,-10);
+            streaming=new GameObject("Streaming Geometry").AddComponent<VirtualGeometryRenderer>();streaming.gameObject.layer=11;streaming.SetMeshAsset(asset);
+            // sceneは利用者が開いて距離でLODが切り替わる既定の設定(閾値・streaming予算)で保存する。
+            // 検証用の厳しい閾値と予算、検証中だけ使う比較用objectは、保存の後に適用・作成する。
+            EditorSceneManager.SaveScene(camera.gameObject.scene,Root+"/M4.unity");AssetDatabase.SaveAssets();
+            streaming.SetStreamingConfiguration(VirtualGeometryStreamingMode.Streaming,settings);streaming.SetLodSettings(0.2f,0);streaming.SetCullingSettings(true,true);
             reference=new GameObject("All Resident Reference").AddComponent<VirtualGeometryRenderer>();reference.gameObject.layer=10;
             reference.SetStreamingConfiguration(VirtualGeometryStreamingMode.AllResident,settings);
             reference.SetLodSettings(float.MaxValue,0);reference.SetCullingSettings(false,false);
             depthProbe=new GraphicsBuffer(GraphicsBuffer.Target.Structured,Width*Height,4);
             VirtualGeometryDepthProbeFeature.Target=depthProbe;VirtualGeometryDepthProbeFeature.Width=Width;VirtualGeometryDepthProbeFeature.Height=Height;
-            EditorSceneManager.SaveScene(camera.gameObject.scene,Root+"/M4.unity");AssetDatabase.SaveAssets();
         }
 
         private static void Tick(){
@@ -114,7 +122,7 @@ namespace VirtualizedGeometry.Editor{
                 if(EditorApplication.timeSinceStartup-started>240){throw new TimeoutException("M4 validation timeout.");}
                 camera.cullingMask=1<<11;
                 Texture2D image=M0Validation.Capture(camera,Width,Height);float[] depth=new float[Width*Height];depthProbe.GetData(depth);
-                if(!streaming.IsStreamingRootReady){
+                if(!streaming.IsStreamingRootReady||(step<0&&!BootstrapDrawn())){
                     Object.DestroyImmediate(image);bootstrap++;if(bootstrap>600){throw new InvalidOperationException("Root did not finish asynchronous bootstrap.");}
                     return;
                 }
@@ -122,9 +130,9 @@ namespace VirtualizedGeometry.Editor{
                 VirtualGeometryStreamingStatistics stats=streaming.StreamingStatistics;
                 if(step<0){
                     coarseIndices=selected.Arguments[0];
-                    CaptureReference(float.MaxValue,"CoarseReference");
+                    CaptureCutReference("CoarseReference");
                     CompareDepth(depth,referenceDepth,out int initialMissing,out float initialDelta);
-                    if(initialMissing!=0||initialDelta>1e-6f){throw new InvalidOperationException("Initial streamed root differs from coarse depth reference.");}
+                    if(initialMissing!=0||initialDelta>1e-6f){throw new InvalidOperationException("Initial streamed cut differs from the CPU cut over pinned pages: missing="+initialMissing+", depth delta="+initialDelta);}
                     File.WriteAllBytes("TestResults/M4/InitialCoarse.png",image.EncodeToPNG());
                     checks.Add("initial root: indices="+coarseIndices+", missing="+initialMissing+", depth delta="+initialDelta+", bootstrap frames="+bootstrap);
                     CaptureReference(0,"AllResidentLeft");step=0;
@@ -150,8 +158,8 @@ namespace VirtualizedGeometry.Editor{
                 if(step==70||step==150||step==239){File.WriteAllBytes("TestResults/M4/Streaming"+step+".png",image.EncodeToPNG());}
                 Object.DestroyImmediate(image);
                 step++;
-                if(step==80){camera.transform.position=new Vector3(6,0,-10);CaptureReference(0,"AllResidentRight");}
-                if(step==160){camera.transform.position=new Vector3(-6,0,-10);CaptureReference(0,"AllResidentReturn");}
+                if(step==80){camera.transform.position=new Vector3(Side,0,-10);CaptureReference(0,"AllResidentRight");}
+                if(step==160){camera.transform.position=new Vector3(-Side,0,-10);CaptureReference(0,"AllResidentReturn");}
                 if(step<240){return;}
                 File.WriteAllText("TestResults/M4/Metrics.csv",metrics.ToString());
                 checks.Add("streaming peak resident pages="+peakResident+", coarse indices="+coarseIndices+", peak indices="+peakIndices+
@@ -174,10 +182,12 @@ namespace VirtualizedGeometry.Editor{
             phase=nextPhase;faultStep=-1;bootstrap=0;streaming.SetMeshAsset(null);
             if(faultAsset!=null){Object.DestroyImmediate(faultAsset);}
             string relative="VirtualGeometry/M4Validation/Fault"+phase+".vgpage";
-            faultPath=Path.Combine(Application.streamingAssetsPath,relative);Directory.CreateDirectory(Path.GetDirectoryName(faultPath));
+            faultPath=VirtualGeometryPagePaths.Resolve(relative);Directory.CreateDirectory(Path.GetDirectoryName(faultPath));
             if(phase==4){File.WriteAllBytes(faultPath,VirtualGeometryStreamCodec.Write(CreateBudgetPage()));}
-            else{File.Copy(Path.Combine(Application.streamingAssetsPath,asset.PageRelativePath),faultPath,true);}
+            else{File.Copy(VirtualGeometryPagePaths.Resolve(asset.PageRelativePath),faultPath,true);}
             using(var file=File.OpenRead(faultPath)){faultMetadata=VirtualGeometryStreamCodec.ReadMetadata(file);}
+            // 障害を入れる前の内容。障害後に常駐範囲で選ぶ形の基準を作るのに使う。
+            faultPage=VirtualGeometryPageCodec.Read(File.ReadAllBytes(faultPath));
             faultAsset=Object.Instantiate(asset);faultAsset.name="M4 Fault Scenario "+phase;
             var serialized=new SerializedObject(faultAsset);
             serialized.FindProperty("pageRelativePath").stringValue=relative;serialized.FindProperty("bounds").boundsValue=faultMetadata.Bounds;
@@ -187,7 +197,7 @@ namespace VirtualizedGeometry.Editor{
             faultSettings=settings.Clone();faultSettings.IoDelayMilliseconds=100;
             if(phase==3){faultSettings.IoDelayMilliseconds=500;}
             if(phase==4){
-                faultSettings.GpuGeometryBudgetBytes=(long)faultMetadata.SlotGeometryBytes*3;
+                faultSettings.GpuGeometryBudgetBytes=(long)faultMetadata.MaxPageBytes*3;
                 faultSettings.CpuCacheBudgetBytes=2L*faultMetadata.Pages[0].ByteCount;
                 faultSettings.TransferBytesPerFrame=64;
             }
@@ -196,6 +206,12 @@ namespace VirtualizedGeometry.Editor{
             reference.SetLodSettings(float.MaxValue,0);
             camera.transform.SetPositionAndRotation(new Vector3(-6,0,0),Quaternion.identity);
             CaptureReference(float.MaxValue,"Fault"+phase+"CoarseReference");
+        }
+
+        // 撮影したframeをVGが描いたか。描画判定はcameraの描画開始時に行い、rootはその後の同じframe内でGPUへ公開されるため、
+        // 撮影後のIsStreamingRootReadyだけでは、代替表示のまま撮ったframeを起動完了と取り違える。
+        private static bool BootstrapDrawn(){
+            return streaming.IsStreamingRootReady&&!streaming.IsFallbackVisible;
         }
 
         private static void TickFault(){
@@ -211,7 +227,7 @@ namespace VirtualizedGeometry.Editor{
             }
             camera.cullingMask=1<<11;
             Texture2D image=M0Validation.Capture(camera,Width,Height);float[] depth=new float[Width*Height];depthProbe.GetData(depth);
-            if(!streaming.IsStreamingRootReady){
+            if(!streaming.IsStreamingRootReady||(faultStep<0&&!BootstrapDrawn())){
                 Object.DestroyImmediate(image);if(++bootstrap>600){throw new InvalidOperationException("Fault scenario root bootstrap failed.");}return;
             }
             var stats=streaming.StreamingStatistics;
@@ -224,10 +240,20 @@ namespace VirtualizedGeometry.Editor{
                         }
                     }
                 }
-                streaming.SetLodSettings(0.2f,0);faultStep=0;
             }
             CompareDepth(depth,referenceDepth,out int missing,out float delta);
-            if(missing!=0||delta>1e-6f){throw new InvalidOperationException("Fault "+phase+" did not preserve exact coarse depth.");}
+            if(missing!=0||delta>1e-6f){
+                File.WriteAllBytes("TestResults/M4/Fault"+phase+"Mismatch.png",image.EncodeToPNG());
+                throw new InvalidOperationException("Fault "+phase+" did not preserve exact coarse depth: missing="+missing+", depth delta="+delta+", step="+faultStep+
+                    ", fallback="+streaming.IsFallbackVisible+", reason="+streaming.DiagnosticReason+", ordinary forceOff="+streaming.Ordinary.forceRenderingOff+", resident="+stats.Resident+", failed="+stats.Failed);
+            }
+            if(faultStep<0){
+                // 障害後は詳細pageが読めず、起動時に固定したpageだけが残る。詳細を要求させ、その常駐範囲で選ぶ形が保たれることを以後のframeで確かめる。
+                streaming.SetLodSettings(0.2f,0);faultStep=0;
+                int slots=VirtualGeometryStreamingController.SlotCountFor(faultMetadata,faultSettings);
+                CaptureCutReference("Fault"+phase+"PinnedCutReference",faultPage,faultMetadata,slots,faultAsset.ProxyLitMaterial);
+                faultPinnedPages=0;foreach(bool fixedPage in VirtualGeometryStreamingController.SelectPinnedPages(faultMetadata,slots)){if(fixedPage){faultPinnedPages++;}}
+            }
             if(stats.UnsafeSlotReuses!=0||stats.GpuAllocatedBytes>faultSettings.GpuGeometryBudgetBytes||stats.CpuBytes>faultSettings.CpuCacheBudgetBytes||
                 stats.Loading>faultSettings.IoConcurrency||stats.TransferBytesThisFrame>faultSettings.TransferBytesPerFrame){throw new InvalidOperationException("Fault scenario budget/lifetime invariant failed.");}
             faultMetrics.Append(phase).Append(',').Append(faultStep).Append(',').Append(Time.frameCount).Append(',').Append(stats.GpuAllocatedBytes).Append(',').Append(faultSettings.GpuGeometryBudgetBytes)
@@ -242,7 +268,8 @@ namespace VirtualizedGeometry.Editor{
                 File.WriteAllBytes("TestResults/M4/Fault"+phase+"Coarse.png",image.EncodeToPNG());
                 checks.Add("fault "+phase+": failed="+stats.Failed+", resident="+stats.Resident+", missing pixels="+missing+
                     ", coarse depth delta="+delta+", quality misses="+stats.QualityTargetMisses+", last error="+stats.LastError);
-                if(stats.Resident!=1||stats.QualityTargetMisses==0){throw new InvalidOperationException("Fault did not retain pinned root and report quality miss.");}
+                // 詳細pageは読めず、起動時に固定したpageだけが残る。
+                if(stats.Resident!=faultPinnedPages||stats.QualityTargetMisses==0){throw new InvalidOperationException("Fault did not retain the pinned pages and report quality miss: resident="+stats.Resident+", pinned="+faultPinnedPages);}
                 Object.DestroyImmediate(image);
                 if(phase<4){BeginFaultScenario(phase+1);return;}
                 if(errors.Count>0){throw new InvalidOperationException("Unity logged errors: "+string.Join(" | ",errors));}
@@ -281,6 +308,24 @@ namespace VirtualizedGeometry.Editor{
             nodes[0].FirstChild=1;nodes[0].ChildCount=2;nodes[0].LeafCount=2;nodes[0].Level=1;nodes[0].GeometricError=1;
             return new VirtualGeometryPage(vertices.ToArray(),indices.ToArray(),clusters.ToArray(),nodes,new uint[]{0},1,new Bounds(new Vector3(0,0,10),new Vector3(32,18,0)));
         }
+        // 準備直後は起動時に固定したpageだけが常駐する。その常駐範囲でCPU選択した形を通常描画し、GPUの最初の描画と比べる。
+        private static void CaptureCutReference(string name){
+            VirtualGeometryPage page=VirtualGeometryPageCodec.Read(File.ReadAllBytes(VirtualGeometryPagePaths.Resolve(asset.PageRelativePath)));
+            CaptureCutReference(name,page,metadata,slotCount,asset.ProxyLitMaterial);
+        }
+
+        private static void CaptureCutReference(string name,VirtualGeometryPage page,VirtualGeometryStreamMetadata archive,int slots,Material material){
+            bool[] pinned=VirtualGeometryStreamingController.SelectPinnedPages(archive,slots);
+            var context=new VirtualGeometryLodSelectionContext(streaming.transform.localToWorldMatrix,camera.transform.position,camera.orthographic,camera.fieldOfView,camera.orthographicSize,Height,camera.nearClipPlane,streaming.LodErrorThresholdPixels,0);
+            Mesh cut=VirtualGeometryValidationModel.CutMesh(page,VirtualGeometryLodSelector.Select(page,context,id=>pinned[(int)id],null));
+            var proxy=new GameObject("Pinned cut reference"){layer=10};proxy.transform.SetPositionAndRotation(streaming.transform.position,streaming.transform.rotation);proxy.transform.localScale=streaming.transform.lossyScale;
+            proxy.AddComponent<MeshFilter>().sharedMesh=cut;proxy.AddComponent<MeshRenderer>().sharedMaterial=material;
+            camera.cullingMask=1<<10;
+            if(referenceImage!=null){Object.DestroyImmediate(referenceImage);}
+            referenceImage=M0Validation.Capture(camera,Width,Height);referenceDepth=new float[Width*Height];depthProbe.GetData(referenceDepth);
+            File.WriteAllBytes("TestResults/M4/"+name+".png",referenceImage.EncodeToPNG());Object.DestroyImmediate(proxy);Object.DestroyImmediate(cut);camera.cullingMask=1<<11;
+        }
+
         private static void CaptureReference(float threshold,string name){
             reference.SetMeshAsset(phase>0?faultAsset:asset);reference.SetLodSettings(threshold,0);camera.cullingMask=1<<10;
             if(referenceImage!=null){Object.DestroyImmediate(referenceImage);}

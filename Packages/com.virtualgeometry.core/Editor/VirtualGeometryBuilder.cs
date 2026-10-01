@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
 using UnityEngine;
@@ -23,13 +24,39 @@ namespace VirtualizedGeometry.Editor{
 
         public static VirtualGeometryMeshInput FromMesh(Mesh mesh){
             if(mesh==null){throw new ArgumentNullException(nameof(mesh));}
-            if(!mesh.isReadable){throw new ArgumentException("Mesh read/write must be enabled for conversion.",nameof(mesh));}
+            if(!mesh.isReadable){return FromMeshData(mesh);}
             int[][] submeshes=new int[mesh.subMeshCount][];
             for(int i=0;i<submeshes.Length;i++){
                 if(mesh.GetTopology(i)!=MeshTopology.Triangles){throw new ArgumentException("Only triangle submeshes can be converted.",nameof(mesh));}
                 submeshes[i]=mesh.GetIndices(i,true);
             }
             return new VirtualGeometryMeshInput(mesh.vertices,mesh.normals,mesh.uv,submeshes);
+        }
+
+        // モデルのインポート中や読み書き無効のMeshは、通常の配列取得が拒否される。Editorではread-only snapshotから読める。
+        private static VirtualGeometryMeshInput FromMeshData(Mesh mesh){
+            using(Mesh.MeshDataArray array=Mesh.AcquireReadOnlyMeshData(mesh)){
+                Mesh.MeshData data=array[0];
+                int count=data.vertexCount;
+                Vector3[] positions=new Vector3[count];Vector3[] normals=new Vector3[0];Vector2[] uv=new Vector2[0];
+                using(var buffer=new Unity.Collections.NativeArray<Vector3>(count,Unity.Collections.Allocator.Temp)){
+                    data.GetVertices(buffer);buffer.CopyTo(positions);
+                    if(data.HasVertexAttribute(VertexAttribute.Normal)){normals=new Vector3[count];data.GetNormals(buffer);buffer.CopyTo(normals);}
+                }
+                if(data.HasVertexAttribute(VertexAttribute.TexCoord0)){
+                    uv=new Vector2[count];
+                    using(var buffer=new Unity.Collections.NativeArray<Vector2>(count,Unity.Collections.Allocator.Temp)){data.GetUVs(0,buffer);buffer.CopyTo(uv);}
+                }
+                int[][] submeshes=new int[data.subMeshCount][];
+                for(int i=0;i<submeshes.Length;i++){
+                    SubMeshDescriptor descriptor=data.GetSubMesh(i);
+                    if(descriptor.topology!=MeshTopology.Triangles){throw new ArgumentException("Only triangle submeshes can be converted.",nameof(mesh));}
+                    using(var buffer=new Unity.Collections.NativeArray<int>(descriptor.indexCount,Unity.Collections.Allocator.Temp)){
+                        data.GetIndices(buffer,i,true);submeshes[i]=buffer.ToArray();
+                    }
+                }
+                return new VirtualGeometryMeshInput(positions,normals,uv,submeshes);
+            }
         }
     }
 
@@ -76,13 +103,21 @@ namespace VirtualizedGeometry.Editor{
         public Bounds Bounds{get;}
         public int InputTriangleCount{get;}
         public int LeafTriangleCount{get;}
-        public string ContentHash{get;}
-        public byte[] PageBytes{get;}
+        /// <summary>変換結果のgeometryと階層。streaming archiveはここから直接書き出す。</summary>
+        public VirtualGeometryPage Page{get;}
+        private byte[] pageBytes;private string contentHash;
+        /// <summary>単一page形式のbyte列。大きなmeshでは書き出しが重いため、参照されたときに初めて作る。</summary>
+        public byte[] PageBytes{
+            get{if(this.pageBytes==null){this.pageBytes=VirtualGeometryPageCodec.Write(this.Page);}return this.pageBytes;}
+        }
+        public string ContentHash{
+            get{if(this.contentHash==null){this.contentHash=VirtualGeometryBuilder.ComputeSha256(this.PageBytes);}return this.contentHash;}
+        }
 
-        public VirtualGeometryBuildOutput(VirtualGeometryPage page,VirtualGeometryBuildDiagnostic[] diagnostics,int inputTriangleCount,int leafTriangleCount,byte[] pageBytes,string contentHash){
-            this.Vertices=page.Vertices;this.Indices=page.Indices;this.Clusters=page.Clusters;this.Nodes=page.Nodes;
+        public VirtualGeometryBuildOutput(VirtualGeometryPage page,VirtualGeometryBuildDiagnostic[] diagnostics,int inputTriangleCount,int leafTriangleCount){
+            this.Page=page;this.Vertices=page.Vertices;this.Indices=page.Indices;this.Clusters=page.Clusters;this.Nodes=page.Nodes;
             this.RootNodeIndices=page.RootNodeIndices;this.Diagnostics=diagnostics;this.Bounds=page.Bounds;
-            this.InputTriangleCount=inputTriangleCount;this.LeafTriangleCount=leafTriangleCount;this.PageBytes=pageBytes;this.ContentHash=contentHash;
+            this.InputTriangleCount=inputTriangleCount;this.LeafTriangleCount=leafTriangleCount;
         }
     }
 
@@ -219,9 +254,7 @@ namespace VirtualizedGeometry.Editor{
             }
             VirtualGeometryPage page=new VirtualGeometryPage(vertices,indices.ToArray(),clusters.ToArray(),nodes.ToArray(),roots,input.SubmeshIndices.Length,bounds);
             buildCancellation.ThrowIfCancellationRequested();buildProgress?.Invoke(0.9f);
-            byte[] pageBytes=VirtualGeometryPageCodec.Write(page);
-            string hash=ComputeSha256(pageBytes);
-            return new VirtualGeometryBuildOutput(page,diagnostics.ToArray(),inputTriangleCount,triangles.Count,pageBytes,hash);
+            return new VirtualGeometryBuildOutput(page,diagnostics.ToArray(),inputTriangleCount,triangles.Count);
         }
 
         private static uint BuildHierarchyForMaterial(int material,List<int> leaves,VirtualGeometryBuildSettings settings,VirtualGeometryPackedVertex[] vertices,
@@ -231,49 +264,31 @@ namespace VirtualizedGeometry.Editor{
             uint level=1;
             while(current.Count>1){
                 if(level>64){throw new InvalidOperationException("Hierarchy did not converge within 64 levels.");}
-                List<int> next=new List<int>((current.Count+settings.HierarchyFanout-1)/settings.HierarchyFanout);
+                int groupCount=(current.Count+settings.HierarchyFanout-1)/settings.HierarchyFanout;
+                List<int> next=new List<int>(groupCount);
                 for(int start=0;start<current.Count;start+=settings.HierarchyFanout){
-                    buildCancellation.ThrowIfCancellationRequested();
                     int childCount=Math.Min(settings.HierarchyFanout,current.Count-start);
-                    int firstChild=current[start];
                     for(int i=1;i<childCount;i++){
-                        if(current[start+i]!=firstChild+i){throw new InvalidOperationException("Hierarchy level nodes are not contiguous.");}
+                        if(current[start+i]!=current[start]+i){throw new InvalidOperationException("Hierarchy level nodes are not contiguous.");}
                     }
-                    List<uint> combined=new List<uint>();
-                    float childError=0;
-                    uint leafStart=nodes[firstChild].LeafStart;
-                    uint leafCount=0;
-                    for(int i=0;i<childCount;i++){
-                        VirtualGeometryHierarchyNode child=nodes[firstChild+i];
-                        childError=Mathf.Max(childError,child.GeometricError);
-                        leafCount=checked(leafCount+child.LeafCount);
-                        for(uint clusterOffset=0;clusterOffset<child.ClusterCount;clusterOffset++){
-                            VirtualGeometryCluster cluster=clusters[checked((int)(child.FirstCluster+clusterOffset))];
-                            for(uint indexOffset=0;indexOffset<cluster.IndexCount;indexOffset++){combined.Add(indices[checked((int)(cluster.FirstIndex+indexOffset))]);}
-                        }
-                    }
-                    uint[] representation=combined.ToArray();
-                    float parentError=childError;
-                    if(childCount>1&&representation.Length>3){
-                        HashSet<uint> locks=CreateBoundaryLocks(vertices,representation);
-                        int sourceTriangles=representation.Length/3;
-                        int targetTriangles=Math.Max(1,Mathf.FloorToInt(sourceTriangles*settings.SimplificationRatio));
-                        if(targetTriangles>=sourceTriangles){targetTriangles=sourceTriangles-1;}
-                        MeshOptimizerSimplifyResult simplified=MeshOptimizerSimplifier.SimplifyLockedVertices(vertices,representation,locks,targetTriangles*3);
-                        if(simplified.Indices.Length<representation.Length){
-                            representation=SortByMorton(simplified.Indices,vertices,meshBounds);
-                            parentError=childError+simplified.Error;
-                        }else{
-                            nonProgressCount++;
-                        }
-                    }
-                    int firstCluster=AppendClusters(representation,material,parentError,settings.MaxTrianglesPerCluster,vertices,indices,clusters);
-                    EnclosingSphere(nodes,firstChild,childCount,out Vector3 center,out float radius);
+                }
+                // 同じ段のgroupは互いに独立なので簡略化を並列に行う。追加は元の順で行い、出力を逐次処理と同じにする。
+                // 並列処理中は段の入力(nodes・clusters・indices)を読むだけで、書き込みは後の逐次処理だけが行う。
+                var groups=new SimplifiedGroup[groupCount];
+                List<int> levelNodes=current;
+                RunParallel(groupCount,group=>{
+                    groups[group]=SimplifyGroup(levelNodes,group*settings.HierarchyFanout,settings,vertices,meshBounds,indices,clusters,nodes);
+                });
+                for(int group=0;group<groupCount;group++){
+                    SimplifiedGroup result=groups[group];
+                    if(result.NoProgress){nonProgressCount++;}
+                    int firstCluster=AppendClusters(result.Representation,material,result.Error,settings.MaxTrianglesPerCluster,vertices,indices,clusters);
+                    EnclosingSphere(nodes,result.FirstChild,result.ChildCount,out Vector3 center,out float radius);
                     int nodeIndex=nodes.Count;
                     nodes.Add(new VirtualGeometryHierarchyNode{
-                        BoundsCenter=center,BoundsRadius=radius,GeometricError=parentError,
-                        FirstCluster=(uint)firstCluster,ClusterCount=(uint)(clusters.Count-firstCluster),FirstChild=(uint)firstChild,ChildCount=(uint)childCount,
-                        PageId=0,MaterialSlot=(uint)material,Level=level,LeafStart=leafStart,LeafCount=leafCount
+                        BoundsCenter=center,BoundsRadius=radius,GeometricError=result.Error,
+                        FirstCluster=(uint)firstCluster,ClusterCount=(uint)(clusters.Count-firstCluster),FirstChild=(uint)result.FirstChild,ChildCount=(uint)result.ChildCount,
+                        PageId=0,MaterialSlot=(uint)material,Level=level,LeafStart=result.LeafStart,LeafCount=result.LeafCount
                     });
                     next.Add(nodeIndex);
                 }
@@ -294,7 +309,7 @@ namespace VirtualizedGeometry.Editor{
                 if(targetTriangles>=sourceTriangles){targetTriangles=sourceTriangles-1;}
                 HashSet<uint> locks=new HashSet<uint>();
                 foreach(uint index in representation){if(materialSeams.Contains(vertices[index].Position)){locks.Add(index);}}
-                MeshOptimizerSimplifyResult simplified=MeshOptimizerSimplifier.SimplifyLockedVertices(vertices,representation,locks,targetTriangles*3);
+                MeshOptimizerSimplifyResult simplified=SimplifyWithPruning(vertices,representation,locks,targetTriangles);
                 if(simplified.Indices.Length==0||simplified.Indices.Length>=representation.Length){stalledChainCount++;break;}
                 representation=SortByMorton(simplified.Indices,vertices,meshBounds);
                 float parentError=child.GeometricError+simplified.Error;
@@ -310,6 +325,63 @@ namespace VirtualizedGeometry.Editor{
             }
             highestLevel=(int)level-1;
             return (uint)root;
+        }
+
+        private readonly struct SimplifiedGroup{
+            public readonly uint[] Representation;public readonly float Error;public readonly bool NoProgress;
+            public readonly int FirstChild;public readonly int ChildCount;public readonly uint LeafStart;public readonly uint LeafCount;
+            public SimplifiedGroup(uint[] representation,float error,bool noProgress,int firstChild,int childCount,uint leafStart,uint leafCount){
+                this.Representation=representation;this.Error=error;this.NoProgress=noProgress;
+                this.FirstChild=firstChild;this.ChildCount=childCount;this.LeafStart=leafStart;this.LeafCount=leafCount;
+            }
+        }
+
+        // fanout個の子nodeの表現をまとめ、group外周を固定して簡略化する。段の入力を読むだけなので、同じ段のgroupを並列に呼べる。
+        private static SimplifiedGroup SimplifyGroup(List<int> level,int start,VirtualGeometryBuildSettings settings,VirtualGeometryPackedVertex[] vertices,
+            Bounds meshBounds,List<uint> indices,List<VirtualGeometryCluster> clusters,List<VirtualGeometryHierarchyNode> nodes){
+            int childCount=Math.Min(settings.HierarchyFanout,level.Count-start);
+            int firstChild=level[start];
+            List<uint> combined=new List<uint>();
+            float childError=0;
+            uint leafStart=nodes[firstChild].LeafStart;
+            uint leafCount=0;
+            for(int i=0;i<childCount;i++){
+                VirtualGeometryHierarchyNode child=nodes[firstChild+i];
+                childError=Mathf.Max(childError,child.GeometricError);
+                leafCount=checked(leafCount+child.LeafCount);
+                for(uint clusterOffset=0;clusterOffset<child.ClusterCount;clusterOffset++){
+                    VirtualGeometryCluster cluster=clusters[checked((int)(child.FirstCluster+clusterOffset))];
+                    for(uint indexOffset=0;indexOffset<cluster.IndexCount;indexOffset++){combined.Add(indices[checked((int)(cluster.FirstIndex+indexOffset))]);}
+                }
+            }
+            uint[] representation=combined.ToArray();
+            float parentError=childError;
+            bool noProgress=false;
+            if(childCount>1&&representation.Length>3){
+                HashSet<uint> locks=CreateBoundaryLocks(vertices,representation);
+                int sourceTriangles=representation.Length/3;
+                int targetTriangles=Math.Max(1,Mathf.FloorToInt(sourceTriangles*settings.SimplificationRatio));
+                if(targetTriangles>=sourceTriangles){targetTriangles=sourceTriangles-1;}
+                MeshOptimizerSimplifyResult simplified=SimplifyWithPruning(vertices,representation,locks,targetTriangles);
+                if(simplified.Indices.Length<representation.Length){
+                    representation=SortByMorton(simplified.Indices,vertices,meshBounds);
+                    parentError=childError+simplified.Error;
+                }else{
+                    noProgress=true;
+                }
+            }
+            return new SimplifiedGroup(representation,parentError,noProgress,firstChild,childCount,leafStart,leafCount);
+        }
+
+        // 呼び出し元threadのcancelを各workerへ伝え、worker内の例外は元の型のまま投げ直す。
+        private static void RunParallel(int count,Action<int> body){
+            CancellationToken token=buildCancellation;
+            try{
+                System.Threading.Tasks.Parallel.For(0,count,new System.Threading.Tasks.ParallelOptions{CancellationToken=token},index=>{token.ThrowIfCancellationRequested();body(index);});
+            }catch(AggregateException error){
+                if(error.InnerExceptions.Count==1){System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error.InnerExceptions[0]).Throw();}
+                throw;
+            }
         }
 
         private static int RepresentationTriangles(VirtualGeometryHierarchyNode node,List<VirtualGeometryCluster> clusters){
@@ -370,20 +442,123 @@ namespace VirtualizedGeometry.Editor{
             return firstCluster;
         }
 
+        private readonly struct MeshComponent{
+            public readonly int Triangles;public readonly float Radius;public readonly bool Removable;public readonly int Order;
+            public MeshComponent(int triangles,float radius,bool removable,int order){this.Triangles=triangles;this.Radius=radius;this.Removable=removable;this.Order=order;}
+        }
+
+        // 小さな閉じた部品が集まったmesh(ボルトや板の集合)は、形を保つ縮約では部品を消せず、部品数より三角形を減らせない。
+        // 目標数に届かないときは、固定頂点を持たない部品(groupの内側で完結する部品)を小さい順に取り除き、その大きさ(半径)を誤差に含める。
+        // 縮約と除去が同じ誤差の範囲で釣り合うよう、除去だけで目標に届く誤差を縮約の上限にする。
+        // meshoptimizerのPruneは固定頂点を守らず、group境界にcrackを作るため使わない。
+        private static MeshOptimizerSimplifyResult SimplifyWithPruning(VirtualGeometryPackedVertex[] vertices,uint[] representation,HashSet<uint> locks,int targetTriangles){
+            float limit=PruneLimit(Components(vertices,representation,locks,out _),representation.Length/3,targetTriangles);
+            MeshOptimizerSimplifyResult simplified=MeshOptimizerSimplifier.SimplifyLockedVertices(vertices,representation,locks,targetTriangles*3,limit);
+            if(simplified.Indices.Length<=targetTriangles*3){return simplified;}
+            List<MeshComponent> components=Components(vertices,simplified.Indices,locks,out int[] triangleComponents);
+            bool[] removed=new bool[components.Count];
+            int remaining=simplified.Indices.Length/3;float error=simplified.Error;
+            foreach(MeshComponent component in RemovalOrder(components)){
+                if(remaining<=targetTriangles){break;}
+                // 全部を取り除くと表現が空になるため、最後の部品は残す。
+                if(remaining-component.Triangles<=0){continue;}
+                removed[component.Order]=true;remaining-=component.Triangles;error=Mathf.Max(error,component.Radius);
+            }
+            if(remaining==simplified.Indices.Length/3){return simplified;}
+            uint[] kept=new uint[remaining*3];int write=0;
+            for(int triangle=0;triangle<triangleComponents.Length;triangle++){
+                if(removed[triangleComponents[triangle]]){continue;}
+                kept[write++]=simplified.Indices[triangle*3];kept[write++]=simplified.Indices[triangle*3+1];kept[write++]=simplified.Indices[triangle*3+2];
+            }
+            return new MeshOptimizerSimplifyResult(kept,error,simplified.ScratchVertexCount);
+        }
+
+        // 除去だけで目標数に届くときの誤差。届かなければ上限なし(縮約を従来どおり目標数まで進める)。
+        private static float PruneLimit(List<MeshComponent> components,int triangles,int targetTriangles){
+            int remaining=triangles;
+            foreach(MeshComponent component in RemovalOrder(components)){
+                if(remaining<=targetTriangles){break;}
+                if(remaining-component.Triangles<=0){continue;}
+                remaining-=component.Triangles;
+                if(remaining<=targetTriangles){return component.Radius;}
+            }
+            return float.MaxValue;
+        }
+
+        // 取り除ける部品を小さい順に並べる。同じ大きさは最初に現れた順にして、出力を決定的にする。
+        private static IEnumerable<MeshComponent> RemovalOrder(List<MeshComponent> components){
+            return components.Where(component=>component.Removable).OrderBy(component=>component.Radius).ThenBy(component=>component.Order);
+        }
+
+        // 位置でつながった三角形の集まり(部品)ごとの三角形数・半径(包む箱の対角の半分)・固定頂点の有無。部品番号は最初に現れた順。
+        private static List<MeshComponent> Components(VirtualGeometryPackedVertex[] vertices,uint[] indices,HashSet<uint> locks,out int[] triangleComponents){
+            Dictionary<Vector3,int> positionIds=new Dictionary<Vector3,int>();
+            int[] ids=new int[indices.Length];
+            for(int i=0;i<indices.Length;i++){
+                Vector3 position=vertices[indices[i]].Position;
+                if(!positionIds.TryGetValue(position,out int id)){id=positionIds.Count;positionIds.Add(position,id);}
+                ids[i]=id;
+            }
+            int[] parent=new int[positionIds.Count];
+            for(int i=0;i<parent.Length;i++){parent[i]=i;}
+            for(int i=0;i<indices.Length;i+=3){Union(parent,ids[i],ids[i+1]);Union(parent,ids[i],ids[i+2]);}
+            Dictionary<int,int> componentOfRoot=new Dictionary<int,int>();
+            List<int> counts=new List<int>();List<Vector3> minimums=new List<Vector3>();List<Vector3> maximums=new List<Vector3>();List<bool> removable=new List<bool>();
+            triangleComponents=new int[indices.Length/3];
+            for(int triangle=0;triangle<triangleComponents.Length;triangle++){
+                int root=Find(parent,ids[triangle*3]);
+                if(!componentOfRoot.TryGetValue(root,out int component)){
+                    component=counts.Count;componentOfRoot.Add(root,component);
+                    Vector3 first=vertices[indices[triangle*3]].Position;
+                    counts.Add(0);minimums.Add(first);maximums.Add(first);removable.Add(true);
+                }
+                triangleComponents[triangle]=component;counts[component]++;
+                for(int corner=0;corner<3;corner++){
+                    uint index=indices[triangle*3+corner];Vector3 position=vertices[index].Position;
+                    minimums[component]=Vector3.Min(minimums[component],position);maximums[component]=Vector3.Max(maximums[component],position);
+                    if(locks.Contains(index)){removable[component]=false;}
+                }
+            }
+            List<MeshComponent> result=new List<MeshComponent>(counts.Count);
+            for(int component=0;component<counts.Count;component++){
+                result.Add(new MeshComponent(counts[component],(maximums[component]-minimums[component]).magnitude*0.5f,removable[component],component));
+            }
+            return result;
+        }
+
+        private static int Find(int[] parent,int value){
+            while(parent[value]!=value){parent[value]=parent[parent[value]];value=parent[value];}
+            return value;
+        }
+
+        private static void Union(int[] parent,int a,int b){
+            int rootA=Find(parent,a);int rootB=Find(parent,b);
+            if(rootA<rootB){parent[rootB]=rootA;}else if(rootB<rootA){parent[rootA]=rootB;}
+        }
+
+        // groupの外周(隣のgroupと共有する縁)とmeshの開いた縁を固定する。辺は頂点番号ではなく位置で数える。
+        // 法線・UVの継ぎ目では同じ位置の頂点が分かれるため、番号で数えると継ぎ目まで縁と判定して固定し、角ばったmeshがほとんど簡略化されない。
+        // 位置で見て2枚の三角形が共有する辺は内側(継ぎ目を含む)で、継ぎ目の形はmeshoptimizerが保つ。1枚だけ、または3枚以上の辺を固定する。
         private static HashSet<uint> CreateBoundaryLocks(VirtualGeometryPackedVertex[] vertices,uint[] indices){
+            Dictionary<Vector3,int> positionIds=new Dictionary<Vector3,int>();
+            int[] ids=new int[indices.Length];
+            for(int i=0;i<indices.Length;i++){
+                Vector3 position=vertices[indices[i]].Position;
+                if(!positionIds.TryGetValue(position,out int id)){id=positionIds.Count;positionIds.Add(position,id);}
+                ids[i]=id;
+            }
             Dictionary<EdgeKey,int> edgeCounts=new Dictionary<EdgeKey,int>();
             for(int i=0;i<indices.Length;i+=3){
-                AddEdge(edgeCounts,new EdgeKey((int)indices[i],(int)indices[i+1]));
-                AddEdge(edgeCounts,new EdgeKey((int)indices[i+1],(int)indices[i+2]));
-                AddEdge(edgeCounts,new EdgeKey((int)indices[i+2],(int)indices[i]));
+                AddEdge(edgeCounts,new EdgeKey(ids[i],ids[i+1]));
+                AddEdge(edgeCounts,new EdgeKey(ids[i+1],ids[i+2]));
+                AddEdge(edgeCounts,new EdgeKey(ids[i+2],ids[i]));
+            }
+            HashSet<int> lockedIds=new HashSet<int>();
+            foreach(KeyValuePair<EdgeKey,int> edge in edgeCounts){
+                if(edge.Value!=2){lockedIds.Add(edge.Key.A);lockedIds.Add(edge.Key.B);}
             }
             HashSet<uint> locks=new HashSet<uint>();
-            foreach(KeyValuePair<EdgeKey,int> edge in edgeCounts){
-                if(edge.Value!=2){locks.Add((uint)edge.Key.A);locks.Add((uint)edge.Key.B);}
-            }
-            HashSet<Vector3> lockedPositions=new HashSet<Vector3>();
-            foreach(uint index in locks){lockedPositions.Add(vertices[index].Position);}
-            foreach(uint index in indices){if(lockedPositions.Contains(vertices[index].Position)){locks.Add(index);}}
+            for(int i=0;i<indices.Length;i++){if(lockedIds.Contains(ids[i])){locks.Add(indices[i]);}}
             return locks;
         }
 
@@ -543,7 +718,7 @@ namespace VirtualizedGeometry.Editor{
         private static void AddEdge(Dictionary<EdgeKey,int> edges,EdgeKey edge){edges.TryGetValue(edge,out int count);edges[edge]=count+1;}
         private static bool IsFinite(Vector3 value){return float.IsFinite(value.x)&&float.IsFinite(value.y)&&float.IsFinite(value.z);}
 
-        private static string ComputeSha256(byte[] data){
+        internal static string ComputeSha256(byte[] data){
             using(SHA256 sha=SHA256.Create()){return BitConverter.ToString(sha.ComputeHash(data)).Replace("-",string.Empty).ToLowerInvariant();}
         }
     }

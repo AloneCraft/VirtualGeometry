@@ -119,7 +119,7 @@ NavMeshSettings:
     debug:
       m_Flags: 0
   m_NavMeshData: {fileID: 0}
---- !u!1 &858394087
+--- !u!1 &779313693
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -127,8 +127,10 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 858394089}
-  - component: {fileID: 858394088}
+  - component: {fileID: 779313697}
+  - component: {fileID: 779313696}
+  - component: {fileID: 779313695}
+  - component: {fileID: 779313694}
   m_Layer: 11
   m_Name: Streaming Geometry
   m_TagString: Untagged
@@ -136,13 +138,13 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &858394088
+--- !u!114 &779313694
 MonoBehaviour:
-  m_ObjectHideFlags: 0
+  m_ObjectHideFlags: 2
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 858394087}
+  m_GameObject: {fileID: 779313693}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 3a5327ae6bc4b604daa98459f514b8a0, type: 3}
@@ -150,95 +152,85 @@ MonoBehaviour:
   m_EditorClassIdentifier: VirtualizedGeometry.Runtime::VirtualizedGeometry.VirtualGeometryRenderer
   forceProxy: 0
   forceUnsupportedBackend: 0
-  enableShadowProxy: 1
-  enablePhysicsProxy: 1
-  materials: []
-  meshAsset: {fileID: 11400000, guid: fb33e6cf921862543b56ba7c7d8ce586, type: 2}
-  lodErrorThresholdPixels: 0.2
-  lodHysteresis: 0
+  meshAsset: {fileID: 6126467379554745839, guid: bcd64eb443ac8b740983d2074ba086e5, type: 3}
+  lodErrorThresholdPixels: 2
+  lodHysteresis: 0.1
   debugView: 0
   enableFrustumCulling: 1
   enableOcclusionCulling: 1
   streamingMode: 0
   streamingSettings:
-    GpuGeometryBudgetBytes: 182016
-    CpuCacheBudgetBytes: 121344
+    GpuGeometryBudgetBytes: 67108864
+    CpuCacheBudgetBytes: 67108864
     IoConcurrency: 2
-    TransferBytesPerFrame: 2048
-    RequestQueueCapacity: 1
-    RequestTimeoutFrames: 240
-    IoDelayMilliseconds: 25
---- !u!4 &858394089
-Transform:
+    TransferBytesPerFrame: 1048576
+    RequestQueueCapacity: 256
+    RequestTimeoutFrames: 120
+    IoDelayMilliseconds: 0
+--- !u!23 &779313695
+MeshRenderer:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 858394087}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &1208800966
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1208800968}
-  - component: {fileID: 1208800967}
-  m_Layer: 10
-  m_Name: All Resident Reference
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!114 &1208800967
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1208800966}
+  m_GameObject: {fileID: 779313693}
   m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 3a5327ae6bc4b604daa98459f514b8a0, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: VirtualizedGeometry.Runtime::VirtualizedGeometry.VirtualGeometryRenderer
-  forceProxy: 0
-  forceUnsupportedBackend: 0
-  enableShadowProxy: 1
-  enablePhysicsProxy: 1
-  materials: []
-  meshAsset: {fileID: 0}
-  lodErrorThresholdPixels: 3.4028235e+38
-  lodHysteresis: 0
-  debugView: 0
-  enableFrustumCulling: 0
-  enableOcclusionCulling: 0
-  streamingMode: 1
-  streamingSettings:
-    GpuGeometryBudgetBytes: 182016
-    CpuCacheBudgetBytes: 121344
-    IoConcurrency: 2
-    TransferBytesPerFrame: 2048
-    RequestQueueCapacity: 1
-    RequestTimeoutFrames: 240
-    IoDelayMilliseconds: 25
---- !u!4 &1208800968
+  m_CastShadows: 1
+  m_ReceiveShadows: 1
+  m_DynamicOccludee: 1
+  m_StaticShadowCaster: 0
+  m_MotionVectors: 1
+  m_LightProbeUsage: 1
+  m_ReflectionProbeUsage: 1
+  m_RayTracingMode: 2
+  m_RayTraceProcedural: 0
+  m_RayTracingAccelStructBuildFlagsOverride: 0
+  m_RayTracingAccelStructBuildFlags: 1
+  m_SmallMeshCulling: 1
+  m_ForceMeshLod: -1
+  m_MeshLodSelectionBias: 0
+  m_RenderingLayerMask: 1
+  m_RendererPriority: 0
+  m_Materials:
+  - {fileID: 3698036441588512884, guid: bcd64eb443ac8b740983d2074ba086e5, type: 3}
+  m_StaticBatchInfo:
+    firstSubMesh: 0
+    subMeshCount: 0
+  m_StaticBatchRoot: {fileID: 0}
+  m_ProbeAnchor: {fileID: 0}
+  m_LightProbeVolumeOverride: {fileID: 0}
+  m_ScaleInLightmap: 1
+  m_ReceiveGI: 1
+  m_PreserveUVs: 0
+  m_IgnoreNormalsForChartDetection: 0
+  m_ImportantGI: 0
+  m_StitchLightmapSeams: 1
+  m_SelectedEditorRenderState: 3
+  m_MinimumChartSize: 4
+  m_AutoUVMaxDistance: 0.5
+  m_AutoUVMaxAngle: 89
+  m_LightmapParameters: {fileID: 0}
+  m_GlobalIlluminationMeshLod: 0
+  m_SortingLayerID: 0
+  m_SortingLayer: 0
+  m_SortingOrder: 0
+  m_MaskInteraction: 0
+  m_AdditionalVertexStreams: {fileID: 0}
+--- !u!33 &779313696
+MeshFilter:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 779313693}
+  m_Mesh: {fileID: -3692154854959306102, guid: bcd64eb443ac8b740983d2074ba086e5, type: 3}
+--- !u!4 &779313697
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1208800966}
+  m_GameObject: {fileID: 779313693}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
@@ -247,7 +239,7 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &2025801548
+--- !u!1 &852702006
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -255,9 +247,9 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 2025801551}
-  - component: {fileID: 2025801550}
-  - component: {fileID: 2025801549}
+  - component: {fileID: 852702009}
+  - component: {fileID: 852702008}
+  - component: {fileID: 852702007}
   m_Layer: 0
   m_Name: M4 Camera
   m_TagString: Untagged
@@ -265,13 +257,13 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &2025801549
+--- !u!114 &852702007
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2025801548}
+  m_GameObject: {fileID: 852702006}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: a79441f348de89743a2939f4d699eac1, type: 3}
@@ -309,13 +301,13 @@ MonoBehaviour:
     m_VarianceClampScale: 0.9
     m_ContrastAdaptiveSharpening: 0
   m_Version: 2
---- !u!20 &2025801550
+--- !u!20 &852702008
 Camera:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2025801548}
+  m_GameObject: {fileID: 852702006}
   m_Enabled: 1
   serializedVersion: 2
   m_ClearFlags: 2
@@ -360,16 +352,16 @@ Camera:
   m_OcclusionCulling: 1
   m_StereoConvergence: 10
   m_StereoSeparation: 0.022
---- !u!4 &2025801551
+--- !u!4 &852702009
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2025801548}
+  m_GameObject: {fileID: 852702006}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -6, y: 0, z: -10}
+  m_LocalPosition: {x: -10, y: 0, z: -10}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -379,6 +371,5 @@ Transform:
 SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
-  - {fileID: 2025801551}
-  - {fileID: 858394089}
-  - {fileID: 1208800968}
+  - {fileID: 852702009}
+  - {fileID: 779313697}

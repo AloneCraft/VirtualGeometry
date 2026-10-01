@@ -30,7 +30,7 @@ namespace VirtualizedGeometry.Editor{
             camera=new GameObject("Depth consumer camera").AddComponent<Camera>();camera.transform.position=new Vector3(0,0,-8);camera.orthographic=true;camera.orthographicSize=3.5f;
             camera.nearClipPlane=0.1f;camera.farClipPlane=40;camera.clearFlags=CameraClearFlags.SolidColor;camera.backgroundColor=Color.black;camera.allowHDR=false;camera.allowMSAA=false;camera.GetUniversalAdditionalCameraData().requiresDepthTexture=true;
             instance=new GameObject("Depth virtual").AddComponent<VirtualGeometryRenderer>();instance.SetStreamingConfiguration(VirtualGeometryStreamingMode.AllResident,new VirtualGeometryStreamingSettings());
-            instance.SetMeshAsset(AssetDatabase.LoadAssetAtPath<VirtualGeometryMeshAsset>(Root+"/LitConverted.asset"));instance.SetLodSettings(float.MaxValue,0);instance.SetCullingSettings(false,false);instance.SetProxyOptions(false,false);
+            instance.SetMeshAsset(VirtualGeometryValidationModel.Load(Root+"/LitSource.obj"));instance.SetLodSettings(float.MaxValue,0);instance.SetCullingSettings(false,false);instance.SetProxyOptions(false,false);
             Quad("Foreground",new Vector3(-2,0,-0.6f),new Vector3(1,2,1),Color.red);Quad("Background",new Vector3(2,0,0.6f),new Vector3(1,2,1),Color.green);
             var transparent=GameObject.CreatePrimitive(PrimitiveType.Quad);transparent.name="Transparent camera depth sample";transparent.transform.position=new Vector3(0,0,-0.3f);transparent.transform.localScale=new Vector3(4,2,1);
             transparent.GetComponent<MeshRenderer>().sharedMaterial=new Material(Shader.Find("Hidden/VirtualizedGeometry/M5DepthConsumer"));

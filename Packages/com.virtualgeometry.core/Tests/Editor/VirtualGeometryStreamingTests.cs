@@ -110,6 +110,59 @@ namespace VirtualizedGeometry.Tests{
         }
 
         [Test]
+        public void PagesOfDifferentSizesUseContiguousSlotRuns(){
+            VirtualGeometryStreamMetadata metadata=VirtualGeometryStreamCodec.ReadMetadata(new MemoryStream(VirtualGeometryStreamCodec.Write(CreateUnevenPage())));
+            {
+                //slotは最大のpageではなく典型的なpageの大きさで、大きなpageは要る数の連続slotを使う
+                Assert.That(metadata.SlotGeometryBytes,Is.LessThan(metadata.MaxPageBytes));
+                Assert.That(metadata.PageSlots(1),Is.EqualTo(1));Assert.That(metadata.PageSlots(2),Is.EqualTo(3));
+                Assert.That(metadata.TotalPageSlots,Is.EqualTo(5));
+            }
+            {
+                //全pageが入る予算では、各pageの連続slotが重ならずに並ぶ
+                using(Harness h=new Harness(metadata,5,4,4096)){
+                    h.Load(0,1);h.Controller.Request(1,1,3);h.Load(1,3);h.Controller.Request(2,1,5);h.Load(2,5);
+                    Assert.That(h.Uploader.Resident,Is.EquivalentTo(new[]{0,1,2}));
+                    AssertSlotRunsDisjoint(metadata,h);
+                }
+            }
+            {
+                //連続した空きが足りないときは使われていないpageを退避して空ける。GPU完了まで退避したslotは再利用しない
+                using(Harness h=new Harness(metadata,4,4,4096)){
+                    h.Load(0,1);h.Controller.Request(1,1,3);h.Load(1,3);
+                    h.Controller.Request(2,20,20);h.Controller.Tick(20,30,29,h.Uploader);h.Store.Complete(2);
+                    h.Controller.Tick(21,30,29,h.Uploader);
+                    Assert.That(h.Uploader.Resident.Contains(1),Is.False);Assert.That(h.Uploader.Resident.Contains(2),Is.False);
+                    h.Controller.Tick(22,31,31,h.Uploader);
+                    Assert.That(h.Uploader.Resident.Contains(2),Is.True);Assert.That(h.Uploader.Resident.Contains(0),Is.True);
+                    AssertSlotRunsDisjoint(metadata,h);
+                    Assert.That(h.Controller.Statistics.UnsafeSlotReuses,Is.Zero);
+                    Assert.That(h.Controller.Statistics.GpuAllocatedBytes,Is.EqualTo(4L*metadata.SlotGeometryBytes));
+                }
+            }
+            {
+                //予算の全slotを使っても置けないpageは失敗として報告し、rootは使い続ける
+                using(Harness h=new Harness(metadata,3,4,4096)){
+                    h.Load(0,1);h.Controller.Request(2,5,5);h.Load(2,5);
+                    Assert.That(h.Controller.GetState(2),Is.EqualTo(VirtualGeometryPageState.Failed));
+                    Assert.That(h.Controller.Statistics.LastError,Does.Contain("GPU geometry slots"));
+                    Assert.That(h.Uploader.Resident.Contains(0),Is.True);
+                }
+            }
+        }
+
+        // 常駐pageの連続slotが互いに重ならず、確保したslotの中に収まる。
+        private static void AssertSlotRunsDisjoint(VirtualGeometryStreamMetadata metadata,Harness h){
+            var used=new bool[h.Controller.SlotCount];
+            foreach(int page in h.Uploader.Resident){
+                int first=h.Uploader.Slots[page];
+                for(int slot=first;slot<first+metadata.PageSlots(page);slot++){
+                    Assert.That(slot,Is.LessThan(used.Length));Assert.That(used[slot],Is.False,"slot "+slot+" is shared");used[slot]=true;
+                }
+            }
+        }
+
+        [Test]
         public void CancellationFailureAndRerequestAreObservedWithoutLeakingExceptions(){
             using(Harness h=new Harness(2,4,4096)){
                 h.Load(0,1);h.Controller.Request(1,2,2);h.Controller.Tick(3,0,0,h.Uploader);
@@ -153,8 +206,8 @@ namespace VirtualizedGeometry.Tests{
             VirtualGeometryStreamMetadata metadata=VirtualGeometryStreamCodec.ReadMetadata(new MemoryStream(fixture.bytes));
             Vector3 far=new Vector3(0,1,-19);Vector3 near=new Vector3(-3,0,-3);
             {
-                //旧sample予算(root+5 slot)で2 instance×Game/Scene cameraのfeedbackが遅延・欠落しても、静止cameraのcutが振動せず退避も止まる
-                FeedbackLoop loop=new FeedbackLoop(metadata,6,new[]{
+                //旧sample予算(最大のpage 6個分)で2 instance×Game/Scene cameraのfeedbackが遅延・欠落しても、静止cameraのcutが振動せず退避も止まる
+                FeedbackLoop loop=new FeedbackLoop(metadata,metadata.MaxPageBytes*6L,new[]{
                     new FeedbackView(-5,_=>far),new FeedbackView(5,_=>far),new FeedbackView(-5,_=>near),new FeedbackView(5,_=>near)});
                 loop.Run(1500,900);
                 foreach(FeedbackView view in loop.Views){Assert.That(view.CutChanges,Is.Zero);}
@@ -163,7 +216,7 @@ namespace VirtualizedGeometry.Tests{
             }
             {
                 //全page予算では、後に描画されるScene cameraのfeedbackも捨てられず近接側がleafまで詳細化される
-                FeedbackLoop loop=new FeedbackLoop(metadata,metadata.Pages.Length,new[]{
+                FeedbackLoop loop=new FeedbackLoop(metadata,metadata.TotalPageSlots*metadata.SlotGeometryBytes,new[]{
                     new FeedbackView(-5,_=>far),new FeedbackView(5,_=>far),new FeedbackView(-5,_=>near),new FeedbackView(5,_=>near)});
                 loop.Run(1500,900);
                 Assert.That(loop.Views[2].MinTriangles,Is.EqualTo(2048));Assert.That(loop.Views[3].MinTriangles,Is.EqualTo(2048));
@@ -173,7 +226,7 @@ namespace VirtualizedGeometry.Tests{
             {
                 //予算不足のままcameraが別instanceへ移動しても、移動後のcutは振動しない
                 Func<int,Vector3> moving=frame=>{if(frame<600){return new Vector3(-5,0,-2.5f);}return new Vector3(5,0,-2.5f);};
-                FeedbackLoop loop=new FeedbackLoop(metadata,20,new[]{new FeedbackView(-5,moving),new FeedbackView(5,moving)});
+                FeedbackLoop loop=new FeedbackLoop(metadata,metadata.TotalPageSlots/2*metadata.SlotGeometryBytes,new[]{new FeedbackView(-5,moving),new FeedbackView(5,moving)});
                 loop.Run(1500,900);
                 foreach(FeedbackView view in loop.Views){Assert.That(view.CutChanges,Is.Zero);}
                 Assert.That(loop.EvictionsAfterWarmup,Is.Zero);
@@ -196,14 +249,16 @@ namespace VirtualizedGeometry.Tests{
                 }
             }
             {
-                //詳細pageの要求が続いても固定pageは退避されない
+                //固定pageだけで予算を埋めると詳細を読めないため、1 nodeを細分化するのに要る子の数(この階層では2)だけslotを空ける。
+                //3 slotではProxyの段を固定せず詳細用に空け、詳細pageの要求が続いてもrootは退避されない
                 using(Harness h=new Harness(metadata,3,4,4096)){
+                    Assert.That(h.Controller.IsPinned(proxyPage),Is.False);
                     int completed=0;
                     for(int frame=1;frame<=40;frame++){
-                        if(frame>=6){h.Controller.Request(2+frame%2,100+frame,frame);}
+                        if(frame>=6){h.Controller.Request(1+frame%3,100+frame,frame);}
                         h.Controller.Tick(frame,frame,frame,h.Uploader);
                         while(completed<h.Store.Requested.Count){h.Store.Complete(h.Store.Requested[completed++]);}
-                        if(frame>=4){Assert.That(h.Uploader.Resident.Contains(proxyPage),Is.True,"frame "+frame);}
+                        if(frame>=3){Assert.That(h.Uploader.Resident.Contains(0),Is.True,"frame "+frame);}
                     }
                     Assert.That(h.Controller.Statistics.Evictions,Is.GreaterThan(0));
                     Assert.That(h.Controller.RootReady,Is.True);
@@ -309,10 +364,10 @@ namespace VirtualizedGeometry.Tests{
             private sealed class Pending{public long Arrival;public long Frame;public FeedbackView View;public VirtualGeometryPageFeedback[] Feedback;}
             public readonly FeedbackView[] Views;public readonly VirtualGeometryStreamingController Controller;public long EvictionsAfterWarmup;
             private readonly VirtualGeometryStreamMetadata metadata;private readonly VirtualGeometryPage page;private readonly FakeUploader uploader=new FakeUploader();
-            public FeedbackLoop(VirtualGeometryStreamMetadata metadata,int slots,FeedbackView[] views){
+            public FeedbackLoop(VirtualGeometryStreamMetadata metadata,long gpuBudgetBytes,FeedbackView[] views){
                 this.metadata=metadata;this.Views=views;
                 this.page=new VirtualGeometryPage(Array.Empty<VirtualGeometryPackedVertex>(),Array.Empty<uint>(),metadata.Clusters,metadata.Nodes,metadata.Roots,metadata.Roots.Length,metadata.Bounds);
-                var settings=new VirtualGeometryStreamingSettings{GpuGeometryBudgetBytes=(long)metadata.SlotGeometryBytes*slots,CpuCacheBudgetBytes=metadata.SlotGeometryBytes*4L,
+                var settings=new VirtualGeometryStreamingSettings{GpuGeometryBudgetBytes=gpuBudgetBytes,CpuCacheBudgetBytes=metadata.MaxPageBytes*4L,
                     IoConcurrency=2,TransferBytesPerFrame=1024,RequestQueueCapacity=16,RequestTimeoutFrames=120};
                 this.Controller=new VirtualGeometryStreamingController(metadata,settings,new ImmediateStore(metadata));
             }
@@ -367,11 +422,28 @@ namespace VirtualizedGeometry.Tests{
         }
 
         private sealed class FakeUploader:IVirtualGeometryPageUploader{
-            public readonly HashSet<int> Resident=new HashSet<int>();public readonly Dictionary<int,int> Generations=new Dictionary<int,int>();
+            public readonly HashSet<int> Resident=new HashSet<int>();public readonly Dictionary<int,int> Generations=new Dictionary<int,int>();public readonly Dictionary<int,int> Slots=new Dictionary<int,int>();
             public void UploadVertices(int slot,int offset,VirtualGeometryPackedVertex[] vertices,int sourceOffset,int count){}
             public void UploadIndices(int slot,int offset,uint[] indices,int sourceOffset,int count){}
-            public void Publish(int page,int slot,int generation){this.Resident.Add(page);this.Generations[page]=generation;}
+            public void Publish(int page,int slot,int generation){this.Resident.Add(page);this.Generations[page]=generation;this.Slots[page]=slot;}
             public void Invalidate(int page){this.Resident.Remove(page);}
+        }
+
+        /// <summary>rootと2 leaf。片方のleafは3 clusterを持ち、他のpageの3倍の添字数になる(大きさの違うpage)。</summary>
+        private static VirtualGeometryPage CreateUnevenPage(){
+            var vertices=new[]{
+                new VirtualGeometryPackedVertex(Vector3.zero,Vector3.back,Vector2.zero),
+                new VirtualGeometryPackedVertex(Vector3.right,Vector3.back,Vector2.right),
+                new VirtualGeometryPackedVertex(Vector3.up,Vector3.back,Vector2.up)};
+            var clusters=new VirtualGeometryCluster[5];
+            for(int i=0;i<clusters.Length;i++){clusters[i]=new VirtualGeometryCluster{BoundsCenter=Vector3.zero,BoundsRadius=1,FirstIndex=(uint)(i*3),IndexCount=3,MaterialSlot=0};}
+            var nodes=new VirtualGeometryHierarchyNode[3];
+            nodes[0]=new VirtualGeometryHierarchyNode{BoundsCenter=Vector3.zero,BoundsRadius=1,FirstCluster=0,ClusterCount=1,FirstChild=1,ChildCount=2,LeafCount=2,Level=1,GeometricError=1};
+            nodes[1]=new VirtualGeometryHierarchyNode{BoundsCenter=Vector3.zero,BoundsRadius=1,FirstCluster=1,ClusterCount=1,LeafStart=0,LeafCount=1};
+            nodes[2]=new VirtualGeometryHierarchyNode{BoundsCenter=Vector3.zero,BoundsRadius=1,FirstCluster=2,ClusterCount=3,LeafStart=1,LeafCount=1};
+            var indices=new uint[15];
+            for(int i=0;i<indices.Length;i++){indices[i]=(uint)(i%3);}
+            return new VirtualGeometryPage(vertices,indices,clusters,nodes,new uint[]{0},1,new Bounds(Vector3.zero,Vector3.one*2));
         }
 
         /// <summary>root→単一子の段→2 leafの階層。単一子の段がProxyと同じ段になる。</summary>

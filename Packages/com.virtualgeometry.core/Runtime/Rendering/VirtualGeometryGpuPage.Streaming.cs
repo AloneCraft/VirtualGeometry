@@ -37,8 +37,8 @@ namespace VirtualizedGeometry{
                     new VirtualGeometryFilePageStore(path,metadata,settings.IoDelayMilliseconds));
                 result.MaterialCount=metadata.Roots.Length;result.NodeCount=metadata.Nodes.Length;result.PageCount=metadata.Pages.Length;result.NodeLevels=ReadLevels(metadata.Nodes);
                 int slots=result.StreamingController.SlotCount;
-                result.VertexBuffer=new GraphicsBuffer(GraphicsBuffer.Target.Structured,checked(slots*metadata.MaxPageVertices),32);
-                result.IndexBuffer=new GraphicsBuffer(GraphicsBuffer.Target.Structured,checked(slots*metadata.MaxPageIndices),4);
+                result.VertexBuffer=new GraphicsBuffer(GraphicsBuffer.Target.Structured,checked(slots*metadata.SlotVertices),32);
+                result.IndexBuffer=new GraphicsBuffer(GraphicsBuffer.Target.Structured,checked(slots*metadata.SlotIndices),4);
                 result.ClusterBuffer=new GraphicsBuffer(GraphicsBuffer.Target.Structured,metadata.Clusters.Length,48);result.ClusterBuffer.SetData(metadata.Clusters);
                 result.NodeBuffer=new GraphicsBuffer(GraphicsBuffer.Target.Structured,metadata.Nodes.Length,64);result.NodeBuffer.SetData(metadata.Nodes);
                 var page=new VirtualGeometryPage(Array.Empty<VirtualGeometryPackedVertex>(),Array.Empty<uint>(),metadata.Clusters,metadata.Nodes,metadata.Roots,result.MaterialCount,metadata.Bounds);
@@ -88,15 +88,16 @@ namespace VirtualizedGeometry{
             });
         }
 
+        // pageは連続slotを使うため、先頭slotの位置からpageの頂点・添字が途切れずに並ぶ。
         public void UploadVertices(int slot,int offset,VirtualGeometryPackedVertex[] vertices,int sourceOffset,int count){
-            this.VertexBuffer.SetData(vertices,sourceOffset,checked(slot*this.streamMetadata.MaxPageVertices+offset),count);
+            this.VertexBuffer.SetData(vertices,sourceOffset,checked(slot*this.streamMetadata.SlotVertices+offset),count);
         }
         public void UploadIndices(int slot,int offset,uint[] indices,int sourceOffset,int count){
-            this.IndexBuffer.SetData(indices,sourceOffset,checked(slot*this.streamMetadata.MaxPageIndices+offset),count);
+            this.IndexBuffer.SetData(indices,sourceOffset,checked(slot*this.streamMetadata.SlotIndices+offset),count);
         }
         public void Publish(int page,int slot,int generation){
             this.physicalPages[page]=new VirtualGeometryPhysicalPage{
-                VertexStart=checked((uint)(slot*this.streamMetadata.MaxPageVertices)),IndexStart=checked((uint)(slot*this.streamMetadata.MaxPageIndices)),
+                VertexStart=checked((uint)(slot*this.streamMetadata.SlotVertices)),IndexStart=checked((uint)(slot*this.streamMetadata.SlotIndices)),
                 Resident=1,Generation=(uint)generation
             };
             this.residency[page]=1;this.pageTableDirty=true;

@@ -10,8 +10,8 @@
 | M1 | cluster化、保存/CRC読込、legacy全常駐 | M1/Results、1536 triangles / 24 clusters / 1 dedicated draw、fallback=false、silhouette差0 | 全cluster比較mode |
 | M2 | 境界固定した置換group階層、CPU参照/GPU選択、error/hysteresis | M2/Selection.csv、CPU/GPU node・index・args一致、近/混在/遠のLOD | errorはsimplifier尺度と量子化誤差の累積。全視点の厳密幾何上界とは主張しない |
 | M3 | 現frame HZBとFrustum、camera毎transient | M3、Z両方向、opaque移動/teleport/resize/ortho/負scale/near | VG同士の遮蔽はHZB入力に含まない |
-| M4 | v3 page、root pin、async range I/O、queue、固定slot、fence/generation、chunk upload | M4、unique bytes > pool、欠損/CRC/CPU拒否/cancel、depth欠落0、unsafe reuse0 | 小budget時は品質未達を維持して計測 |
-| M5 | Lit/Proxy/共有instance/camera/UI/debug/Player/benchmark | M5の機能別Results、Geometry、PlayerBuild/PlayerRun、Benchmark{724,1224,2236} | benchmark CPU/GPU 6,480 samplesずつ、欠測0。第三者上流原本108 filesは意図的に保持し、Playerへの不要source/native収録は0 |
+| M4 | v3 page、root pin、async range I/O、queue、page中央値のslotと連続slot割り当て、fence/generation、chunk upload | M4、unique bytes > pool、欠損/CRC/CPU拒否/cancel、depth欠落0、unsafe reuse0 | 小budget時は品質未達を維持して計測 |
+| M5 | Lit/Proxy/共有instance/camera/UI/debug/Player/benchmark | M5の機能別Results、Geometry、PlayerBuild/PlayerRun、SceneAudit(保存されたsample sceneが既定pipelineで距離によりLODを切り替え、近距離で予算不足にならない)、Benchmark{724,1224,2236} | benchmark CPU/GPU 6,480 samplesずつ、欠測0。第三者上流原本108 filesは意図的に保持し、Playerへの不要source/native収録は0 |
 
 ## 要件 §3～§15
 
@@ -19,7 +19,7 @@
 |---|---|---|
 | §3 静的opaque・instance・transform | asset/settings単位のgeometry/cacheを参照共有、選択はinstance×camera。移動/負/非一様TRSを処理、shear/非有限/ゼロは診断Proxy | Shared/Debug/Lifecycle/Player、TransformCompatibilityテスト。描画呼出しはmaterial×instance単位で、1 drawへまとめるhardware instanced batchingは未実装 |
 | §4 独立UPM・data契約 | Runtime/Editor/Shaders/Tests/Samples~/Documentation~。version/size/offset/CRC、C#/HLSL stride検証 | Package/Results、codec/formatテスト。元meshを破壊しない |
-| §5 変換・階層 | 不正index/NaN拒否、縮退/非多様体等診断、material/attribute境界保持、決定的group簡略化、global量子化。rootが1 cluster以下になるまで単一子の段を追加、全軸共通スケールのMorton順と子を包む境界球(builder 7) | Builder/Hierarchy/Nativeテスト(`Build_ContinuesLevelsUntilRootFitsOneCluster`、`Build_KeepsClustersCompactAndBoundsEnclosingOnThinSurfaces`を含む)、小階層の全選択組合せ。Geometry suiteでは6形状のleafおよびCPU粗cutと画像/depth/属性一致。球root512→64時のsourceとの差5961pxはLOD品質差として記録 |
+| §5 変換・階層 | 不正index/NaN拒否、縮退/非多様体等診断、material/attribute境界保持、決定的group簡略化、global量子化。rootが1 cluster以下になるまで単一子の段を追加、全軸共通スケールのMorton順と子を包む境界球(builder 7) | モデルのインポート時変換(`VirtualGeometryModelPostprocessorTests`: 無効時は不変、有効でサブアセット生成・MeshFilterを代替Meshへ・MeshRendererとMaterialは維持・非表示の部品を追加、設定変更・元ファイル更新で再生成、無効化で復元)、Builder/Hierarchy/Nativeテスト(`Build_ContinuesLevelsUntilRootFitsOneCluster`、`Build_KeepsClustersCompactAndBoundsEnclosingOnThinSurfaces`を含む)、小階層の全選択組合せ。Geometry suiteでは6形状のleafおよびCPU粗cutと画像/depth/属性一致。球root512→64時のsourceとの差5961pxはLOD品質差として記録 |
 | §6 pixel error | projection/FOV/height/ortho/near/scaleを使うCPU/GPU式、hysteresis、resident祖先へ原子的退避 | M2、M4、Culling tests。予算不足・未到着で目標を満たしたと報告しない |
 | §7 GPU選択・compaction | GPU tree選択、cluster cull、material別visible index/indirect args。DX12 draw-local vertex IDへUnity公式startVertex補正 | M2/Geometry/Player。本番選択でCPU全cluster走査・同期draw数readbackはしない。diagnosticは明示別経路 |
 | §8 HZB | opaque現frame depth、normal=max/reversed=min、危険投影はkeep | M3 synthetic mipと7画像のculling off/on比較。履歴共有なし。Normal Cone Cullingは未実装 |
@@ -27,7 +27,7 @@
 | §10 URP/Lit/depth/shadow | Forward RenderGraph。専用Lit、main shadow受け。root ShadowsOnlyによるcast、Collider/picking。depth inputとintermediate依存、VG後camera depth同期 | Lit/Depth/Geometry。前後通常mesh・transparent・depth texture一致。prepass/normal/primingは診断Proxy。対応材質はSupportMatrixを正とし任意URP/Lit/ShaderGraph互換は主張しない |
 | §11 UI/debug | UI Toolkit、snapshot→cancel可能worker→atomic commit、cache invalidation/Undo、各debug modeと実stats。debug操作はScene view overlay toolbar、camera別の選択状態は非同期Monitor window | EditorResults/DebugResults。OnValidateは再構築をUpdateへ延期。同期diagnostic/overlayを通常性能から除外 |
 | §12 Omni | 標準Unity local vertices/object matrix/camera/projectionを分離。変換dataはcamera非依存 | 現projectにOmniなし。Omni adapter/対数depth/高精度論理座標は未実装・未実証、v0.1の外 |
-| §13 正しさ・性能 | 34 EditMode tests、GPU regression、同一asset/軌道/material/1920/VSync0の通常/LOD/VG比較 | 1,048,352 / 2,996,352 / 9,999,392 trianglesを実変換・実描画。可視swapchain/queue深度1の公開FrameTimingでCPU/GPUを取得、各run cold/warm 360 samples、欠測0。CPU/FPS/memory/I/O/quality missを記録。性能優位と同等品質は示していない |
+| §13 正しさ・性能 | 41 EditMode tests、GPU regression、同一asset/軌道/material/1920/VSync0の通常/LOD/VG比較 | 1,048,352 / 2,996,352 / 9,999,392 trianglesを実変換・実描画。可視swapchain/queue深度1の公開FrameTimingでCPU/GPUを取得、各run cold/warm 360 samples、欠測0。CPU/FPS/memory/I/O/quality missを記録。性能優位と同等品質は示していない |
 | §14 段階判定 | M0～M5とv0.1必須範囲を完了 | PASS_V0_1。下記の対応外・未実証範囲と性能制限を明示する。M6は後続 |
 | §15 納品 | source/UPM/UI/runtime/sample導線/tests/docs/repro/licenses/results | Player収録検査でhigh source/native不要物なし、archive重複なし。meshoptimizer v1.1のlicense/version/build手順/Editor・Player必要物を記録。Native~の上流原本108 filesは再現性のため保持し、削除を納品条件に含めない |
 

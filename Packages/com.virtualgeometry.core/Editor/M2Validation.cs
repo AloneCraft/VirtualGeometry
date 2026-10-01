@@ -31,14 +31,12 @@ namespace VirtualizedGeometry.Editor{
             if(!Application.isBatchMode&&!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()){return;}
             Directory.CreateDirectory(Root);
             AssetDatabase.Refresh();
-            Mesh mesh=AssetDatabase.LoadAssetAtPath<Mesh>(Root+"/SourceTerrain.asset");
-            if(mesh==null){
-                mesh=CreateTerrain(64,48);
-                AssetDatabase.CreateAsset(mesh,Root+"/SourceTerrain.asset");
-            }
-            virtualAsset=VirtualGeometryConversionService.Convert(mesh,Root+"/ConvertedTerrain.asset",new VirtualGeometryBuildSettings{
-                MaxTrianglesPerCluster=32,GenerateHierarchy=true,HierarchyFanout=4,SimplificationRatio=0.5f,PositionQuantizationBits=16
+            Mesh generated=CreateTerrain(64,48);
+            virtualAsset=VirtualGeometryValidationModel.Import(generated,Root+"/SourceTerrain.obj",new VirtualGeometryModelSettings{
+                MaxTrianglesPerCluster=32,HierarchyFanout=4,SimplificationRatio=0.5f,PositionQuantizationBits=16
             });
+            Object.DestroyImmediate(generated);
+            Mesh mesh=VirtualGeometryValidationModel.SourceMesh(Root+"/SourceTerrain.obj");
             UniversalRendererData renderer=AssetDatabase.LoadAssetAtPath<UniversalRendererData>(Root+"/M2Renderer.asset");
             if(renderer==null){
                 renderer=ScriptableObject.CreateInstance<UniversalRendererData>();
@@ -120,7 +118,7 @@ namespace VirtualizedGeometry.Editor{
             if(EditorApplication.timeSinceStartup-started>120){Finish(new TimeoutException("M2 GPU validation did not finish within 120 seconds."));return;}
             try{
                 if(++warmup<10){EditorApplication.QueuePlayerLoopUpdate();return;}
-                string pagePath=Path.Combine(Application.streamingAssetsPath,virtualAsset.PageRelativePath);
+                string pagePath=VirtualGeometryPagePaths.Resolve(virtualAsset.PageRelativePath);
                 VirtualGeometryPage page=VirtualGeometryPageCodec.Read(File.ReadAllBytes(pagePath));
                 int leafNodes=0;
                 foreach(VirtualGeometryHierarchyNode node in page.Nodes){if(node.ChildCount==0){leafNodes++;}}

@@ -16,3 +16,10 @@ TestResults/
 # Unityがクラッシュ時に作る復旧scene
 /[Aa]ssets/_Recovery/
 /[Aa]ssets/_Recovery.meta
+
+# Benchmarkの元モデルと中間LODは数百MBになるため、M5BenchmarkPreparationで生成しgitへ入れない
+/[Aa]ssets/VirtualizedGeometrySample/Benchmark*/Source.obj*
+/[Aa]ssets/VirtualizedGeometrySample/Benchmark*/Source.mtl*
+/[Aa]ssets/VirtualizedGeometrySample/Benchmark*/LodMiddle.asset*
+# Benchmark sceneは上の生成物を参照し、M5BenchmarkBuildが毎回作り直す
+/[Aa]ssets/VirtualizedGeometrySample/Benchmark*/Benchmark.unity*

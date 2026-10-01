@@ -11,11 +11,16 @@ namespace VirtualizedGeometry{
     /// <summary>Development Player専用の明示的な診断。同期readbackとPNG保存を通常性能測定へ含めない。</summary>
     public sealed class VirtualGeometryPlayerValidation:MonoBehaviour{
         public VirtualGeometryRenderer First;public VirtualGeometryRenderer Second;public Camera Primary;public Camera Secondary;
-        public long GpuBudget;public long CpuBudget;public int TransferCap;public int IoCap;
+        /// <summary>検証用のstreaming設定とLOD閾値。sceneは利用者が開いて動かせる既定の設定で保存し、Playerの起動時にだけ両instanceへ適用する。</summary>
+        public VirtualGeometryStreamingSettings Streaming=new VirtualGeometryStreamingSettings();public float LodErrorThresholdPixels;
         private readonly List<string> results=new List<string>();private readonly List<string> errors=new List<string>();
         private readonly List<string> metrics=new List<string>{"frame,root_ready,fallback,drawn_triangles,gpu_allocated,gpu_resident,cpu_bytes,io_bytes,queued,loading,uploading,resident,failed,transfer,misses,overflow,evictions,quality_miss,unsafe_reuse"};
         private string output;private bool finished;private Color32[] rootColor;private int bootstrapFrames;private long rootTriangles;private long peakTriangles;private int pendingFrames;private int qualityMissFrames;private int peakResidentPages;
         private IEnumerator Start(){
+            // Editorで再生したときは検証しない。検証は最後に両instanceを止めるため、通常のsceneとして見られなくなる。
+            if(Application.isEditor){yield break;}
+            this.First.SetStreamingConfiguration(VirtualGeometryStreamingMode.Streaming,this.Streaming);this.Second.SetStreamingConfiguration(VirtualGeometryStreamingMode.Streaming,this.Streaming);
+            this.First.SetLodSettings(this.LodErrorThresholdPixels,0);this.Second.SetLodSettings(this.LodErrorThresholdPixels,0);
             this.output=Path.GetFullPath("TestResults/M5/PlayerRun");string[] args=Environment.GetCommandLineArgs();for(int i=0;i<args.Length-1;i++){if(args[i]=="-vgResults"){this.output=Path.GetFullPath(args[i+1]);}}
             Directory.CreateDirectory(this.output);Application.logMessageReceived+=this.Log;QualitySettings.vSyncCount=0;Application.targetFrameRate=60;
             File.WriteAllText(Path.Combine(this.output,"Environment.txt"),"UTC="+DateTime.UtcNow.ToString("O")+"\nUnity="+Application.unityVersion+"\nDevelopment="+Debug.isDebugBuild+"\nOS="+SystemInfo.operatingSystem+"\nGPU="+SystemInfo.graphicsDeviceName+"\nAPI="+SystemInfo.graphicsDeviceType+"\nDriver="+SystemInfo.graphicsDeviceVersion+"\nGPU memory MiB="+SystemInfo.graphicsMemorySize+"\nDiagnostic synchronous readback enabled; not a performance benchmark.\n");
@@ -26,7 +31,7 @@ namespace VirtualizedGeometry{
         private IEnumerator Run(){
             Require(SystemInfo.graphicsDeviceType==GraphicsDeviceType.Direct3D12,"Player API is not DX12.");
             Require(this.First.SharesStreamingResourceWith(this.Second)&&VirtualGeometryRenderer.SharedResourceCount==1,"Initial shared resource duplication.");
-            Require(this.First.GetComponent<MeshFilter>()==null,"Build retained source MeshFilter.");
+            Require(this.First.GetComponent<MeshFilter>().sharedMesh==this.First.MeshAsset.ProxyMesh,"MeshFilter must hold the low-density fallback mesh, not the source mesh.");
             this.Primary.enabled=false;this.Secondary.enabled=false;
             double deadline=Time.realtimeSinceStartupAsDouble+30;
             while(true){
@@ -74,7 +79,8 @@ namespace VirtualizedGeometry{
         }
         private void Record(){
             var s=this.First.StreamingStatistics;Require(s!=null,"Streaming statistics unavailable.");this.peakResidentPages=Math.Max(this.peakResidentPages,s.Resident);
-            Require(s.GpuAllocatedBytes<=this.GpuBudget&&s.GpuResidentBytes<=this.GpuBudget&&s.CpuBytes<=this.CpuBudget&&s.TransferBytesThisFrame<=this.TransferCap&&s.PeakIoConcurrency<=this.IoCap&&s.UnsafeSlotReuses==0,"Player exceeded a resource cap or reused an in-flight slot.");
+            long gpuBudget=this.Streaming.GpuGeometryBudgetBytes;
+            Require(s.GpuAllocatedBytes<=gpuBudget&&s.GpuResidentBytes<=gpuBudget&&s.CpuBytes<=this.Streaming.CpuCacheBudgetBytes&&s.TransferBytesThisFrame<=this.Streaming.TransferBytesPerFrame&&s.PeakIoConcurrency<=this.Streaming.IoConcurrency&&s.UnsafeSlotReuses==0,"Player exceeded a resource cap or reused an in-flight slot.");
             long drawn=this.First.IsFallbackVisible?this.First.MeshAsset.ProxyTriangleCount:this.First.ReadMetricsForDiagnostics(this.Primary).DrawnTriangles;
             this.metrics.Add(string.Join(",",Time.frameCount,this.First.IsStreamingRootReady?1:0,this.First.IsFallbackVisible?1:0,drawn,s.GpuAllocatedBytes,s.GpuResidentBytes,s.CpuBytes,s.IoBytes,s.Queued,s.Loading,s.Uploading,s.Resident,s.Failed,s.TransferBytesThisFrame,s.Misses,s.QueueOverflow,s.Evictions,s.QualityTargetMisses,s.UnsafeSlotReuses));
         }

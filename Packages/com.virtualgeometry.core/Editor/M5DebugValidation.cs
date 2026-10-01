@@ -25,7 +25,7 @@ namespace VirtualizedGeometry.Editor{
             var renderer=AssetDatabase.LoadAssetAtPath<UniversalRendererData>(Root+"/M5Renderer.asset");renderer.depthPrimingMode=DepthPrimingMode.Disabled;renderer.copyDepthMode=CopyDepthMode.AfterOpaques;
             foreach(var feature in renderer.rendererFeatures){if(feature is M5DepthConsumerFeature consumer){consumer.SetActive(false);}if(feature is VirtualGeometryRenderFeature vg){vg.Create();}}
             renderer.SetDirty();EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);
-            asset=VirtualGeometryConversionService.Convert(AssetDatabase.LoadAssetAtPath<Mesh>("Assets/VirtualizedGeometrySample/M4/Source.asset"),Root+"/Converted.asset",new VirtualGeometryBuildSettings{MaxTrianglesPerCluster=32,HierarchyFanout=4});
+            asset=VirtualGeometryValidationModel.Import(VirtualGeometryValidationModel.SourceMesh("Assets/VirtualizedGeometrySample/M4/Source.obj"),Root+"/Shared.obj",new VirtualGeometryModelSettings{MaxTrianglesPerCluster=32,HierarchyFanout=4});
             camera=MakeCamera("Game Base",new Vector3(0,0,-20),60,false);secondCamera=MakeCamera("Independent ortho Base",new Vector3(8,1,-12),35,true);
             first=Instance("Debug A",-9);second=Instance("Debug B",9);VirtualGeometryDiagnostics.Enabled=true;
             depth=new GraphicsBuffer(GraphicsBuffer.Target.Structured,Width*Height,4);VirtualGeometryDepthProbeFeature.Target=depth;VirtualGeometryDepthProbeFeature.Width=Width;VirtualGeometryDepthProbeFeature.Height=Height;

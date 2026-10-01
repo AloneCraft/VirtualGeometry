@@ -26,13 +26,9 @@ namespace VirtualizedGeometry.Editor{
         public static void CreateSample(){
             if(!Application.isBatchMode&&!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()){return;}
             Directory.CreateDirectory(Root);AssetDatabase.Refresh();
-            Mesh mesh=AssetDatabase.LoadAssetAtPath<Mesh>(Root+"/Surface.asset");
-            if(mesh==null){mesh=CreateSurface(128,72);AssetDatabase.CreateAsset(mesh,Root+"/Surface.asset");}
-            else{
-                Mesh current=CreateSurface(128,72);EditorUtility.CopySerialized(current,mesh);Object.DestroyImmediate(current);EditorUtility.SetDirty(mesh);
-            }
-            VirtualGeometryMeshAsset asset=VirtualGeometryConversionService.Convert(mesh,Root+"/ConvertedSurface.asset",
-                new VirtualGeometryBuildSettings{MaxTrianglesPerCluster=32,GenerateHierarchy=true,PositionQuantizationBits=16});
+            Mesh generated=CreateSurface(128,72);
+            VirtualGeometryValidationModel.Import(generated,Root+"/Surface.obj",new VirtualGeometryModelSettings{MaxTrianglesPerCluster=32,PositionQuantizationBits=16});
+            Object.DestroyImmediate(generated);
             UniversalRendererData renderer=AssetDatabase.LoadAssetAtPath<UniversalRendererData>(Root+"/M3Renderer.asset");
             if(renderer==null){
                 renderer=ScriptableObject.CreateInstance<UniversalRendererData>();renderer.renderingMode=RenderingMode.Forward;
@@ -65,8 +61,14 @@ namespace VirtualizedGeometry.Editor{
             instance=new GameObject("Virtual Geometry Surface").AddComponent<VirtualGeometryRenderer>();
             // NewSceneの未使用アセット解放後に永続アセットを取得し直す。
             instance.SetStreamingConfiguration(VirtualGeometryStreamingMode.AllResident,new VirtualGeometryStreamingSettings());
-            instance.SetMeshAsset(AssetDatabase.LoadAssetAtPath<VirtualGeometryMeshAsset>(Root+"/ConvertedSurface.asset"));
-            instance.SetLodSettings(0,0);
+            instance.SetMeshAsset(VirtualGeometryValidationModel.Load(Root+"/Surface.obj"));
+            // 可視判定は青成分で数えるため、照明に左右されない青いUnlitで描く。
+            Material surface=AssetDatabase.LoadAssetAtPath<Material>(Root+"/Surface.mat");
+            if(surface==null){
+                surface=new Material(Shader.Find("Universal Render Pipeline/Unlit"));surface.SetColor("_BaseColor",new Color(0.05f,0.65f,0.95f,1));surface.SetFloat("_Cull",0);
+                AssetDatabase.CreateAsset(surface,Root+"/Surface.mat");
+            }
+            instance.SetMaterials(surface);
             Material wall=AssetDatabase.LoadAssetAtPath<Material>(Root+"/Occluder.mat");
             if(wall==null){
                 wall=new Material(Shader.Find("Universal Render Pipeline/Unlit"));
@@ -86,7 +88,8 @@ namespace VirtualizedGeometry.Editor{
             checks.Clear();metrics.Clear();errors.Clear();warmup=0;started=EditorApplication.timeSinceStartup;
             metrics.Add("scenario,width,height,differingPixels,considered,frustumCulled,hzbCulled,visible,indexCount");
             Application.logMessageReceived+=RecordError;
-            try{CreateSample();EditorApplication.update+=Tick;}catch(Exception error){Finish(error);}
+            // 保存sceneは既定のLOD閾値にして距離によるLOD変化を見られるようにし、検証の間だけ閾値を固定する。
+            try{CreateSample();instance.SetLodSettings(0,0);EditorApplication.update+=Tick;}catch(Exception error){Finish(error);}
         }
 
         private static void RecordError(string condition,string stackTrace,LogType type){
@@ -97,7 +100,7 @@ namespace VirtualizedGeometry.Editor{
             try{
                 if(EditorApplication.timeSinceStartup-started>180){throw new TimeoutException("M3 validation timeout.");}
                 if(++warmup<8){EditorApplication.QueuePlayerLoopUpdate();return;}
-                VirtualGeometryPage debugPage=VirtualGeometryPageCodec.Read(File.ReadAllBytes(Path.Combine(Application.streamingAssetsPath,instance.MeshAsset.PageRelativePath)));
+                VirtualGeometryPage debugPage=VirtualGeometryPageCodec.Read(File.ReadAllBytes(VirtualGeometryPagePaths.Resolve(instance.MeshAsset.PageRelativePath)));
                 List<float> radii=new List<float>();float minRadius=float.MaxValue;float maxRadius=0;
                 foreach(VirtualGeometryHierarchyNode node in debugPage.Nodes){
                     if(node.ChildCount!=0){continue;}

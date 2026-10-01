@@ -332,15 +332,32 @@ namespace VirtualizedGeometry{
             if(ComputeCrc32(data,headerSize,data.Length-headerSize)!=expected){throw new InvalidDataException("Virtual Geometry page CRC does not match its payload.");}
         }
 
-        internal static uint ComputeCrc32(byte[] data,int offset,int count){
-            uint crc=uint.MaxValue;
-            for(int i=offset;i<offset+count;i++){
-                crc^=data[i];
-                for(int bit=0;bit<8;bit++){
-                    uint mask=(uint)-(int)(crc&1u);
-                    crc=(crc>>1)^(0xEDB88320u&mask);
-                }
+        // 標準CRC-32(多項式0xEDB88320)。数百MBのpageを書き出し・検証するため、1 bitずつではなく8 byteずつ表引きする(slicing-by-8)。
+        private static readonly uint[] crcTable=CreateCrcTable();
+        private static uint[] CreateCrcTable(){
+            var table=new uint[8*256];
+            for(uint value=0;value<256;value++){
+                uint crc=value;
+                for(int bit=0;bit<8;bit++){uint mask=(uint)-(int)(crc&1u);crc=(crc>>1)^(0xEDB88320u&mask);}
+                table[value]=crc;
             }
+            for(int slice=1;slice<8;slice++){
+                for(int value=0;value<256;value++){uint previous=table[(slice-1)*256+value];table[slice*256+value]=(previous>>8)^table[previous&0xFF];}
+            }
+            return table;
+        }
+
+        internal static uint ComputeCrc32(byte[] data,int offset,int count){
+            uint[] table=crcTable;
+            uint crc=uint.MaxValue;int i=offset;int end=offset+count;
+            while(end-i>=8){
+                uint low=crc^(uint)(data[i]|data[i+1]<<8|data[i+2]<<16|data[i+3]<<24);
+                uint high=(uint)(data[i+4]|data[i+5]<<8|data[i+6]<<16|data[i+7]<<24);
+                crc=table[7*256+(low&0xFF)]^table[6*256+((low>>8)&0xFF)]^table[5*256+((low>>16)&0xFF)]^table[4*256+(low>>24)]^
+                    table[3*256+(high&0xFF)]^table[2*256+((high>>8)&0xFF)]^table[256+((high>>16)&0xFF)]^table[high>>24];
+                i+=8;
+            }
+            while(i<end){crc=(crc>>8)^table[(crc^data[i])&0xFF];i++;}
             return ~crc;
         }
 

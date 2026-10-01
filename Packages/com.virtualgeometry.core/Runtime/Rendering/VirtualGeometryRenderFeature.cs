@@ -193,6 +193,9 @@ namespace VirtualizedGeometry{
             private static readonly int LightDataId=Shader.PropertyToID("unity_LightData");
             private static readonly int PackedLightIndicesId=Shader.PropertyToID("unity_PackedLightIndices");
             private static readonly int WorldTransformParamsId=Shader.PropertyToID("unity_WorldTransformParams");
+            // 環境反射。通常Rendererは描画ごとにUnityが設定するが、procedural描画には設定されず黒になって暗く見える。既定(skybox等)のcubemapを渡す。
+            private static readonly int SpecCubeId=Shader.PropertyToID("unity_SpecCube0");
+            private static readonly int SpecCubeHdrId=Shader.PropertyToID("unity_SpecCube0_HDR");
             public DrawPass(ComputeShader selectionShader,Material material,CopyDepthPass depthCopy){
                 this.depthCopy=depthCopy;
                 this.selectionShader=selectionShader;this.material=material;
@@ -419,6 +422,9 @@ namespace VirtualizedGeometry{
                                     properties.SetVector(LightDataId,input.Lighting.LightData);properties.SetVector(PackedLightIndicesId,input.Lighting.PackedLightIndices);
                                     float handedness=1;if(input.InvertCulling){handedness=-1;}
                                     properties.SetVector(WorldTransformParamsId,new Vector4(0,0,0,handedness));
+                                    if(ReflectionProbe.defaultTexture!=null){
+                                        properties.SetTexture(SpecCubeId,ReflectionProbe.defaultTexture);properties.SetVector(SpecCubeHdrId,ReflectionProbe.defaultTextureHDRDecodeValues);
+                                    }
                                 }
                                 // procedural描画は負のscaleで裏表が反転しても自動で反転されないため、通常Rendererと同じ面を残すよう明示する。
                                 context.cmd.SetInvertCulling(input.InvertCulling&&input.DebugMode==0);

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using UnityEngine;
 
 namespace VirtualizedGeometry{
@@ -33,16 +34,58 @@ namespace VirtualizedGeometry{
         public int MaxPageIndices;
         public int MetadataBytes;
         public long FileBytes;
-        public int SlotGeometryBytes=>checked(this.MaxPageVertices*32+this.MaxPageIndices*4);
         public long UniqueGeometryBytes{
             get{long sum=0;foreach(var page in this.Pages){sum+=page.ByteCount;}return sum;}
         }
+        /// <summary>最大のpageの頂点数・添字数を合わせたbytes。どのpageもこの大きさ以下(CPUでの読込と復号の予算の目安)。</summary>
+        public int MaxPageBytes=>checked(this.MaxPageVertices*32+this.MaxPageIndices*4);
+
+        /// <summary>
+        /// streamingのGPU poolを区切る単位(slot)1つの頂点数・添字数。pageは頂点と添字が入る数だけ連続したslotを使う。
+        /// 単位はroot以外のpageの中央値にする。最大のpageに合わせると、段ごとに大きくなる上の段のpageのせいで小さなpageまで大きな枠を使い、
+        /// 予算に入るpage数が大きく減る(地形の例で実データの約38倍の枠が要った)。archiveには書かず、page descriptorから決まる。
+        /// </summary>
+        public int SlotVertices{get{this.EnsureSlotSize();return this.slotVertices;}}
+        public int SlotIndices{get{this.EnsureSlotSize();return this.slotIndices;}}
+        public int SlotGeometryBytes=>checked(this.SlotVertices*32+this.SlotIndices*4);
+        /// <summary>pageが使う連続slotの数。</summary>
+        public int PageSlots(int page){
+            VirtualGeometryPageDescriptor descriptor=this.Pages[page];
+            return Math.Max(1,Math.Max(Ceiling(descriptor.VertexCount,this.SlotVertices),Ceiling(descriptor.IndexCount,this.SlotIndices)));
+        }
+        /// <summary>全pageを同時に置くのに要るslot数。</summary>
+        public long TotalPageSlots{
+            get{long sum=0;for(int page=0;page<this.Pages.Length;page++){sum+=this.PageSlots(page);}return sum;}
+        }
+        private int slotVertices;private int slotIndices;
+
+        private void EnsureSlotSize(){
+            if(this.slotVertices>0){return;}
+            int first=1;
+            if(this.Pages.Length==1){first=0;}
+            int count=this.Pages.Length-first;int[] vertices=new int[count];int[] indices=new int[count];
+            for(int i=0;i<count;i++){vertices[i]=this.Pages[first+i].VertexCount;indices[i]=this.Pages[first+i].IndexCount;}
+            Array.Sort(vertices);Array.Sort(indices);
+            this.slotIndices=Math.Max(1,indices[(count-1)/2]);this.slotVertices=Math.Max(1,vertices[(count-1)/2]);
+        }
+
+        private static int Ceiling(int value,int unit){return (int)(((long)value+unit-1)/unit);}
     }
 
     /// <summary>v3のmetadataを先に検証し、payloadをpage単位で独立検証する。</summary>
     public static class VirtualGeometryStreamCodec{
         public const uint Version=3;
         public const int HeaderBytes=96;
+
+        // workerの例外は元の型のまま投げ直す(破損archiveの理由をそのまま利用者へ返すため)。
+        private static void RunParallel(int count,Action<int> body){
+            try{
+                System.Threading.Tasks.Parallel.For(0,count,body);
+            }catch(AggregateException error){
+                if(error.InnerExceptions.Count==1){System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error.InnerExceptions[0]).Throw();}
+                throw;
+            }
+        }
 
         public static byte[] Write(VirtualGeometryPage source){
             if(source==null||source.Nodes.Length==0){throw new InvalidDataException("Streaming conversion requires a hierarchy.");}
@@ -56,15 +99,15 @@ namespace VirtualizedGeometry{
             for(int node=0;node<metadata.Nodes.Length;node++){if(!roots.Contains(node)){groups.Add(new List<int>{node});}}
             metadata.Pages=new VirtualGeometryPageDescriptor[groups.Count];
             byte[][] bodies=new byte[groups.Count][];
-            bool[] clusterOwned=new bool[metadata.Clusters.Length];
-            for(int pageId=0;pageId<groups.Count;pageId++){
+            // 各pageは別々のnode・clusterだけを書き換えるため、pageの組み立て・符号化・CRCを並列に行う。clusterの所有数は原子的に数え、重複と所有漏れを後で検出する。
+            int[] clusterOwners=new int[metadata.Clusters.Length];
+            RunParallel(groups.Count,pageId=>{
                 var vertices=new List<VirtualGeometryPackedVertex>();var indices=new List<uint>();var map=new Dictionary<uint,uint>();
                 foreach(int nodeId in groups[pageId]){
                     VirtualGeometryHierarchyNode node=metadata.Nodes[nodeId];node.PageId=(uint)pageId;metadata.Nodes[nodeId]=node;
                     for(uint ci=0;ci<node.ClusterCount;ci++){
                         int clusterId=checked((int)(node.FirstCluster+ci));
-                        if(clusterOwned[clusterId]){throw new InvalidDataException("Each representation must own its cluster range.");}
-                        clusterOwned[clusterId]=true;
+                        if(System.Threading.Interlocked.Increment(ref clusterOwners[clusterId])!=1){throw new InvalidDataException("Each representation must own its cluster range.");}
                         VirtualGeometryCluster cluster=metadata.Clusters[clusterId];uint first=(uint)indices.Count;
                         for(uint i=0;i<cluster.IndexCount;i++){
                             uint sourceVertex=source.Indices[cluster.FirstIndex+i];
@@ -78,21 +121,24 @@ namespace VirtualizedGeometry{
                 }
                 var payload=new VirtualGeometryPagePayload(vertices.ToArray(),indices.ToArray());
                 bodies[pageId]=EncodePayload(payload);
-                metadata.MaxPageVertices=Math.Max(metadata.MaxPageVertices,payload.Vertices.Length);
-                metadata.MaxPageIndices=Math.Max(metadata.MaxPageIndices,payload.Indices.Length);
                 metadata.Pages[pageId]=new VirtualGeometryPageDescriptor{
                     VertexCount=payload.Vertices.Length,IndexCount=payload.Indices.Length,ByteCount=bodies[pageId].Length,
                     Crc=VirtualGeometryPageCodec.ComputeCrc32(bodies[pageId],0,bodies[pageId].Length),Pinned=pageId==0
                 };
+            });
+            foreach(int owners in clusterOwners){if(owners==0){throw new InvalidDataException("Unowned cluster in streaming conversion.");}}
+            foreach(VirtualGeometryPageDescriptor page in metadata.Pages){
+                metadata.MaxPageVertices=Math.Max(metadata.MaxPageVertices,page.VertexCount);
+                metadata.MaxPageIndices=Math.Max(metadata.MaxPageIndices,page.IndexCount);
             }
-            foreach(bool owned in clusterOwned){if(!owned){throw new InvalidDataException("Unowned cluster in streaming conversion.");}}
             metadata.MetadataBytes=checked(HeaderBytes+groups.Count*32+metadata.Clusters.Length*48+metadata.Nodes.Length*64+metadata.Roots.Length*4);
             long offset=metadata.MetadataBytes;
             for(int page=0;page<metadata.Pages.Length;page++){
                 var descriptor=metadata.Pages[page];descriptor.Offset=offset;metadata.Pages[page]=descriptor;offset+=descriptor.ByteCount;
             }
             metadata.FileBytes=offset;
-            using(var stream=new MemoryStream())
+            // 最終サイズで確保し、数百MBのarchiveで容量拡張のたびに全体を複製しない。
+            using(var stream=new MemoryStream(checked((int)metadata.FileBytes)))
             using(var writer=new BinaryWriter(stream)){
                 writer.Write(new byte[HeaderBytes]);
                 foreach(var descriptor in metadata.Pages){
@@ -108,6 +154,10 @@ namespace VirtualizedGeometry{
                 writer.Write(metadata.Roots.Length);writer.Write(metadata.MaxPageVertices);writer.Write(metadata.MaxPageIndices);writer.Write(crc);writer.Write(Version);
                 WriteVector(writer,metadata.Bounds.min);WriteVector(writer,metadata.Bounds.max);writer.Write(new byte[16]);
                 stream.Position=metadata.MetadataBytes;foreach(byte[] body in bodies){writer.Write(body);}
+                writer.Flush();
+                // 容量と長さが一致するので、内部bufferをそのまま返して複製を避ける。
+                byte[] buffer=stream.GetBuffer();
+                if(buffer.Length==stream.Length){return buffer;}
                 return stream.ToArray();
             }
         }
@@ -180,6 +230,18 @@ namespace VirtualizedGeometry{
         public static VirtualGeometryPagePayload DecodePayload(byte[] bytes,VirtualGeometryPageDescriptor descriptor){
             if(bytes==null||bytes.Length!=descriptor.ByteCount||VirtualGeometryPageCodec.ComputeCrc32(bytes,0,bytes.Length)!=descriptor.Crc){throw new InvalidDataException("Geometry page size/CRC failed.");}
             var vertices=new VirtualGeometryPackedVertex[descriptor.VertexCount];var indices=new uint[descriptor.IndexCount];
+            if(BitConverter.IsLittleEndian){
+                // 書き出しと同じく配列ごと写し、その後で値を検証する。PlayerのstreamingでもI/O後の復元が軽くなる。
+                int vertexBytes=checked(vertices.Length*VirtualGeometryPackedVertex.Stride);int indexBytes=checked(indices.Length*sizeof(uint));
+                if(bytes.Length<vertexBytes+indexBytes){throw new InvalidDataException("Geometry page is shorter than its vertex and index counts.");}
+                new ReadOnlySpan<byte>(bytes,0,vertexBytes).CopyTo(MemoryMarshal.AsBytes(new Span<VirtualGeometryPackedVertex>(vertices)));
+                new ReadOnlySpan<byte>(bytes,vertexBytes,indexBytes).CopyTo(MemoryMarshal.AsBytes(new Span<uint>(indices)));
+                foreach(VirtualGeometryPackedVertex vertex in vertices){
+                    if(!Finite(vertex.Position)||!Finite(vertex.Normal)||!float.IsFinite(vertex.UV.x)||!float.IsFinite(vertex.UV.y)){throw new InvalidDataException("Non-finite page vertex.");}
+                }
+                foreach(uint index in indices){if(index>=vertices.Length){throw new InvalidDataException("Page-local index out of bounds.");}}
+                return new VirtualGeometryPagePayload(vertices,indices);
+            }
             using(var reader=new BinaryReader(new MemoryStream(bytes,false))){
                 for(int i=0;i<vertices.Length;i++){
                     Vector3 position=ReadVector(reader);Vector3 normal=ReadVector(reader);Vector2 uv=new Vector2(reader.ReadSingle(),reader.ReadSingle());
@@ -206,11 +268,19 @@ namespace VirtualizedGeometry{
             }
         }
 
+        // payloadのbyte列はリトルエンディアンの頂点構造体配列とindex配列をそのまま並べた形。1要素ずつ書くとUnityのMonoで非常に遅いため、配列ごと写す。
         private static byte[] EncodePayload(VirtualGeometryPagePayload payload){
-            using(var stream=new MemoryStream())
-            using(var writer=new BinaryWriter(stream)){
-                VirtualGeometryPageCodec.WriteVertices(writer,payload.Vertices);foreach(uint index in payload.Indices){writer.Write(index);}return stream.ToArray();
+            if(!BitConverter.IsLittleEndian){
+                using(var stream=new MemoryStream())
+                using(var writer=new BinaryWriter(stream)){
+                    VirtualGeometryPageCodec.WriteVertices(writer,payload.Vertices);foreach(uint index in payload.Indices){writer.Write(index);}return stream.ToArray();
+                }
             }
+            int vertexBytes=checked(payload.Vertices.Length*VirtualGeometryPackedVertex.Stride);int indexBytes=checked(payload.Indices.Length*sizeof(uint));
+            byte[] bytes=new byte[checked(vertexBytes+indexBytes)];
+            MemoryMarshal.AsBytes(new ReadOnlySpan<VirtualGeometryPackedVertex>(payload.Vertices)).CopyTo(new Span<byte>(bytes,0,vertexBytes));
+            MemoryMarshal.AsBytes(new ReadOnlySpan<uint>(payload.Indices)).CopyTo(new Span<byte>(bytes,vertexBytes,indexBytes));
+            return bytes;
         }
 
         private static bool Finite(Vector3 value){return float.IsFinite(value.x)&&float.IsFinite(value.y)&&float.IsFinite(value.z);}

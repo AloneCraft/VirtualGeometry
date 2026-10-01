@@ -1,7 +1,10 @@
 using UnityEngine;
 
 namespace VirtualizedGeometry{
-    /// <summary>変換済みページの小さな索引。高密度頂点配列自体はStreamingAssetsに置く。空assetは変換結果を持たないため作成menuを置かず、右クリック変換またはInspectorの変換で生成・更新する。</summary>
+    /// <summary>
+    /// 変換済みpageの小さな索引。モデルのInspectorで「Virtual Geometry」を有効にすると、インポート時にモデルのサブアセットとして作られる。
+    /// 高密度の頂点配列はpage archive(VirtualGeometryPagePaths)に置く。
+    /// </summary>
     public sealed class VirtualGeometryMeshAsset:ScriptableObject{
         [SerializeField] private string sourceGuid;
         [SerializeField] private long sourceLocalId;
@@ -16,6 +19,7 @@ namespace VirtualizedGeometry{
         [SerializeField] private int leafTriangleCount;
         [SerializeField] private int clusterCount;
         [SerializeField] private int nodeCount;
+        [SerializeField] private int levelCount;
         [SerializeField] private int materialCount;
         [SerializeField] private int formatVersion;
         [SerializeField] private int builderVersion;
@@ -49,6 +53,8 @@ namespace VirtualizedGeometry{
         public int LeafTriangleCount=>this.leafTriangleCount;
         public int ClusterCount=>this.clusterCount;
         public int NodeCount=>this.nodeCount;
+        /// <summary>LODの段数。1段目が最も細かい元の形状。</summary>
+        public int LevelCount=>this.levelCount;
         public int MaterialCount=>this.materialCount;
         public int FormatVersion=>this.formatVersion;
         public int BuilderVersion=>this.builderVersion;

@@ -90,6 +90,6 @@ I/O/evictionは累積値。quality missは非同期feedbackを観測したframe�
 
 `TestResults/M5/Benchmark{724,1224,2236}` にPreparationEnvironment / PreparationResults / ConversionMetrics / BuildReport、各経路Results.json・Metrics.csv・Environment・Swapchain.png・Trajectory PNG・GeometryDiagnostics.csv・ImageComparison.jsonを保存します。横断集計はBenchmarkSummary.csv/json、集計scriptはSummarizeBenchmark.pyです。
 
-`TestResults/M5/Reproduce-M5.ps1 -Stage BenchmarkPrepare -Grid 724` → BenchmarkBuild → BenchmarkRun。3Mは1224、約10Mは2236。準備済みassetはPrepareを省略できます。Unity buildはHidden、benchmark PlayerはNormal、各exact PIDの終了を待って逐次実行します。Playerをminimize/非表示にしません。baseline比較のためbenchmark Playerには高密度sourceを意図的に収録します。配布Playerのsource/native除外は別のPlayerBuild証跡です。
+`TestResults/M5/Reproduce-M5.ps1 -Stage BenchmarkPrepare -Grid 724` → BenchmarkBuild → BenchmarkRun。3Mは1224、約10Mは2236。準備した元モデル(Source.obj、最大約1000万三角形)・中間LOD・それらを参照するBenchmark sceneは、BenchmarkBuildがPlayerのbuild成功後に削除します(sceneはBenchmarkBuildが毎回作り直すため、gitにも入れません)。数百MBあり、変換器の版が変わるたびにEditorの再インポートで数分止まるためです。計測をやり直すときはPrepareから実行します(`M5BenchmarkPreparation.Clean`で手動削除もできます)。Unity buildはHidden、benchmark PlayerはNormal、各exact PIDの終了を待って逐次実行します。Playerをminimize/非表示にしません。baseline比較のためbenchmark Playerには高密度sourceを意図的に収録します。配布Playerのsource/native除外は別のPlayerBuild証跡です。
 
 ローカルUnity 6000.6 APIと[Frame Timing Manager](https://docs.unity3d.com/ja/current/Manual/frame-timing-manager.html)、[maxQueuedFrames](https://docs.unity3d.com/cn/6000.0/ScriptReference/QualitySettings-maxQueuedFrames.html)の契約を確認しています。GPU時間からGPU内の処理内訳や他processの影響を分離する分析はしていません。

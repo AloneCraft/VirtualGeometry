@@ -98,6 +98,21 @@ namespace VirtualizedGeometry.Tests{
                 Assert.That(proxyTriangles,Is.GreaterThan(Triangles(page,page.Nodes[root])));
                 Assert.That(proxyError,Is.EqualTo(page.Nodes[proxyNode].GeometricError));
             }finally{UnityEngine.Object.DestroyImmediate(proxy);}
+            {
+                //小さな閉じた部品(面ごとに頂点が分かれた箱)が集まったmeshも、部品を小さい順に取り除いてrootが1 cluster以下になる
+                //箱は形を保つ縮約では消せないため、取り除かないとrootが全三角形のまま残る。取り除いた部品の大きさは誤差に入る
+                const float BoxSize=0.2f;
+                VirtualGeometryBuildOutput boxes=VirtualGeometryBuilder.Build(CreateBoxes(18,18,BoxSize),settings);
+                VirtualGeometryPage boxPage=VirtualGeometryPageCodec.Read(boxes.PageBytes);
+                VirtualGeometryHierarchyNode boxRoot=boxPage.Nodes[boxPage.RootNodeIndices[0]];
+                Assert.That(Triangles(boxPage,boxRoot),Is.LessThanOrEqualTo(settings.MaxTrianglesPerCluster));
+                Assert.That(boxRoot.GeometricError,Is.GreaterThanOrEqualTo(BoxSize*0.5f));
+                for(int i=0;i<boxPage.Nodes.Length;i++){
+                    VirtualGeometryHierarchyNode node=boxPage.Nodes[i];
+                    for(uint c=0;c<node.ChildCount;c++){Assert.That(boxPage.Nodes[node.FirstChild+c].GeometricError,Is.LessThanOrEqualTo(node.GeometricError));}
+                }
+                Assert.DoesNotThrow(()=>VirtualGeometryLodSelector.Select(boxPage,context,_=>true,null));
+            }
         }
 
         [Test]
@@ -260,6 +275,29 @@ namespace VirtualizedGeometry.Tests{
                 }
             }
             return new VirtualGeometryMeshInput(vertices,normals,uv,new[]{triangles});
+        }
+
+        // 1辺sizeの箱をcolumns×rows個、間隔1で並べる。面ごとに頂点を分け(角ばった形の法線)、箱どうしはつながらない。
+        private static VirtualGeometryMeshInput CreateBoxes(int columns,int rows,float size){
+            Vector3[] axes={Vector3.right,Vector3.left,Vector3.up,Vector3.down,Vector3.forward,Vector3.back};
+            var vertices=new List<Vector3>();var normals=new List<Vector3>();var uv=new List<Vector2>();var triangles=new List<int>();
+            float half=size*0.5f;
+            for(int y=0;y<rows;y++){
+                for(int x=0;x<columns;x++){
+                    Vector3 center=new Vector3(x,y,0);
+                    foreach(Vector3 normal in axes){
+                        Vector3 reference=Vector3.up;
+                        if(Mathf.Abs(normal.y)>0.5f){reference=Vector3.forward;}
+                        Vector3 u=Vector3.Cross(normal,reference).normalized*half;Vector3 v=Vector3.Cross(normal,u).normalized*half;
+                        Vector3 face=center+normal*half;int start=vertices.Count;
+                        vertices.Add(face-u-v);vertices.Add(face+u-v);vertices.Add(face+u+v);vertices.Add(face-u+v);
+                        for(int corner=0;corner<4;corner++){normals.Add(normal);}
+                        uv.Add(new Vector2(0,0));uv.Add(new Vector2(1,0));uv.Add(new Vector2(1,1));uv.Add(new Vector2(0,1));
+                        triangles.Add(start);triangles.Add(start+1);triangles.Add(start+2);triangles.Add(start);triangles.Add(start+2);triangles.Add(start+3);
+                    }
+                }
+            }
+            return new VirtualGeometryMeshInput(vertices.ToArray(),normals.ToArray(),uv.ToArray(),new[]{triangles.ToArray()});
         }
     }
 }

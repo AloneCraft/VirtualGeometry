@@ -8,6 +8,21 @@ using VirtualizedGeometry.Editor;
 namespace VirtualizedGeometry.Tests{
     /// <summary>URPのshaderソースへVG passを加える変換と、生成shaderがUnityでcompileできることを確かめる。</summary>
     public sealed class VirtualGeometryShaderSourceTests{
+        private string previousRenderPipeline;
+
+        // URPのSubShaderは"RenderPipeline"="UniversalPipeline"タグで選ばれる。batchmodeでは描画前でURPが未初期化のためタグが空になり、
+        // Fallbackが選ばれてpassが見つからない。URPが初期化時に設定するのと同じタグをテストの間だけ入れる。
+        [SetUp]
+        public void SetUp(){
+            this.previousRenderPipeline=Shader.globalRenderPipeline;
+            Shader.globalRenderPipeline="UniversalPipeline";
+        }
+
+        [TearDown]
+        public void TearDown(){
+            Shader.globalRenderPipeline=this.previousRenderPipeline;
+        }
+
         private static string Resolve(string assetPath){return FileUtil.GetPhysicalPath(assetPath);}
 
         private static VirtualGeometryShaderConversion ConvertPackageShader(string name){

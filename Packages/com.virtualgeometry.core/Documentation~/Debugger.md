@@ -4,7 +4,7 @@ UE5 の viewport toolbar(View Mode ▸ Nanite Visualization、Show、stat Nanite
 
 - `VG: <mode>` ドロップダウン: 可視化 mode を全 instance に適用します。通常 / Triangles / Clusters / LOD Level / Screen Error / Resident Pages / Loading / Culling。renderer 単位の設定なので Game view にも同じ表示が出ます。
 - `Show` ドロップダウン: Frustum culling、Occlusion culling (HZB)、通常 Proxy の強制表示、診断 readback と CPU/GPU timing を切り替え、Monitor window を開きます。チェック状態は最初に見つかった有効な instance の値です。
-- `Stats` トグル: VG Stats panel を開閉します。Renderer の Inspector の「Scene viewのVG Statsを表示」からも開けます。
+- `Stats` トグル: VG Stats panel を開閉します。
 
 VG Stats panel では対象 camera を指定します。空欄では各 instance の直近 camera の状態を使います。診断 readback は GPU 同期を含むため既定で無効で、有効時も「診断を更新」を押したときだけ取得します。panel を閉じると診断を無効に戻します。通常性能の測定中は有効にしません。
 

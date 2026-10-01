@@ -18,7 +18,8 @@ namespace VirtualizedGeometry.Editor{
         private static readonly List<string> results=new List<string>();private static readonly List<string> errors=new List<string>();private static int warmup;
         public static void Run(){
             Directory.CreateDirectory("TestResults/M5");results.Clear();errors.Clear();warmup=0;Application.logMessageReceived+=Log;
-            try{Setup();EditorApplication.update+=Tick;}catch(Exception error){Finish(error);}
+            // 保存sceneは既定のLOD閾値にして距離によるLOD変化を見られるようにし、検証の間だけ閾値を固定する。
+            try{Setup();instance.SetLodSettings(float.MaxValue,0);EditorApplication.update+=Tick;}catch(Exception error){Finish(error);}
         }
         private static void Log(string message,string stack,LogType type){if(type==LogType.Warning||type==LogType.Error||type==LogType.Exception||type==LogType.Assert){errors.Add(message);}}
         private static void Setup(){
@@ -30,14 +31,14 @@ namespace VirtualizedGeometry.Editor{
             GraphicsSettings.defaultRenderPipeline=pipeline;QualitySettings.renderPipeline=pipeline;QualitySettings.vSyncCount=0;
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);
             RenderSettings.ambientMode=AmbientMode.Flat;RenderSettings.ambientLight=Color.black;RenderSettings.ambientIntensity=0;RenderSettings.reflectionIntensity=0;RenderSettings.ambientProbe=new SphericalHarmonicsL2();
-            Mesh source=AssetDatabase.LoadAssetAtPath<Mesh>(Root+"/LitSource.asset");
-            if(source==null){source=CreatePlane();AssetDatabase.CreateAsset(source,Root+"/LitSource.asset");}
-            asset=VirtualGeometryConversionService.Convert(source,Root+"/LitConverted.asset",new VirtualGeometryBuildSettings{MaxTrianglesPerCluster=32,HierarchyFanout=4});
+            Mesh generated=CreatePlane();
+            asset=VirtualGeometryValidationModel.Import(generated,Root+"/LitSource.obj",new VirtualGeometryModelSettings{MaxTrianglesPerCluster=32,HierarchyFanout=4});
+            Object.DestroyImmediate(generated);
             camera=new GameObject("Lit camera").AddComponent<Camera>();camera.transform.position=new Vector3(0,0,-8);camera.orthographic=true;camera.orthographicSize=3.5f;
             camera.nearClipPlane=0.1f;camera.farClipPlane=40;camera.clearFlags=CameraClearFlags.SolidColor;camera.backgroundColor=Color.black;camera.allowHDR=false;camera.allowMSAA=false;
             camera.GetUniversalAdditionalCameraData().requiresDepthTexture=true;
             instance=new GameObject("Lit virtual surface").AddComponent<VirtualGeometryRenderer>();instance.SetStreamingConfiguration(VirtualGeometryStreamingMode.AllResident,new VirtualGeometryStreamingSettings());
-            instance.SetMeshAsset(asset);instance.SetLodSettings(float.MaxValue,0);instance.SetCullingSettings(false,false);instance.SetProxyOptions(false,true);
+            instance.SetMeshAsset(asset);instance.SetCullingSettings(false,false);instance.SetProxyOptions(false,true);
             main=new GameObject("Main directional").AddComponent<Light>();main.type=LightType.Directional;main.transform.rotation=Quaternion.Euler(20,-25,0);main.intensity=1;main.color=Color.white;main.shadows=LightShadows.None;RenderSettings.sun=main;
             point=new GameObject("Point").AddComponent<Light>();point.type=LightType.Point;point.transform.position=new Vector3(-1,0,-2);point.range=10;point.intensity=5;point.color=new Color(0.2f,0.7f,1);point.enabled=false;
             spot=new GameObject("Spot").AddComponent<Light>();spot.type=LightType.Spot;spot.transform.position=new Vector3(1,0,-3);spot.transform.rotation=Quaternion.identity;spot.range=10;spot.spotAngle=65;spot.innerSpotAngle=35;spot.intensity=8;spot.color=new Color(1,0.4f,0.2f);spot.enabled=false;

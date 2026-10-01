@@ -27,7 +27,9 @@ namespace VirtualizedGeometry.Editor{
                 string[] files=Directory.GetFiles("Builds/M5Player","*",SearchOption.AllDirectories);
                 string[] archives=files.Where(path=>path.EndsWith(".vgpage",StringComparison.OrdinalIgnoreCase)).ToArray();
                 string[] forbidden=files.Where(VirtualGeometryBuildInclusion.IsForbiddenPlayerPath).ToArray();
-                bool highSourceIncluded=sourcePaths.Contains("Assets/VirtualizedGeometrySample/M4/Source.asset");
+                // 変換データは元モデルのサブアセットなので、モデル由来の収録自体は正常。高密度の元Meshが入っていないことを、そのモデル由来のMeshの大きさで確かめる。
+                VirtualGeometryMeshAsset shared=VirtualGeometryValidationModel.Load(Root+"/Shared.obj");long fullMeshIndexBytes=(long)shared.InputTriangleCount*3*2;
+                bool highSourceIncluded=report.packedAssets.SelectMany(packed=>packed.contents).Any(item=>item.sourceAssetPath==Root+"/Shared.obj"&&item.type==typeof(Mesh)&&(long)item.packedSize>=fullMeshIndexBytes);
                 string text="BuildResult="+report.summary.result+"\nBytes="+report.summary.totalSize+"\nDuration="+report.summary.totalTime+"\nWarnings="+report.summary.totalWarnings+"\nErrors="+report.summary.totalErrors+"\nArchives="+archives.Length+"\nHigh source packed="+highSourceIncluded+"\nForbidden native/source files="+forbidden.Length+"\n"+string.Join("\n",archives)+"\n";
                 File.WriteAllText("TestResults/M5/PlayerBuild/BuildReport.txt",text);File.WriteAllText("TestResults/M5/PlayerBuild/Environment.txt","Unity="+Application.unityVersion+"\nGPU="+SystemInfo.graphicsDeviceName+"\nAPI="+SystemInfo.graphicsDeviceType+"\nOS="+SystemInfo.operatingSystem+"\nEditor archive restored="+Directory.Exists("Assets/StreamingAssets/VirtualGeometry")+"\n");
                 if(report.summary.result!=BuildResult.Succeeded||report.summary.totalErrors!=0||report.summary.totalWarnings!=0||archives.Length!=1||highSourceIncluded||forbidden.Length>0){throw new InvalidOperationException("Player build/inclusion validation failed.\n"+text);}
@@ -36,7 +38,11 @@ namespace VirtualizedGeometry.Editor{
         }
         public static void InspectLastReport(){var report=BuildReport.GetLatestReport();File.WriteAllLines("TestResults/M5/PlayerBuild/BuildMessages.txt",report.steps.SelectMany(step=>step.messages.Select(message=>step.name+": "+message.type+": "+message.content)));Debug.Log("Build warning messages exported.");EditorApplication.Exit(0);}
         private static void Setup(){
-            VirtualGeometryMeshAsset asset=AssetDatabase.LoadAssetAtPath<VirtualGeometryMeshAsset>(Root+"/Converted.asset");if(asset==null){throw new InvalidOperationException("M5 converted fixture is missing.");}
+            // 当たり判定(MeshCollider)に代替Meshを使うため、利用者と同じくモデルのImport Settingsで三角形の衝突形状を事前ベイクする。
+            // 無効のままだとbuildが警告を出し、将来のUnityではbuild時の自動ベイクも行われない。
+            var model=(ModelImporter)AssetImporter.GetAtPath(Root+"/Shared.obj");
+            if(!model.HasPreBakeCollisionMesh(false)){model.SetPreBakeCollisionMesh(false,true);model.SaveAndReimport();}
+            VirtualGeometryMeshAsset asset=VirtualGeometryValidationModel.Load(Root+"/Shared.obj");if(asset==null){throw new InvalidOperationException("M5 converted fixture is missing.");}
             var renderer=AssetDatabase.LoadAssetAtPath<UniversalRendererData>(Root+"/PlayerRenderer.asset");if(renderer==null){renderer=ScriptableObject.CreateInstance<UniversalRendererData>();AssetDatabase.CreateAsset(renderer,Root+"/PlayerRenderer.asset");}
             renderer.renderingMode=RenderingMode.Forward;renderer.copyDepthMode=CopyDepthMode.AfterOpaques;renderer.depthPrimingMode=DepthPrimingMode.Disabled;
             VirtualGeometryRenderFeature feature=renderer.rendererFeatures.OfType<VirtualGeometryRenderFeature>().FirstOrDefault();if(feature==null){feature=ScriptableObject.CreateInstance<VirtualGeometryRenderFeature>();renderer.rendererFeatures.Add(feature);AssetDatabase.AddObjectToAsset(feature,renderer);}
@@ -47,16 +53,23 @@ namespace VirtualizedGeometry.Editor{
             GraphicsSettings.defaultRenderPipeline=pipeline;QualitySettings.renderPipeline=pipeline;QualitySettings.vSyncCount=0;
             PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.StandaloneWindows64,false);PlayerSettings.SetGraphicsAPIs(BuildTarget.StandaloneWindows64,new[]{GraphicsDeviceType.Direct3D12});PlayerSettings.defaultScreenWidth=640;PlayerSettings.defaultScreenHeight=480;PlayerSettings.fullScreenMode=FullScreenMode.Windowed;PlayerSettings.runInBackground=true;
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);RenderSettings.ambientMode=AmbientMode.Flat;RenderSettings.ambientLight=Color.black;RenderSettings.ambientIntensity=0;RenderSettings.reflectionIntensity=0;RenderSettings.ambientProbe=new SphericalHarmonicsL2();RenderSettings.fog=false;
+            // NewSceneの未使用アセット解放で先に読んだ変換データは使えなくなる(代替MeshがMeshFilterへ入らない)。永続アセットを取得し直す。
+            asset=VirtualGeometryValidationModel.Load(Root+"/Shared.obj");
             Camera primary=Camera("Player perspective",new Vector3(0,0,-20),false);Camera secondary=Camera("Player orthographic",new Vector3(9,0,-20),true);secondary.orthographicSize=11;
             Light light=new GameObject("Main directional").AddComponent<Light>();light.type=LightType.Directional;light.transform.rotation=Quaternion.Euler(20,-25,0);light.intensity=1;light.shadows=LightShadows.Hard;RenderSettings.sun=light;
-            var stream=new VirtualGeometryStreamingSettings{GpuGeometryBudgetBytes=asset.SlotGeometryBytes*6L,CpuCacheBudgetBytes=asset.SlotGeometryBytes*4L,TransferBytesPerFrame=1024,IoConcurrency=2,RequestQueueCapacity=8,IoDelayMilliseconds=300};
-            var first=Instance("Player shared A",asset,-9,stream);var second=Instance("Player shared B",asset,9,stream);
-            // Mesh Asset Inspectorの「選択GameObjectに配置」と同じsource参照。build cloneだけで除去されることを検証する。
-            first.gameObject.AddComponent<MeshFilter>().sharedMesh=AssetDatabase.LoadAssetAtPath<Mesh>("Assets/VirtualizedGeometrySample/M4/Source.asset");var original=first.gameObject.AddComponent<MeshRenderer>();original.sharedMaterial=asset.ProxyUnlitMaterial;original.enabled=false;
-            var runner=new GameObject("M5 Player validation").AddComponent<VirtualGeometryPlayerValidation>();runner.First=first;runner.Second=second;runner.Primary=primary;runner.Secondary=secondary;runner.GpuBudget=stream.GpuGeometryBudgetBytes;runner.CpuBudget=stream.CpuCacheBudgetBytes;runner.TransferCap=stream.TransferBytesPerFrame;runner.IoCap=stream.IoConcurrency;
+            // 起動時の固定pageがProxyの段まで届く予算に2 slotを足す。準備直後のVGはProxyと同じ形で描かれ、その後の詳細は予算を超えて入れ替わる。
+            VirtualGeometryStreamMetadata metadata=VirtualGeometryValidationModel.ReadMetadata(asset);
+            int slots=VirtualGeometryValidationModel.SlotsToPinProxyLevel(metadata)+2;
+            var stream=new VirtualGeometryStreamingSettings{GpuGeometryBudgetBytes=metadata.SlotGeometryBytes*(long)slots,CpuCacheBudgetBytes=metadata.MaxPageBytes*4L,TransferBytesPerFrame=1024,IoConcurrency=2,RequestQueueCapacity=8,IoDelayMilliseconds=300};
+            // sceneは利用者が開いて距離でLODが切り替わる既定の設定で保存する。検証用の予算・読込遅延・閾値0はrunnerがPlayerの起動時に適用する。
+            var first=Instance("Player shared A",asset,-9);var second=Instance("Player shared B",asset,9);
+            foreach(VirtualGeometryRenderer placed in new[]{first,second}){
+                if(asset.ProxyMesh==null||placed.GetComponent<MeshFilter>().sharedMesh!=asset.ProxyMesh){throw new InvalidOperationException(placed.name+" MeshFilter does not hold the fallback mesh before saving the Player scene.");}
+            }
+            var runner=new GameObject("M5 Player validation").AddComponent<VirtualGeometryPlayerValidation>();runner.First=first;runner.Second=second;runner.Primary=primary;runner.Secondary=secondary;runner.Streaming=stream;runner.LodErrorThresholdPixels=0;
             EditorSceneManager.SaveScene(primary.gameObject.scene,Root+"/M5Player.unity");AssetDatabase.SaveAssets();VirtualGeometryRenderer.ReleaseResourcesForReload();
         }
         private static Camera Camera(string name,Vector3 position,bool orthographic){var camera=new GameObject(name).AddComponent<Camera>();camera.transform.position=position;camera.fieldOfView=60;camera.orthographic=orthographic;camera.clearFlags=CameraClearFlags.SolidColor;camera.backgroundColor=Color.black;camera.nearClipPlane=0.1f;camera.farClipPlane=200;camera.allowHDR=false;camera.allowMSAA=false;camera.GetUniversalAdditionalCameraData().requiresDepthTexture=true;return camera;}
-        private static VirtualGeometryRenderer Instance(string name,VirtualGeometryMeshAsset asset,float x,VirtualGeometryStreamingSettings settings){var renderer=new GameObject(name).AddComponent<VirtualGeometryRenderer>();renderer.transform.position=new Vector3(x,0,0);renderer.transform.localScale=Vector3.one*0.5f;renderer.SetStreamingConfiguration(VirtualGeometryStreamingMode.Streaming,settings);renderer.SetMeshAsset(asset);renderer.SetLodSettings(float.MaxValue,0);renderer.SetCullingSettings(false,false);renderer.SetProxyOptions(false,true);return renderer;}
+        private static VirtualGeometryRenderer Instance(string name,VirtualGeometryMeshAsset asset,float x){var renderer=new GameObject(name).AddComponent<VirtualGeometryRenderer>();renderer.transform.position=new Vector3(x,0,0);renderer.transform.localScale=Vector3.one*0.5f;renderer.SetMeshAsset(asset);renderer.SetCullingSettings(false,false);renderer.SetProxyOptions(false,true);return renderer;}
     }
 }

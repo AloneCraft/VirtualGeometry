@@ -15,17 +15,20 @@ URP 17.6 のローカル `UniversalRendererRenderGraph` と `CopyDepthPass.Rende
 - URP 標準の Lit / Simple Lit / Complex Lit / Unlit 用の `.vgshader` は package(`Runtime/Resources/VirtualGeometryShaders`)に同梱しています。普通の URP Material を割り当てた場合は、`VirtualGeometry/<元 shader 名>` の shader へ property と keyword を写した内部 Material で描きます。
 - 描けない Material(半透明、対応する Virtual Geometry Shader が無い shader、変換できない shader)が 1 つでもあれば、instance は理由付きで通常 Proxy になります。変換できない shader は `.vgshader` の import エラーに理由が出ます(Built-in / HDRP、Deferred 専用、geometry / tessellation stage、vertex 関数の入力 struct を解決できない等)。
 
-procedural draw には Unity の per-object light list と light probe が付かないため、URP shader が読む値を明示して渡します。matrix は `DrawProceduralIndirect` の引数で `unity_ObjectToWorld` に入ります。環境光は `RenderSettings.ambientProbe` の SH(`unity_SHA*` 等)、Forward の追加 light は visible light 順から主光源を除いた URP の追加 light 番号(先頭 8 個、`unity_LightData` / `unity_PackedLightIndices`)です。Forward+ は URP の cluster から light を読みます。負の scale は `unity_WorldTransformParams.w` と culling の反転で通常 Renderer と同じ面を残します。個別 light probe / APV / lightmap は対象外です。
+procedural draw には Unity の per-object light list と light probe が付かないため、URP shader が読む値を明示して渡します。matrix は `DrawProceduralIndirect` の引数で `unity_ObjectToWorld` に入ります。環境光は `RenderSettings.ambientProbe` の SH(`unity_SHA*` 等)、Forward の追加 light は visible light 順から主光源を除いた URP の追加 light 番号(先頭 8 個、`unity_LightData` / `unity_PackedLightIndices`)です。Forward+ は URP の cluster から light を読みます。環境反射は既定の反射 cubemap(`ReflectionProbe.defaultTexture`、skybox など)を `unity_SpecCube0` / `unity_SpecCube0_HDR` として渡します(未設定だと黒になり、通常 Renderer より暗く見えます)。負の scale は `unity_WorldTransformParams.w` と culling の反転で通常 Renderer と同じ面を残します。個別 light probe / reflection probe / APV / lightmap は対象外です。
 
 debug view(Triangles / Clusters / LOD Level 等)は package の VG Unlit shader で描きます。depth、影受け、低密度 Proxy の影落としは別機能であり、本 geometry の直接 shadow rendering とは呼びません。対応外機能は SupportMatrix に明記します。
 複数 material の indirect command はそれぞれ独立した可視 index 範囲を参照します。DX12 の draw-local SV_VertexID に Unity 同梱 UnityIndirect.cginc の GetIndirectVertexID_Base を適用し、GPU arguments の startVertex を解決します。VG pass・debug view と legacy 全常駐形式にも同じ補正を使います。
 
-## Renderer Inspector
+## GameObject Inspector の「Virtual Geometry」欄
 
-普段触る項目だけを常に表示し、既定値で足りる項目は「詳細」に折りたたみます。各項目には Tooltip があります。
+VG で描く GameObject は通常の MeshFilter + MeshRenderer を持ち、VG とつなぐ部品は Inspector に表示しません。Material・影の有無は MeshRenderer で設定します。Inspector 上部の「Virtual Geometry」欄に次を表示します。
 
-- 常に表示: Mesh Asset、Lod Error Threshold Pixels(許容する画面誤差。大きいほど早く粗い段へ切り替わる)、Materials(描けない slot は理由を、未設定で既定の白い URP Lit になる slot はその旨を表示)、状態欄。Materials は Mesh Asset の submesh 数まで自動で広げ、既存の割り当ては保ちます。
-- URP Renderer が専用描画できない設定(Virtual Geometry Renderer Feature が無い、Deferred、Depth Priming、Depth Prepass、MSAA)なら、必要な変更を一覧し「URP RendererをVirtual Geometry用に設定」で確認のうえ適用します(Undo 可)。互換を宣言しない他の Renderer Feature は自動では外しません。
-- Material・LOD 閾値・影 / 物理 Proxy の変更は、GPU 資源と Proxy を作り直さずに反映します。Mesh Asset と streaming 設定を変えたときだけ再読込します。
-- 詳細: Lod Hysteresis、影 / 物理 Proxy、Streaming Mode、streaming 予算(GPU geometry、CPU cache、I/O 並列、frame 転送、要求上限、取消 frame)。
-- 表示しない: Proxy 強制、debug view、Frustum / Occlusion culling(Scene view toolbar で操作)、compute 非対応の模擬と I/O 遅延注入(検証 API 専用)。値と API は残しています。
+- 状態: LOD 段数・三角形数・形状データ量・GPU 使用量と、現在の表示(VG / 代替表示とその理由)。
+- LOD の閾値が 0(常に最も細かい段)や最大値(常に最も粗い段)で距離による LOD 変化が起きないときの警告。
+- 描けない Material の理由と、対応する Virtual Geometry Shader が無い Material の「作成して切り替え」ボタン。
+- URP Renderer が専用描画できない設定(Virtual Geometry Renderer Feature が無い、Deferred、Depth Priming、Depth Prepass、MSAA)なら、必要な変更の一覧と「URP RendererをVirtual Geometry用に設定」ボタン(確認のうえ適用、Undo 可)。互換を宣言しない他の Renderer Feature は自動では外しません。
+- 詳細: LOD の閾値、切替の余裕、読み込み方式、streaming 予算(GPU geometry、CPU cache、I/O 並列、frame 転送、要求上限、取消 frame)、変換データ(読み取り専用)。
+- LOD 閾値・Material の変更は、GPU 資源を作り直さずに反映します。変換データと streaming 設定を変えたときだけ再読込します。
+- 表示しない: 代替表示の強制、debug view、Frustum / Occlusion culling(Scene view toolbar で操作)、compute 非対応の模擬と I/O 遅延注入(検証 API 専用)。
+

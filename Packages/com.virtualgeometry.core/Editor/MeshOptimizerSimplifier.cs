@@ -21,6 +21,7 @@ namespace VirtualizedGeometry.Editor{
         private const uint SimplifySparse=1u<<1;
         private const uint SimplifyErrorAbsolute=1u<<2;
         private const string LibraryName="VirtualGeometryMeshOptimizer";
+        private static volatile bool versionVerified;
 
         public static int Version{
             get{
@@ -38,11 +39,13 @@ namespace VirtualizedGeometry.Editor{
             if(vertexLocks.Length!=vertices.Length){throw new ArgumentException("Vertex lock count must equal vertex count.",nameof(vertexLocks));}
             return SimplifyCore(vertices,indices,index=>vertexLocks[index]!=0,targetIndexCount);
         }
-        internal static MeshOptimizerSimplifyResult SimplifyLockedVertices(VirtualGeometryPackedVertex[] vertices,uint[] indices,ISet<uint> vertexLocks,int targetIndexCount){
+        /// <summary>targetErrorは位置と同じ単位の誤差上限。超える縮約はせず、目標数に届かなくても止める。</summary>
+        internal static MeshOptimizerSimplifyResult SimplifyLockedVertices(VirtualGeometryPackedVertex[] vertices,uint[] indices,ISet<uint> vertexLocks,int targetIndexCount,float targetError=float.MaxValue){
             if(vertexLocks==null){throw new ArgumentNullException(nameof(vertexLocks));}
-            return SimplifyCore(vertices,indices,vertexLocks.Contains,targetIndexCount);
+            return SimplifyCore(vertices,indices,vertexLocks.Contains,targetIndexCount,targetError);
         }
-        private static MeshOptimizerSimplifyResult SimplifyCore(VirtualGeometryPackedVertex[] vertices,uint[] indices,Func<uint,bool> isLocked,int targetIndexCount){
+        private static MeshOptimizerSimplifyResult SimplifyCore(VirtualGeometryPackedVertex[] vertices,uint[] indices,Func<uint,bool> isLocked,int targetIndexCount,float targetError=float.MaxValue){
+            if(float.IsNaN(targetError)||targetError<0){throw new ArgumentOutOfRangeException(nameof(targetError));}
             if(vertices==null){throw new ArgumentNullException(nameof(vertices));}
             if(indices==null){throw new ArgumentNullException(nameof(indices));}
 
@@ -55,7 +58,8 @@ namespace VirtualizedGeometry.Editor{
                 if(indices[i]>=vertices.Length){throw new ArgumentException("An index references a vertex outside the input array.",nameof(indices));}
             }
 
-            _=Version;
+            // 版の確認は一度だけでよい。簡略化は1 meshで数万回、並列にも呼ばれるため、毎回native呼び出しをしない。
+            if(!versionVerified){_=Version;versionVerified=true;}
             var referenced=new HashSet<uint>(indices);uint[] globalIndices=new uint[referenced.Count];referenced.CopyTo(globalIndices);Array.Sort(globalIndices);
             var remap=new Dictionary<uint,uint>(globalIndices.Length);byte[] compactLocks=new byte[globalIndices.Length];
             for(int i=0;i<globalIndices.Length;i++){remap.Add(globalIndices[i],(uint)i);compactLocks[i]=isLocked(globalIndices[i])?VertexLock:(byte)0;}
@@ -80,7 +84,7 @@ namespace VirtualizedGeometry.Editor{
             float[] weights={0.5f,0.5f,0.5f,0.1f,0.1f};
             int resultCount=NativeMethods.SimplifyWithAttributes(destination,(uint)destination.Length,localIndices,(uint)localIndices.Length,
                 positions,(uint)globalIndices.Length,3*sizeof(float),attributes,5*sizeof(float),weights,(uint)weights.Length,compactLocks,
-                (uint)targetIndexCount,float.MaxValue,SimplifySparse|SimplifyErrorAbsolute,out float error);
+                (uint)targetIndexCount,targetError,SimplifySparse|SimplifyErrorAbsolute,out float error);
             if(resultCount<0){throw new InvalidOperationException($"meshoptimizer rejected simplification input (native status {resultCount}).");}
             if(resultCount>destination.Length||resultCount%3!=0||!float.IsFinite(error)){
                 throw new InvalidOperationException("meshoptimizer returned an invalid result.");

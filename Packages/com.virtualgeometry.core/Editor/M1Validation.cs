@@ -26,12 +26,10 @@ namespace VirtualizedGeometry.Editor{
             if(!Application.isBatchMode&&!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()){return;}
             Directory.CreateDirectory(Root);
             AssetDatabase.Refresh();
-            Mesh mesh=AssetDatabase.LoadAssetAtPath<Mesh>(Root+"/SourceGrid.asset");
-            if(mesh==null){
-                mesh=CreateGrid(32,24);
-                AssetDatabase.CreateAsset(mesh,Root+"/SourceGrid.asset");
-            }
-            virtualAsset=VirtualGeometryConversionService.Convert(mesh,Root+"/ConvertedGrid.asset",new VirtualGeometryBuildSettings{MaxTrianglesPerCluster=64,GenerateHierarchy=false,PositionQuantizationBits=0});
+            Mesh generated=CreateGrid(32,24);
+            virtualAsset=VirtualGeometryValidationModel.Import(generated,Root+"/SourceGrid.obj",new VirtualGeometryModelSettings{MaxTrianglesPerCluster=64,PositionQuantizationBits=0});
+            Object.DestroyImmediate(generated);
+            Mesh mesh=VirtualGeometryValidationModel.SourceMesh(Root+"/SourceGrid.obj");
             UniversalRendererData renderer=AssetDatabase.LoadAssetAtPath<UniversalRendererData>(Root+"/M1Renderer.asset");
             if(renderer==null){
                 renderer=ScriptableObject.CreateInstance<UniversalRendererData>();
@@ -93,6 +91,9 @@ namespace VirtualizedGeometry.Editor{
             GameObject virtualObject=new GameObject("Virtual Geometry Result");
             virtualObject.layer=VirtualLayer;
             var virtualRenderer=virtualObject.AddComponent<VirtualGeometryRenderer>();
+            // 全leafの描画を元Meshと比べるため、page読込とcullingで欠けないよう全常駐・culling無しにする。
+            virtualRenderer.SetStreamingConfiguration(VirtualGeometryStreamingMode.AllResident,new VirtualGeometryStreamingSettings());
+            virtualRenderer.SetCullingSettings(false,false);
             virtualRenderer.SetMeshAsset(virtualAsset);
             virtualRenderer.SetMaterials(referenceMaterial);
             EditorSceneManager.SaveScene(camera.gameObject.scene,Root+"/M1.unity");
@@ -108,6 +109,8 @@ namespace VirtualizedGeometry.Editor{
             warmup=0;
             try{
                 CreateSample();
+                // 全leaf clusterを描いて元Meshと比べるため、検証の間だけLOD閾値を0にする(保存sceneは既定の閾値)。
+                Object.FindAnyObjectByType<VirtualGeometryRenderer>().SetLodSettings(0,0);
                 EditorApplication.update+=Tick;
             }catch(Exception error){Finish(error);}
         }
@@ -127,8 +130,10 @@ namespace VirtualizedGeometry.Editor{
                 var dedicated=Object.FindAnyObjectByType<VirtualGeometryRenderer>();
                 if(dedicated.IsFallbackVisible){throw new InvalidOperationException("M1 unexpectedly used fallback: "+dedicated.DiagnosticReason);}
                 var metrics=dedicated.ReadMetricsForDiagnostics(camera);
-                if(metrics.DrawnTriangles!=virtualAsset.TriangleCount||metrics.DrawCalls!=virtualAsset.MaterialCount||metrics.SelectedClusters!=virtualAsset.ClusterCount){throw new InvalidOperationException("M1 dedicated indirect draw counts are incorrect.");}
-                checks.Add("dedicated legacy indirect draw: fallback=false, triangles="+metrics.DrawnTriangles+", draw calls="+metrics.DrawCalls+", clusters="+metrics.SelectedClusters+": PASS");
+                if(metrics.DrawnTriangles!=virtualAsset.LeafTriangleCount||metrics.DrawCalls!=virtualAsset.MaterialCount||metrics.SelectedClusters<2){
+                    throw new InvalidOperationException("M1 dedicated indirect draw counts are incorrect: triangles="+metrics.DrawnTriangles+"/"+virtualAsset.LeafTriangleCount+", draw calls="+metrics.DrawCalls+"/"+virtualAsset.MaterialCount+", clusters="+metrics.SelectedClusters);
+                }
+                checks.Add("dedicated all-leaf indirect draw: fallback=false, triangles="+metrics.DrawnTriangles+", draw calls="+metrics.DrawCalls+", clusters="+metrics.SelectedClusters+": PASS");
                 CompareOccupancy(reference,virtualImage,out Texture2D difference,out int referencePixels,out int virtualPixels,out int differingPixels,out int unionPixels);
                 File.WriteAllBytes("TestResults/M1/Difference.png",difference.EncodeToPNG());
                 Object.DestroyImmediate(reference);
@@ -141,7 +146,7 @@ namespace VirtualizedGeometry.Editor{
                 if(mismatch>0.0025f){throw new InvalidOperationException("Reference/virtual silhouette mismatch="+mismatch+" ("+differingPixels+"/"+unionPixels+").");}
                 checks.Add("all-cluster silhouette mismatch="+mismatch+": PASS");
                 checks.Add("referencePixels="+referencePixels+", virtualPixels="+virtualPixels+": PASS");
-                string pagePath=Path.Combine(Application.streamingAssetsPath,virtualAsset.PageRelativePath);
+                string pagePath=VirtualGeometryPagePaths.Resolve(virtualAsset.PageRelativePath);
                 VirtualGeometryPage page=VirtualGeometryPageCodec.Read(File.ReadAllBytes(pagePath));
                 if(page.Clusters.Length!=virtualAsset.ClusterCount||page.Indices.Length/3!=virtualAsset.TriangleCount){throw new InvalidDataException("Saved page metadata differs from the converted asset.");}
                 checks.Add("saved page round-trip and metadata: PASS");

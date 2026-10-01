@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -35,7 +36,10 @@ namespace VirtualizedGeometry{
         Task<VirtualGeometryPagePayload> ReadAsync(int page,CancellationToken token);
     }
 
-    /// <summary>実GPU転送とstate-machine試験の境界。公開前のpartial slotは描画対象にしない。</summary>
+    /// <summary>
+    /// 実GPU転送とstate-machine試験の境界。公開前のpartial slotは描画対象にしない。
+    /// slotはpageが使う連続slotの先頭。offsetはそこからの頂点・添字の位置で、pageの全体が連続した範囲に入る。
+    /// </summary>
     public interface IVirtualGeometryPageUploader{
         void UploadVertices(int slot,int offset,VirtualGeometryPackedVertex[] vertices,int sourceOffset,int count);
         void UploadIndices(int slot,int offset,uint[] indices,int sourceOffset,int count);
@@ -70,25 +74,29 @@ namespace VirtualizedGeometry{
         }
     }
 
-    /// <summary>小容量要求queue、実async I/O、CPU cache、chunk転送、GPU完了後のslot再利用を管理する。</summary>
+    /// <summary>
+    /// 小容量要求queue、実async I/O、CPU cache、chunk転送、GPU完了後のslot再利用を管理する。
+    /// GPU poolはslot(metadataの割り当て単位)に区切り、pageは自分の大きさに要る数だけ連続したslotを使う。root(page 0)は先頭のslotに置く。
+    /// </summary>
     public sealed class VirtualGeometryStreamingController:IDisposable{
         private sealed class Entry{
-            public VirtualGeometryPageState State;public float Priority;public long LastRequested;public int Slot=-1;
+            public VirtualGeometryPageState State;public float Priority;public long LastRequested;public int Slot=-1;public int SlotCount;
+            public bool Retiring;public long RetireAfter;public int Generation;
             public long PriorityWindow=-1;public float CurrentPriority;public float PreviousPriority;
             public VirtualGeometryPagePayload Payload;public Task<VirtualGeometryPagePayload> Task;public CancellationTokenSource Cancellation;
             public int VerticesUploaded;public int IndicesUploaded;public bool CancellationRequested;public bool Wanted;public bool EverResident;
-        }
-        private sealed class Slot{
-            public int Page=-1;public int Generation;public long RetireAfter;public bool Retiring;
         }
         private readonly VirtualGeometryStreamMetadata metadata;private readonly VirtualGeometryStreamingSettings settings;
         // 最初から常駐させて退避しないpage。root(page 0)と、rootからProxyと同じ段までの単一子の段のpage。
         // 読込直後の専用描画をProxyと同じ形にし、Proxy→より粗いrootへの切替による見た目の後退を防ぐ。
         private readonly bool[] pinned;
-        private readonly IVirtualGeometryPageStore store;private readonly Entry[] entries;private readonly Slot[] slots;
+        private readonly IVirtualGeometryPageStore store;private readonly Entry[] entries;
+        // slotごとに使っているpage(-1は空き)と、最後に退避したpageのGPU完了待ちsubmission(再利用の安全確認に使う)。
+        private readonly int[] slotPages;private readonly long[] slotRetireAfter;
+        private readonly int[] pageSlots;private readonly int rootSlots;private int generation;
         private long transferFrame=-1;private bool disposed;
         public VirtualGeometryStreamingStatistics Statistics{get;}=new VirtualGeometryStreamingStatistics();
-        public int SlotCount=>this.slots.Length;
+        public int SlotCount=>this.slotPages.Length;
         /// <summary>root と、Proxyと同じ段までの常駐pageがすべてGPUへ公開済みか。専用描画への切替条件。</summary>
         public bool RootReady{
             get{
@@ -104,29 +112,64 @@ namespace VirtualizedGeometry{
         public VirtualGeometryStreamingController(VirtualGeometryStreamMetadata metadata,VirtualGeometryStreamingSettings settings,IVirtualGeometryPageStore store){
             this.metadata=metadata??throw new ArgumentNullException(nameof(metadata));
             this.settings=settings?.Clone()??throw new ArgumentNullException(nameof(settings));this.store=store??throw new ArgumentNullException(nameof(store));
-            if(settings.GpuGeometryBudgetBytes<metadata.SlotGeometryBytes||settings.CpuCacheBudgetBytes<2L*metadata.Pages[0].ByteCount||
+            if(settings.GpuGeometryBudgetBytes<(long)metadata.PageSlots(0)*metadata.SlotGeometryBytes||settings.CpuCacheBudgetBytes<2L*metadata.Pages[0].ByteCount||
                 settings.IoConcurrency<1||settings.TransferBytesPerFrame<32||settings.RequestQueueCapacity<1||settings.RequestTimeoutFrames<1){
                 throw new InvalidOperationException("Streaming budgets cannot hold the pinned root, minimum slot, or transfer element.");
             }
-            int slotCount=(int)Math.Min(metadata.Pages.Length,settings.GpuGeometryBudgetBytes/metadata.SlotGeometryBytes);
-            this.slots=new Slot[slotCount];for(int i=0;i<slotCount;i++){this.slots[i]=new Slot();}
+            int slotCount=SlotCountFor(metadata,settings);
+            this.slotPages=new int[slotCount];this.slotRetireAfter=new long[slotCount];
+            for(int i=0;i<slotCount;i++){this.slotPages[i]=-1;}
+            this.pageSlots=new int[metadata.Pages.Length];
+            for(int page=0;page<this.pageSlots.Length;page++){this.pageSlots[page]=metadata.PageSlots(page);}
+            this.rootSlots=this.pageSlots[0];
             this.entries=new Entry[metadata.Pages.Length];for(int i=0;i<this.entries.Length;i++){this.entries[i]=new Entry();}
             this.Statistics.GpuAllocatedBytes=(long)slotCount*metadata.SlotGeometryBytes;
             this.Statistics.CpuMetadataBytes=metadata.MetadataBytes;
-            this.pinned=new bool[this.entries.Length];this.pinned[0]=true;
-            // 予算が足りなければrootに近い段から入る分だけ固定する。残りは通常のstreaming対象になる。
-            int available=slotCount-1;
-            foreach(uint root in metadata.Roots){
-                if(root==uint.MaxValue){continue;}
-                uint node=root;
-                while(metadata.Nodes[node].ChildCount==1&&available>0){
-                    node=metadata.Nodes[node].FirstChild;int page=(int)metadata.Nodes[node].PageId;
-                    if(!this.pinned[page]){this.pinned[page]=true;available--;}
-                }
-            }
+            this.pinned=SelectPinnedPages(metadata,slotCount);
             for(int page=0;page<this.entries.Length;page++){
                 if(this.pinned[page]){this.Request(page,float.MaxValue,0);}
             }
+        }
+
+        /// <summary>予算から確保するslot数。全pageを同時に置ける数より多くは確保しない。</summary>
+        public static int SlotCountFor(VirtualGeometryStreamMetadata metadata,VirtualGeometryStreamingSettings settings){
+            if(metadata==null){throw new ArgumentNullException(nameof(metadata));}
+            if(settings==null){throw new ArgumentNullException(nameof(settings));}
+            return (int)Math.Min(metadata.TotalPageSlots,settings.GpuGeometryBudgetBytes/metadata.SlotGeometryBytes);
+        }
+
+        /// <summary>1 nodeを細分化するのに要るslot数の最大。細分化には全ての子のpageが要るため、子のpageのslot数の和で数える。</summary>
+        public static int RefinementReserveSlots(VirtualGeometryStreamMetadata metadata){
+            if(metadata==null){throw new ArgumentNullException(nameof(metadata));}
+            int reserve=1;
+            foreach(VirtualGeometryHierarchyNode node in metadata.Nodes){
+                int slots=0;
+                for(uint child=0;child<node.ChildCount;child++){slots+=metadata.PageSlots((int)metadata.Nodes[node.FirstChild+child].PageId);}
+                reserve=Math.Max(reserve,slots);
+            }
+            return reserve;
+        }
+
+        /// <summary>
+        /// 起動時から常駐させ退避しないpage。rootのpageと、rootから単一子の段を降りてProxyと同じ段までのpage。
+        /// 固定pageだけで予算を埋めると詳細を読めず粗いまま止まるため、1 nodeを細分化するのに要るslotを空け、入る分だけrootに近い段から固定する。
+        /// </summary>
+        public static bool[] SelectPinnedPages(VirtualGeometryStreamMetadata metadata,int slotCount){
+            if(metadata==null){throw new ArgumentNullException(nameof(metadata));}
+            var pinned=new bool[metadata.Pages.Length];pinned[0]=true;
+            int available=Math.Max(0,slotCount-metadata.PageSlots(0)-RefinementReserveSlots(metadata));
+            foreach(uint root in metadata.Roots){
+                if(root==uint.MaxValue){continue;}
+                uint node=root;
+                while(metadata.Nodes[node].ChildCount==1){
+                    node=metadata.Nodes[node].FirstChild;int page=(int)metadata.Nodes[node].PageId;
+                    if(pinned[page]){continue;}
+                    int cost=metadata.PageSlots(page);
+                    if(cost>available){break;}
+                    pinned[page]=true;available-=cost;
+                }
+            }
+            return pinned;
         }
 
         public void Request(int page,float priority,long frame){
@@ -187,7 +230,7 @@ namespace VirtualizedGeometry{
                 entry.CancellationRequested=true;entry.Cancellation.Cancel();this.Statistics.Cancellations++;
             }else if(entry.State==VirtualGeometryPageState.Queued||entry.State==VirtualGeometryPageState.Cached||entry.State==VirtualGeometryPageState.Uploading){
                 // 未公開slotはどのdrawも参照しないため、取消時に直ちに返却できる。
-                if(entry.Slot>=0){this.slots[entry.Slot].Page=-1;entry.Slot=-1;}
+                if(entry.Slot>=0){this.FreeSlots(entry);}
                 if(entry.Payload!=null){this.Statistics.CpuBytes-=entry.Payload.ByteCount;entry.Payload=null;}
                 entry.State=VirtualGeometryPageState.Cancelled;this.Statistics.Cancellations++;
             }
@@ -214,12 +257,12 @@ namespace VirtualizedGeometry{
                     (entry.State==VirtualGeometryPageState.Queued||entry.State==VirtualGeometryPageState.Cached||entry.State==VirtualGeometryPageState.Uploading)){this.Cancel(page);}
             }
             this.PollIo(frame);
-            for(int s=1;s<this.slots.Length;s++){
-                Slot slot=this.slots[s];
-                if(!slot.Retiring||completedSubmission<slot.RetireAfter){continue;}
-                Entry old=this.entries[slot.Page];old.Slot=-1;
+            for(int page=1;page<this.entries.Length;page++){
+                Entry old=this.entries[page];
+                if(!old.Retiring||completedSubmission<old.RetireAfter){continue;}
+                for(int s=old.Slot;s<old.Slot+old.SlotCount;s++){this.slotRetireAfter[s]=old.RetireAfter;}
+                this.FreeSlots(old);old.Retiring=false;
                 if(old.Payload!=null){old.State=VirtualGeometryPageState.Cached;}else{old.State=VirtualGeometryPageState.Missing;}
-                slot.Page=-1;slot.Retiring=false;
             }
             this.StartIo(frame);
             for(int iteration=0;iteration<this.entries.Length;iteration++){
@@ -227,16 +270,22 @@ namespace VirtualizedGeometry{
                 if(page<0){break;}
                 Entry entry=this.entries[page];
                 if(entry.Slot<0){
-                    int slot=this.FindFreeSlot(page);
-                    if(slot<0){this.BeginEviction(page,frame,lastSubmitted,uploader);break;}
-                    Slot physical=this.slots[slot];
-                    if(physical.Retiring){this.Statistics.UnsafeSlotReuses++;throw new InvalidOperationException("Attempt to reuse an in-flight slot.");}
-                    if(physical.RetireAfter>0){
-                        this.Statistics.LastReuseRetirementSubmission=physical.RetireAfter;this.Statistics.LastReuseCompletedSubmission=completedSubmission;
-                        if(completedSubmission<physical.RetireAfter){this.Statistics.UnsafeSlotReuses++;throw new InvalidOperationException("GPU completion has not reached slot retirement.");}
+                    // 予算の全slotを使っても置けないpageは読めない。CPU予算を超えるpageと同じく失敗として報告する。
+                    if(page!=0&&this.pageSlots[page]>this.slotPages.Length-this.rootSlots){
+                        this.Statistics.CpuBytes-=entry.Payload.ByteCount;entry.Payload=null;entry.State=VirtualGeometryPageState.Failed;
+                        this.Statistics.LastError="Page requires more GPU geometry slots than configured.";continue;
                     }
-                    physical.Page=page;physical.Generation++;this.Statistics.LastReuseGeneration=physical.Generation;entry.Slot=slot;entry.VerticesUploaded=0;entry.IndicesUploaded=0;
-                    entry.State=VirtualGeometryPageState.Uploading;
+                    int slot=this.FindFreeSlots(page);
+                    if(slot<0){this.BeginEviction(page,frame,lastSubmitted,uploader);break;}
+                    long retired=0;
+                    for(int s=slot;s<slot+this.pageSlots[page];s++){retired=Math.Max(retired,this.slotRetireAfter[s]);}
+                    if(retired>0){
+                        this.Statistics.LastReuseRetirementSubmission=retired;this.Statistics.LastReuseCompletedSubmission=completedSubmission;
+                        if(completedSubmission<retired){this.Statistics.UnsafeSlotReuses++;throw new InvalidOperationException("GPU completion has not reached slot retirement.");}
+                    }
+                    for(int s=slot;s<slot+this.pageSlots[page];s++){this.slotPages[s]=page;}
+                    entry.Slot=slot;entry.SlotCount=this.pageSlots[page];entry.Generation=++this.generation;this.Statistics.LastReuseGeneration=entry.Generation;
+                    entry.VerticesUploaded=0;entry.IndicesUploaded=0;entry.State=VirtualGeometryPageState.Uploading;
                 }
                 int remaining=this.settings.TransferBytesPerFrame-this.Statistics.TransferBytesThisFrame;
                 int vertexCount=Math.Min(entry.Payload.Vertices.Length-entry.VerticesUploaded,remaining/32);
@@ -251,7 +300,7 @@ namespace VirtualizedGeometry{
                     entry.IndicesUploaded+=indexCount;this.Statistics.TransferBytesThisFrame+=indexCount*4;
                 }
                 if(entry.IndicesUploaded<entry.Payload.Indices.Length){break;}
-                uploader.Publish(page,entry.Slot,this.slots[entry.Slot].Generation);entry.State=VirtualGeometryPageState.Resident;entry.EverResident=true;
+                uploader.Publish(page,entry.Slot,entry.Generation);entry.State=VirtualGeometryPageState.Resident;entry.EverResident=true;
                 if(this.Statistics.TransferBytesThisFrame>=this.settings.TransferBytesPerFrame){break;}
             }
             this.Statistics.PeakTransferBytesPerFrame=Math.Max(this.Statistics.PeakTransferBytesPerFrame,this.Statistics.TransferBytesThisFrame);
@@ -328,31 +377,63 @@ namespace VirtualizedGeometry{
             return next;
         }
 
-        private int FindFreeSlot(int page){
-            if(page==0){if(this.slots[0].Page<0){return 0;}return -1;}
-            for(int slot=1;slot<this.slots.Length;slot++){if(this.slots[slot].Page<0&&!this.slots[slot].Retiring){return slot;}}
+        // pageが要る数の連続した空きslotの先頭。rootは先頭のslotに置き、他のpageはその後ろから探す。
+        private int FindFreeSlots(int page){
+            int count=this.pageSlots[page];
+            if(page==0){
+                for(int s=0;s<count;s++){if(this.slotPages[s]>=0){return -1;}}
+                return 0;
+            }
+            int run=0;
+            for(int s=this.rootSlots;s<this.slotPages.Length;s++){
+                if(this.slotPages[s]>=0){run=0;continue;}
+                run++;
+                if(run==count){return s-count+1;}
+            }
             return -1;
+        }
+
+        private void FreeSlots(Entry entry){
+            for(int s=entry.Slot;s<entry.Slot+entry.SlotCount;s++){this.slotPages[s]=-1;}
+            entry.Slot=-1;entry.SlotCount=0;
         }
 
         // GPU feedbackは描画frameで刻印され、非同期readback完了まで数frame遅れて届く。
         // 直前1 frameだけで利用中を判定すると、現在のcutが使うpageまで古く見えて退避対象になる。
         private const int InUseFrames=8;
 
+        // wantedが要る数の連続slotを空ける。区間の中のpageがすべて退避してよい(固定でなく、常駐済みで、使用中でない)区間のうち、
+        // 区間で最も最近使われたpageが最も古い区間を選び、その中のpageをすべて退避する。
+        // 空きと退避中のslotだけで足りる区間があれば、退避の完了を待つ(余計に退避しない)。
         private void BeginEviction(int wanted,long frame,long lastSubmitted,IVirtualGeometryPageUploader uploader){
-            int victim=-1;
-            for(int slot=1;slot<this.slots.Length;slot++){
-                Slot physical=this.slots[slot];if(physical.Retiring||physical.Page<0){continue;}
-                if(this.pinned[physical.Page]){continue;}
-                Entry entry=this.entries[physical.Page];if(entry.State!=VirtualGeometryPageState.Resident){continue;}
-                Entry desire=this.entries[wanted];
-                if(entry.LastRequested>=frame-InUseFrames&&entry.Priority>=desire.Priority){continue;}
-                if(victim<0||entry.LastRequested<this.entries[this.slots[victim].Page].LastRequested||
-                    (entry.LastRequested==this.entries[this.slots[victim].Page].LastRequested&&entry.Priority<this.entries[this.slots[victim].Page].Priority)){victim=slot;}
+            int count=this.pageSlots[wanted];Entry desire=this.entries[wanted];
+            int best=-1;long bestNewest=long.MaxValue;float bestPriority=float.MaxValue;
+            for(int start=this.rootSlots;start+count<=this.slotPages.Length;start++){
+                bool usable=true;bool hasVictim=false;long newest=long.MinValue;float priority=0;
+                for(int s=start;s<start+count;s++){
+                    int occupant=this.slotPages[s];
+                    if(occupant<0){continue;}
+                    Entry entry=this.entries[occupant];
+                    if(entry.Retiring){continue;}
+                    if(this.pinned[occupant]||entry.State!=VirtualGeometryPageState.Resident||
+                        (entry.LastRequested>=frame-InUseFrames&&entry.Priority>=desire.Priority)){usable=false;break;}
+                    hasVictim=true;newest=Math.Max(newest,entry.LastRequested);priority=Math.Max(priority,entry.Priority);
+                }
+                if(!usable){continue;}
+                if(!hasVictim){return;}
+                if(best<0||newest<bestNewest||(newest==bestNewest&&priority<bestPriority)){best=start;bestNewest=newest;bestPriority=priority;}
             }
-            if(victim<0){return;}
-            Slot target=this.slots[victim];uploader.Invalidate(target.Page);
-            this.entries[target.Page].State=VirtualGeometryPageState.Retiring;this.entries[target.Page].Wanted=false;target.Retiring=true;target.RetireAfter=lastSubmitted+1;
-            this.Statistics.LastRetirementSubmission=target.RetireAfter;this.Statistics.Evictions++;
+            if(best<0){return;}
+            var victims=new List<int>();
+            for(int s=best;s<best+count;s++){
+                int occupant=this.slotPages[s];
+                if(occupant>=0&&!this.entries[occupant].Retiring&&!victims.Contains(occupant)){victims.Add(occupant);}
+            }
+            foreach(int victim in victims){
+                Entry entry=this.entries[victim];uploader.Invalidate(victim);
+                entry.State=VirtualGeometryPageState.Retiring;entry.Wanted=false;entry.Retiring=true;entry.RetireAfter=lastSubmitted+1;
+                this.Statistics.LastRetirementSubmission=entry.RetireAfter;this.Statistics.Evictions++;
+            }
         }
 
         private void RefreshStatistics(){

@@ -1,7 +1,7 @@
 using UnityEditor;
 using UnityEngine;
 namespace VirtualizedGeometry.Editor{
-    /// <summary>root Proxyだけをraycastし、GPU専用描画でもEditorから元Rendererを選択できるようにする。</summary>
+    /// <summary>VG描画中は通常MeshRendererの描画を止めるため、代替Meshへのraycastで、Scene viewのクリックからそのGameObjectを選択できるようにする。</summary>
     [InitializeOnLoad]
     public static class VirtualGeometryPicking{
         static VirtualGeometryPicking(){SceneView.duringSceneGui+=OnSceneGui;}
@@ -23,7 +23,8 @@ namespace VirtualizedGeometry.Editor{
         private static void OnSceneGui(SceneView view){
             Event input=Event.current;if(input.type!=EventType.MouseDown||input.button!=0||input.alt||Tools.current==Tool.View){return;}
             Ray ray=HandleUtility.GUIPointToWorldRay(input.mousePosition);var renderer=Pick(ray,out float distance);if(renderer==null){return;}
-            if(Physics.Raycast(ray,out RaycastHit hit,distance)&&hit.collider.GetComponent<VirtualGeometryProxyOwner>()==null){return;}
+            // 手前に別のGameObjectのColliderがあればUnity標準の選択に任せる。同じGameObjectの当たり判定(代替Mesh)は自分として扱う。
+            if(Physics.Raycast(ray,out RaycastHit hit,distance)&&hit.collider.gameObject!=renderer.gameObject){return;}
             Selection.activeGameObject=renderer.gameObject;input.Use();
         }
     }

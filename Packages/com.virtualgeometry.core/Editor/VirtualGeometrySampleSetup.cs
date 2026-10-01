@@ -14,8 +14,9 @@ namespace VirtualizedGeometry.Editor{
         public static void CreateSample(){
             if(!Application.isBatchMode&&!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()){return;}
             Directory.CreateDirectory(Root);AssetDatabase.Refresh();EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);
-            Mesh source=AssetDatabase.LoadAssetAtPath<Mesh>(Root+"/Source.asset");if(source==null){source=CreateMesh();AssetDatabase.CreateAsset(source,Root+"/Source.asset");}
-            var converted=VirtualGeometryConversionService.Convert(source,Root+"/Converted.asset",new VirtualGeometryBuildSettings{MaxTrianglesPerCluster=64,HierarchyFanout=4});
+            Mesh generated=CreateMesh();
+            var converted=VirtualGeometryValidationModel.Import(generated,Root+"/Source.obj",new VirtualGeometryModelSettings{MaxTrianglesPerCluster=64,HierarchyFanout=4});
+            Object.DestroyImmediate(generated);
             var rendererData=AssetDatabase.LoadAssetAtPath<UniversalRendererData>(Root+"/Renderer.asset");if(rendererData==null){rendererData=ScriptableObject.CreateInstance<UniversalRendererData>();AssetDatabase.CreateAsset(rendererData,Root+"/Renderer.asset");}
             rendererData.renderingMode=RenderingMode.Forward;rendererData.depthPrimingMode=DepthPrimingMode.Disabled;rendererData.copyDepthMode=CopyDepthMode.AfterOpaques;
             VirtualGeometryRendererSetup.EnsureFeature(rendererData);
@@ -32,7 +33,7 @@ namespace VirtualizedGeometry.Editor{
             Debug.Log("Practical sampleを生成しました。専用Forward pipelineとWindows DX12を設定しました。Scene viewのVirtual Geometry toolbarから表示を操作できます。");
         }
         private static VirtualGeometryRenderer CreateInstance(string name,Vector3 position,Color color,VirtualGeometryMeshAsset asset){
-            var result=new GameObject(name).AddComponent<VirtualGeometryRenderer>();result.transform.position=position;result.SetStreamingConfiguration(VirtualGeometryStreamingMode.Streaming,new VirtualGeometryStreamingSettings{GpuGeometryBudgetBytes=(long)asset.SlotGeometryBytes*asset.StreamingPageCount,CpuCacheBudgetBytes=asset.SlotGeometryBytes*4L,TransferBytesPerFrame=asset.SlotGeometryBytes*2,IoConcurrency=2,RequestQueueCapacity=16,IoDelayMilliseconds=25});result.SetMeshAsset(asset);result.SetMaterials(SampleMaterial(name,color,asset));result.SetProxyOptions(true,true);return result;
+            var result=new GameObject(name).AddComponent<VirtualGeometryRenderer>();result.transform.position=position;result.SetStreamingConfiguration(VirtualGeometryStreamingMode.Streaming,new VirtualGeometryStreamingSettings());result.SetMeshAsset(asset);result.SetMaterials(SampleMaterial(name,color,asset));result.SetProxyOptions(true,true);return result;
         }
         /// <summary>instanceごとの色違いURP Lit Material asset。MeshRendererと同じくMaterialで見た目を決める。</summary>
         private static Material SampleMaterial(string instanceName,Color color,VirtualGeometryMeshAsset asset){

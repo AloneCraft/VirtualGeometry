@@ -20,7 +20,7 @@ namespace VirtualizedGeometry.Editor{
                 var pipeline=AssetDatabase.LoadAssetAtPath<UniversalRenderPipelineAsset>(Root+"/M5Pipeline.asset");GraphicsSettings.defaultRenderPipeline=pipeline;QualitySettings.renderPipeline=pipeline;
                 var data=AssetDatabase.LoadAssetAtPath<UniversalRendererData>(Root+"/M5Renderer.asset");data.depthPrimingMode=DepthPrimingMode.Disabled;data.copyDepthMode=CopyDepthMode.AfterOpaques;foreach(var f in data.rendererFeatures){if(f is M5DepthConsumerFeature d){d.SetActive(false);}if(f is VirtualGeometryRenderFeature vg){vg.Create();}}data.SetDirty();
                 EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);
-                var asset=AssetDatabase.LoadAssetAtPath<VirtualGeometryMeshAsset>(Root+"/Converted.asset");
+                var asset=VirtualGeometryValidationModel.Load(Root+"/Shared.obj");
                 for(int i=0;i<2;i++){
                     var go=new GameObject("Lifecycle "+i);go.SetActive(false);go.transform.position=new Vector3(i==0?-9:9,0,0);go.transform.localScale=Vector3.one*.5f;var renderer=go.AddComponent<VirtualGeometryRenderer>();renderer.SetStreamingConfiguration(VirtualGeometryStreamingMode.AllResident,new VirtualGeometryStreamingSettings());renderer.SetMeshAsset(asset);renderer.SetProxyOptions(false,false);
                 }

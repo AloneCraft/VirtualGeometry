@@ -1,6 +1,5 @@
 using System;
 using System.Collections;
-using System.Threading;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
@@ -55,16 +54,21 @@ namespace VirtualizedGeometry.Tests{
             otherMetadata.FindProperty("proxyMesh").objectReferenceValue=mesh;otherMetadata.FindProperty("proxyLitMaterial").objectReferenceValue=lit;otherMetadata.FindProperty("materialCount").intValue=1;otherMetadata.ApplyModifiedPropertiesWithoutUndo();
             try{
                 renderer.SetMeshAsset(asset);
+                // 部品を付けるとMeshFilter/MeshRendererが揃い、MeshFilterには代替Mesh、空きslotには変換assetのMaterialが入る
+                Assert.That(go.GetComponent<MeshFilter>().sharedMesh,Is.SameAs(mesh));
+                Assert.That(go.GetComponent<MeshRenderer>().sharedMaterial,Is.SameAs(lit));
                 VirtualGeometryProxyOwner first=renderer.GetComponentInChildren<VirtualGeometryProxyOwner>(true);
                 for(int update=0;update<3;update++){
-                    // Inspectorと同じserialized経路でMaterialとLOD閾値を変えても、Proxyは作り直さずMaterialだけを反映する。
-                    var settings=new SerializedObject(renderer);var materials=settings.FindProperty("materials");materials.arraySize=1;
+                    // MeshRendererのMaterialとLOD閾値をInspectorと同じserialized経路で変えても、影専用の子は作り直さずMaterialだけを反映する。
+                    var ordinary=new SerializedObject(go.GetComponent<MeshRenderer>());var materials=ordinary.FindProperty("m_Materials");materials.arraySize=1;
                     Material assigned=unlit;if(update%2==0){assigned=lit;}
-                    materials.GetArrayElementAtIndex(0).objectReferenceValue=assigned;settings.FindProperty("lodErrorThresholdPixels").floatValue=2+update;settings.ApplyModifiedPropertiesWithoutUndo();
+                    materials.GetArrayElementAtIndex(0).objectReferenceValue=assigned;ordinary.ApplyModifiedPropertiesWithoutUndo();
+                    var settings=new SerializedObject(renderer);settings.FindProperty("lodErrorThresholdPixels").floatValue=2+update;settings.ApplyModifiedPropertiesWithoutUndo();
                     yield return null;EditorApplication.QueuePlayerLoopUpdate();yield return null;
                     VirtualGeometryProxyOwner[] owners=renderer.GetComponentsInChildren<VirtualGeometryProxyOwner>(true);
                     Assert.That(owners.Length,Is.EqualTo(1));Assert.That(owners[0],Is.SameAs(first));
-                    Assert.That(owners[0].GetComponent<MeshRenderer>().sharedMaterial,Is.SameAs(assigned));
+                    Material expectedShadow=assigned;if(assigned.FindPass("ShadowCaster")<0){expectedShadow=lit;}
+                    Assert.That(owners[0].GetComponent<MeshRenderer>().sharedMaterial,Is.SameAs(expectedShadow));
                 }
                 {
                     //Mesh Assetを変えたときはProxyを作り直す
@@ -73,7 +77,22 @@ namespace VirtualizedGeometry.Tests{
                     VirtualGeometryProxyOwner[] owners=renderer.GetComponentsInChildren<VirtualGeometryProxyOwner>(true);
                     Assert.That(owners.Length,Is.EqualTo(1));Assert.That(owners[0],Is.Not.SameAs(first));
                 }
+                // 部品を止めると影専用の子は消え、通常MeshRendererは止めたまま残らない
                 renderer.enabled=false;Assert.That(go.GetComponentsInChildren<VirtualGeometryProxyOwner>(true),Is.Empty);
+                Assert.That(go.GetComponent<MeshRenderer>().forceRenderingOff,Is.False);
+                {
+                    //変換データを外すと、部品が入れた代替MeshはMeshFilterから外れ、通常のMeshとして見え続けない
+                    renderer.SetMeshAsset(asset);renderer.SetMeshAsset(null);
+                    Assert.That(go.GetComponent<MeshFilter>().sharedMesh,Is.Null);
+                }
+                {
+                    //利用者が後から入れたMeshは、変換データを外しても残す
+                    var custom=new Mesh();
+                    try{
+                        renderer.SetMeshAsset(asset);go.GetComponent<MeshFilter>().sharedMesh=custom;renderer.SetMeshAsset(null);
+                        Assert.That(go.GetComponent<MeshFilter>().sharedMesh,Is.SameAs(custom));
+                    }finally{UnityEngine.Object.DestroyImmediate(custom);}
+                }
             }finally{UnityEngine.Object.DestroyImmediate(go);UnityEngine.Object.DestroyImmediate(source);UnityEngine.Object.DestroyImmediate(asset);UnityEngine.Object.DestroyImmediate(other);UnityEngine.Object.DestroyImmediate(lit);UnityEngine.Object.DestroyImmediate(unlit);UnityEngine.Object.DestroyImmediate(normal);}
         }
 
@@ -87,24 +106,13 @@ namespace VirtualizedGeometry.Tests{
             Assert.That(VirtualGeometryNormalMapping.TryBuildFrame(Vector3.forward,Vector3.right,Vector3.up,Vector2.zero,Vector2.zero,out tangent,out bitangent),Is.False);
         }
 
-        [UnityTest]
-        public IEnumerator ConversionCancellationCreatesNoPartialAssetAndCacheKeyTracksSettings(){
-            Mesh source=CreateGrid(4);string path="Assets/M5CancelledConversion.asset";
-            try{
-                var settings=new VirtualGeometryBuildSettings();
-                using(var cancellation=new CancellationTokenSource()){
-                    cancellation.Cancel();
-                    using(var job=VirtualGeometryConversionJob.StartSnapshot(VirtualGeometryMeshInput.FromMesh(source),settings,cancellation.Token)){
-                        while(!job.IsCompleted){yield return null;}
-                        Assert.That(job.IsCancelled,Is.True);
-                        Assert.Throws<OperationCanceledException>(()=>job.GetOutput());
-                    }
-                }
-                Assert.That(AssetDatabase.LoadAssetAtPath<VirtualGeometryMeshAsset>(path),Is.Null);
-                string original=VirtualGeometryConversionService.SettingsKey(settings);
-                settings.HierarchyFanout=8;
-                Assert.That(VirtualGeometryConversionService.SettingsKey(settings),Is.Not.EqualTo(original));
-            }finally{UnityEngine.Object.DestroyImmediate(source);}
+        [Test]
+        public void SettingsKeyTracksBuildSettings(){
+            // 変換設定が変われば変換データの識別キーも変わる(詳細表示と再変換の判別に使う)
+            var settings=new VirtualGeometryBuildSettings();
+            string original=VirtualGeometryAssetBuild.SettingsKey(settings);
+            settings.HierarchyFanout=8;
+            Assert.That(VirtualGeometryAssetBuild.SettingsKey(settings),Is.Not.EqualTo(original));
         }
 
         [Test]
@@ -143,12 +151,6 @@ namespace VirtualizedGeometry.Tests{
             Matrix4x4 shear=Matrix4x4.identity;shear.m01=.4f;Assert.That(VirtualGeometryTransformSupport.GetUnsupportedReason(shear),Is.Not.Empty);
             Assert.That(VirtualGeometryTransformSupport.GetUnsupportedReason(Matrix4x4.Scale(new Vector3(1,0,1))),Is.Not.Empty);
             Matrix4x4 invalid=Matrix4x4.identity;invalid.m03=float.NaN;Assert.That(VirtualGeometryTransformSupport.GetUnsupportedReason(invalid),Is.Not.Empty);
-        }
-        private static Mesh CreateGrid(int size){
-            var vertices=new Vector3[(size+1)*(size+1)];var indices=new int[size*size*6];int write=0;
-            for(int y=0;y<=size;y++){for(int x=0;x<=size;x++){vertices[y*(size+1)+x]=new Vector3(x,y,0);}}
-            for(int y=0;y<size;y++){for(int x=0;x<size;x++){int a=y*(size+1)+x;indices[write++]=a;indices[write++]=a+size+1;indices[write++]=a+1;indices[write++]=a+1;indices[write++]=a+size+1;indices[write++]=a+size+2;}}
-            var mesh=new Mesh();mesh.vertices=vertices;mesh.triangles=indices;mesh.RecalculateNormals();return mesh;
         }
     }
 }

@@ -5,9 +5,13 @@ using UnityEngine;
 using UnityEngine.Rendering;
 
 namespace VirtualizedGeometry{
-    [ExecuteAlways,DisallowMultipleComponent]
+    /// <summary>
+    /// 通常のMeshFilter/MeshRendererとVirtual Geometryの描画をつなぐ非表示の部品。モデルのインポートで自動で付き、Inspectorには表示しない。
+    /// MeshFilterには低密度の代替Mesh(UE5のFallback Mesh相当)が入り、影・当たり判定・カリング・VGが使えないときの表示を受け持つ。
+    /// </summary>
+    [ExecuteAlways,DisallowMultipleComponent,RequireComponent(typeof(MeshFilter),typeof(MeshRenderer)),AddComponentMenu("")]
     public sealed partial class VirtualGeometryRenderer:MonoBehaviour{
-        [SerializeField,Tooltip("変換済みの仮想ジオメトリ。Meshを右クリック→「仮想ジオメトリに変換」で作成します。")] private VirtualGeometryMeshAsset meshAsset;
+        [SerializeField,Tooltip("変換済みの仮想ジオメトリ。モデルのInspectorで「Virtual Geometry」にチェックを入れるとモデル内に作られます。")] private VirtualGeometryMeshAsset meshAsset;
         [SerializeField,Min(0),Tooltip("許容する画面上の誤差(pixel)。大きいほど早く粗いLOD段へ切り替わり、描画三角形が減ります。")] private float lodErrorThresholdPixels=2;
         [SerializeField,Range(0,0.95f),Tooltip("細かい段と粗い段の切替閾値に持たせる余裕の割合。0.1で±10%。境界付近での往復を防ぎます。")] private float lodHysteresis=0.1f;
         [SerializeField] private VirtualGeometryDebugView debugView;
@@ -87,7 +91,14 @@ namespace VirtualizedGeometry{
         public void RefreshAsset(){if(this.isActiveAndEnabled){this.Reload();}}
         public void SetMeshAsset(VirtualGeometryMeshAsset asset){
             if(this.meshAsset==asset&&this.gpuPage!=null){return;}
-            this.meshAsset=asset;this.EnsureMaterialSlots();this.Reload();
+            VirtualGeometryMeshAsset previous=this.meshAsset;
+            this.meshAsset=asset;
+            // 代替Meshを通常MeshFilterへ入れ、影・当たり判定・カリング・代替表示を通常の仕組みで行う。
+            MeshFilter filter=this.GetComponent<MeshFilter>();
+            if(filter!=null&&asset!=null&&filter.sharedMesh!=asset.ProxyMesh){filter.sharedMesh=asset.ProxyMesh;}
+            // 変換データを外したときに、前の代替Meshが通常のMeshとして残って見え続けないようにする。利用者が入れたMeshは触らない。
+            if(filter!=null&&asset==null&&previous!=null&&filter.sharedMesh==previous.ProxyMesh){filter.sharedMesh=null;}
+            this.EnsureMaterialSlots();this.Reload();
         }
 
         public void SetLodSettings(float errorThresholdPixels,float hysteresis){
@@ -147,29 +158,34 @@ namespace VirtualizedGeometry{
             foreach(var renderer in VirtualGeometryRenderRegistry.Renderers){if(renderer!=null){renderer.Release();}}
             VirtualGeometryGpuResourceCache.Reset();VirtualGeometryDiagnostics.Reset();
         }
-        private void OnEnable(){VirtualGeometryRenderRegistry.Add(this);RenderPipelineManager.beginCameraRendering+=this.BeforeCamera;this.Reload();}
+        // インポート中のモデルやPrefab assetのGameObjectはsceneに属さない。そこではGPU資源・Proxy・camera購読を作らない。
+        private bool InScene=>this.gameObject.scene.IsValid();
+        // 部品は利用者が触るものではないため、追加された時点でInspectorから隠す。
+        private void Reset(){this.hideFlags|=HideFlags.HideInInspector;}
+        private void Awake(){this.hideFlags|=HideFlags.HideInInspector;}
+        private void OnEnable(){
+            if(!this.InScene){return;}
+            VirtualGeometryRenderRegistry.Add(this);RenderPipelineManager.beginCameraRendering+=this.BeforeCamera;this.Reload();
+        }
         private void OnDisable(){RenderPipelineManager.beginCameraRendering-=this.BeforeCamera;VirtualGeometryRenderRegistry.Remove(this);this.Release();this.DestroyProxy();}
 
         // OnValidate中のGameObject破棄/生成は禁止されるため、安全なUpdateで再構築する。
         private void OnValidate(){
             this.lodErrorThresholdPixels=Mathf.Max(0,this.lodErrorThresholdPixels);
             this.lodHysteresis=Mathf.Clamp(this.lodHysteresis,0,0.95f);
-            // submeshごとのMaterial欄が見えるよう、Materialsをsubmesh数まで広げる。既存の割り当ては保つ。
-            this.EnsureMaterialSlots();
+            this.hideFlags|=HideFlags.HideInInspector;
             this.reloadPending=true;
         }
 
         /// <summary>
-        /// Inspector等のserialized変更を反映する。Material・LOD閾値・影/物理Proxyの切替だけならProxyのMaterialと有効状態を更新する。
+        /// Inspector等のserialized変更を反映する。LOD閾値等の変更だけなら影専用の子のMaterialと有効状態を更新する。
         /// Mesh Assetやstreaming設定が変わったときだけGPU資源とProxyを作り直す。毎回作り直すと、slider操作のたびにProxy表示へ戻り読込もやり直しになる。
         /// </summary>
         private void ApplySerializedChanges(){
             this.reloadPending=false;
             bool loaded=this.gpuPage!=null||this.lastError!=null;
-            if(this.isActiveAndEnabled&&loaded&&this.proxyRoot!=null&&this.meshAsset==this.loadedAsset&&this.SharedResourceKey==this.loadedKey){
-                this.UpdateProxyMaterials();
-                if(this.proxyShadow!=null){this.proxyShadow.enabled=this.enableShadowProxy;}
-                if(this.proxyCollider!=null){this.proxyCollider.enabled=this.enablePhysicsProxy;}
+            if(this.isActiveAndEnabled&&loaded&&this.shadowRoot!=null&&this.meshAsset==this.loadedAsset&&this.SharedResourceKey==this.loadedKey){
+                this.UpdateShadowCaster();
                 return;
             }
             this.Reload();
@@ -180,7 +196,7 @@ namespace VirtualizedGeometry{
         private void Reload(){
             this.reloadPending=false;
             this.Release();this.lastError=null;this.loadedAsset=null;this.loadedKey=null;
-            if(!this.isActiveAndEnabled){this.DestroyProxy();return;}this.CreateProxy();
+            if(!this.isActiveAndEnabled||!this.InScene){this.DestroyProxy();return;}this.CreateProxy();
             if(this.meshAsset==null){return;}
             this.loadedAsset=this.meshAsset;this.loadedKey=this.SharedResourceKey;
             try{
@@ -240,11 +256,8 @@ namespace VirtualizedGeometry{
 
         public static VirtualGeometryGpuPage Load(VirtualGeometryMeshAsset asset,VirtualGeometryStreamingMode mode,VirtualGeometryStreamingSettings settings){
             if(asset==null){throw new ArgumentNullException(nameof(asset));}
-            if(string.IsNullOrWhiteSpace(asset.PageRelativePath)){throw new InvalidDataException("Page path is empty.");}
-            string root=Path.GetFullPath(Application.streamingAssetsPath);
-            string fullPath=Path.GetFullPath(Path.Combine(root,asset.PageRelativePath));
-            string prefix=root.TrimEnd(Path.DirectorySeparatorChar,Path.AltDirectorySeparatorChar)+Path.DirectorySeparatorChar;
-            if(!fullPath.StartsWith(prefix,StringComparison.OrdinalIgnoreCase)){throw new InvalidDataException("Page path escapes StreamingAssets.");}
+            string fullPath=VirtualGeometryPagePaths.Resolve(asset.PageRelativePath);
+            if(!File.Exists(fullPath)){throw new FileNotFoundException("変換データ(page)が見つかりません。元のモデルを再インポートすると作り直されます。",fullPath);}
             using(var header=new BinaryReader(File.OpenRead(fullPath))){
                 header.ReadUInt32();uint version=header.ReadUInt32();
                 if(version==VirtualGeometryStreamCodec.Version&&mode==VirtualGeometryStreamingMode.Streaming){return LoadStreaming(fullPath,settings);}
