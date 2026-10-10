@@ -23,6 +23,8 @@ HZBはカメラのRenderGraphに属するtransient textureで、履歴を保持�
 
 大きなcluster境界球は部分遮蔽物に収まらず、棄却数が減る。これは保守性によるもので、画像欠落を避けるため判定を緩めない。クラスタリングの空間的なまとまりは別途性能を左右する。
 
+CPUでも、視錐台の外のinstanceはGPU選択・描画・feedbackのpassを作らない(部品のworld boundsをcameraの視錐台で判定)。GPUのFrustum棄却と同じ結果になる(全clusterが棄却されるinstanceを省くだけ)が、そのcameraでは選択状態を作らず、`CullingStatistics`も更新しない。`SetCullingSettings`のfrustumをfalseにした部品はCPUでも判定しない。
+
 ## 設定と統計
 
 VirtualGeometryRenderer.SetCullingSettings(frustum, occlusion)で個別に有効/無効を切り替える。両方falseが比較基準モード。

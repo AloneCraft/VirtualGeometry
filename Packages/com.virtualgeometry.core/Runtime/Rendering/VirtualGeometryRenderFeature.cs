@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Unity.Profiling;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
@@ -16,6 +17,14 @@ namespace VirtualizedGeometry{
         private Material material;
         private DrawPass pass;
         private UniversalRendererData ownerData;
+        // Profiler / 計測用。VGのC#側の区間(部品ごとの判定、RenderGraphの記録)を分けて測る。
+        private static readonly ProfilerMarker PreCullMarker=new ProfilerMarker("VG.OnCameraPreCull");
+        private static readonly ProfilerMarker RecordMarker=new ProfilerMarker("VG.RecordRenderGraph");
+        private static readonly ProfilerMarker RecordGateMarker=new ProfilerMarker("VG.Record.Gate");
+        private static readonly ProfilerMarker RecordSelectMarker=new ProfilerMarker("VG.Record.Select");
+        private static readonly ProfilerMarker RecordDrawMarker=new ProfilerMarker("VG.Record.Draw");
+        private static readonly ProfilerMarker RecordLightsMarker=new ProfilerMarker("VG.Record.Lights");
+        private static readonly ProfilerMarker RecordFeedbackMarker=new ProfilerMarker("VG.Record.Feedback");
 
         public override void Create(){
             this.ownerData=null;
@@ -31,6 +40,9 @@ namespace VirtualizedGeometry{
         }
 
         public override void OnCameraPreCull(ScriptableRenderer renderer,in CameraData cameraData){
+            using(PreCullMarker.Auto()){this.PreCull(cameraData);}
+        }
+        private void PreCull(in CameraData cameraData){
             string reason=GetUnsupportedReason(cameraData);
             if(reason==null&&(this.pass==null||this.material==null||this.depthCopy==null||this.selectionShader==null)){reason="専用描画のshader/compute/depth-copy資源が設定されていません。";}
             if(reason==null&&this.ownerData==null){reason="Renderer設定を確認できません。";}
@@ -129,6 +141,7 @@ namespace VirtualizedGeometry{
             }
 
             private sealed class SelectionPassData{
+                public VirtualGeometryGpuPage Page;
                 public BufferHandle PageTable;
                 public BufferHandle Requests;
                 public int Streaming;
@@ -174,6 +187,7 @@ namespace VirtualizedGeometry{
                 public VirtualGeometrySelectionState Selection;
             }
             private sealed class DrawData{
+                public VirtualGeometryGpuPage Page;public VirtualGeometrySelectionState Selection;
                 public Material Material;public int Pass;
                 public BufferHandle Vertices;
                 public BufferHandle Indices;
@@ -196,6 +210,124 @@ namespace VirtualizedGeometry{
             // 環境反射。通常Rendererは描画ごとにUnityが設定するが、procedural描画には設定されず黒になって暗く見える。既定(skybox等)のcubemapを渡す。
             private static readonly int SpecCubeId=Shader.PropertyToID("unity_SpecCube0");
             private static readonly int SpecCubeHdrId=Shader.PropertyToID("unity_SpecCube0_HDR");
+            // 部品×cameraごとにpassを作ると、RenderGraphの記録・compile・実行が部品数に比例して重くなるため、
+            // Select・Draw・feedbackはそれぞれcameraにつき1 passへまとめ、中の項目(部品×material slot)を1つずつ処理する。
+            // 項目は使い回す。graphの実行は同じcameraのRecordの直後で、次のcameraのRecordより前に終わる。
+            // 1 passにまとめる項目数。1にすると部品ごとにpassができ、RenderGraphの記録・実行が部品数に比例して重い。
+            // 全部を1 passにすると逆に遅い(passが巨大になり、GPUでも遅くなる)。space_elevator(419部品)の実測で、8〜16が最小だった(静止67 ms、移動中96 ms。1では124 ms、全部では162 ms)。
+            private const int PassBatchSize=12;
+            private sealed class SelectionBatch{public List<SelectionPassData> Items;public int Start,End;}
+            private sealed class DrawBatch{public List<DrawData> Items;public int Start,End;}
+            private sealed class FeedbackBatch{public List<FeedbackPassData> Items;public int Start,End;}
+            private readonly List<SelectionPassData> selectItems=new List<SelectionPassData>();private int selectCount;
+            private readonly List<DrawData> drawItems=new List<DrawData>();private int drawCount;
+            private readonly List<FeedbackPassData> feedbackItems=new List<FeedbackPassData>();private int feedbackCount;
+            // 同じpageのbufferは複数instanceが共有するため、passごとに1回だけ宣言する。BufferHandleはIEquatableを持たず、HashSetのキーにするとbox化で遅いので参照で数える。
+            private readonly HashSet<VirtualGeometryGpuPage> declaredPages=new HashSet<VirtualGeometryGpuPage>();
+            private readonly HashSet<VirtualGeometrySelectionState> declaredSelections=new HashSet<VirtualGeometrySelectionState>();
+            private readonly Dictionary<int,PerObjectLighting> lightingByLayer=new Dictionary<int,PerObjectLighting>();
+            private readonly Vector4[] planeVectors=new Vector4[6];
+
+            // 描く対象か。無効・layer外・page未準備・専用描画を使わないcamera・視錐台の外のinstanceは、選択・描画・feedbackのpassを作らない。
+            // GPUのcullingでも視錐台の外は全clusterが棄却されるが、部品ごとの記録・実行がframeの大半を占める。
+            private bool PassesGate(VirtualGeometryRenderer instance,Plane[] planes,out VirtualGeometryGpuPage page){
+                page=null;
+                if(instance==null||!instance.isActiveAndEnabled||(this.camera.cullingMask&(1<<instance.gameObject.layer))==0||!instance.TryGetGpuPage(out page)){return false;}
+                if(!instance.CanDrawVirtual(this.camera)){return false;}
+                if(instance.EnableFrustumCulling&&!GeometryUtility.TestPlanesAABB(planes,instance.WorldBounds)){return false;}
+                return true;
+            }
+            private SelectionPassData AcquireSelect(){
+                if(this.selectCount==this.selectItems.Count){this.selectItems.Add(new SelectionPassData());}
+                return this.selectItems[this.selectCount++];
+            }
+            private DrawData AcquireDraw(){
+                if(this.drawCount==this.drawItems.Count){this.drawItems.Add(new DrawData());}
+                return this.drawItems[this.drawCount++];
+            }
+            private FeedbackPassData AcquireFeedback(){
+                if(this.feedbackCount==this.feedbackItems.Count){this.feedbackItems.Add(new FeedbackPassData());}
+                return this.feedbackItems[this.feedbackCount++];
+            }
+
+            private static void ExecuteSelect(SelectionPassData input,ComputeGraphContext context){
+                ComputeShader shader=input.Shader;
+                context.cmd.SetComputeIntParam(shader,"_VGDebugMode",input.DebugMode);context.cmd.SetComputeBufferParam(shader,input.SelectKernel,"_VGVisibleDebug",input.Debug);
+                context.cmd.SetComputeIntParam(shader,StreamingId,input.Streaming);
+                context.cmd.SetComputeIntParam(shader,RequestCapacityId,input.RequestCapacity);
+                context.cmd.SetComputeBufferParam(shader,input.ResetKernel,RequestsId,input.Requests);
+                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,RequestsId,input.Requests);
+                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,PageTableId,input.PageTable);
+
+                context.cmd.SetComputeBufferParam(shader,input.ResetKernel,CullingStatisticsId,input.CullingStatistics);
+                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,CullingStatisticsId,input.CullingStatistics);
+                context.cmd.SetComputeTextureParam(shader,input.SelectKernel,HzbId,input.Hzb);
+                context.cmd.SetComputeVectorParam(shader,ScreenSizeId,input.ScreenSize);
+                context.cmd.SetComputeVectorParam(shader,HzbSizeId,input.HzbSize);
+                context.cmd.SetComputeMatrixParam(shader,ViewProjectionId,input.ViewProjection);
+                context.cmd.SetComputeVectorArrayParam(shader,FrustumPlanesId,input.FrustumPlanes);
+                context.cmd.SetComputeIntParam(shader,FrustumEnabledId,input.FrustumEnabled);
+                context.cmd.SetComputeIntParam(shader,OcclusionEnabledId,input.OcclusionEnabled);
+                context.cmd.SetComputeIntParam(shader,ReversedZId,input.ReversedZ);
+                context.cmd.SetComputeFloatParam(shader,DepthBiasId,0.00001f);
+                context.cmd.SetComputeFloatParam(shader,TextureYSignId,input.TextureYSign);
+                context.cmd.SetComputeIntParam(shader,MaterialCountId,input.MaterialCount);
+                context.cmd.SetComputeIntParam(shader,NodeCountId,input.NodeCount);
+                context.cmd.SetComputeBufferParam(shader,input.ResetKernel,MaterialRangesId,input.MaterialRanges);
+                context.cmd.SetComputeBufferParam(shader,input.ResetKernel,SelectionFlagsId,input.SelectionFlags);
+                context.cmd.SetComputeBufferParam(shader,input.ResetKernel,ArgumentsId,input.Arguments);
+                context.cmd.SetComputeIntParam(shader,PageCountId,input.PageCount);
+                int resetGroups=(Mathf.Max(input.MaterialCount,Mathf.Max(input.NodeCount,input.PageCount))+63)/64;
+                context.cmd.DispatchCompute(shader,input.ResetKernel,Mathf.Max(1,resetGroups),1,1);
+
+                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,SourceIndicesId,input.SourceIndices);
+                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,ClustersId,input.Clusters);
+                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,NodesId,input.Nodes);
+                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,MaterialRangesId,input.MaterialRanges);
+                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,PageResidencyId,input.PageResidency);
+                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,VisibleIndicesId,input.VisibleIndices);
+                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,RefinementStateId,input.RefinementState);
+                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,SelectionFlagsId,input.SelectionFlags);
+                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,ArgumentsId,input.Arguments);
+                context.cmd.SetComputeMatrixParam(shader,ObjectToWorldId,input.ObjectToWorld);
+                context.cmd.SetComputeVectorParam(shader,CameraPositionId,input.CameraPosition);
+                context.cmd.SetComputeFloatParam(shader,MaximumScaleId,input.MaximumScale);
+                context.cmd.SetComputeFloatParam(shader,ProjectionScaleId,input.ProjectionScale);
+                context.cmd.SetComputeFloatParam(shader,NearPlaneId,input.NearPlane);
+                context.cmd.SetComputeFloatParam(shader,TargetErrorPixelsId,input.TargetErrorPixels);
+                context.cmd.SetComputeFloatParam(shader,HysteresisId,input.Hysteresis);
+                context.cmd.SetComputeIntParam(shader,OrthographicId,input.Orthographic);
+                int selectGroups=input.MaterialCount;
+                context.cmd.DispatchCompute(shader,input.SelectKernel,Mathf.Max(1,selectGroups),1,1);
+            }
+
+            // properties: 項目ごとに値が変わるbuffer類を毎回上書きする。applyShared: 光源・環境光・反射・巻き順など、同じ値の間は再設定が要らない値を今回設定するか。
+            private static void ExecuteDraw(DrawData input,RasterGraphContext context,MaterialPropertyBlock properties,bool applyShared){
+                properties.SetBuffer(VerticesId,(GraphicsBuffer)input.Vertices);
+                properties.SetBuffer(IndicesId,(GraphicsBuffer)input.Indices);
+                properties.SetBuffer("_VGDrawArguments",(GraphicsBuffer)input.Arguments);properties.SetInt("_VGDrawCommand",input.ArgumentsOffset/16);
+                Matrix4x4 matrix=input.ObjectToWorld;
+                if(input.DebugMode!=0){
+                    // debug用VG Unlitは_VGObjectToWorldで自前に変換する。
+                    matrix=Matrix4x4.identity;
+                    properties.SetMatrix(ObjectToWorldId,input.ObjectToWorld);properties.SetColor(BaseColorId,Color.white);
+                    properties.SetInt("_VGDebugMode",input.DebugMode);properties.SetFloat("_VGDebugTargetError",input.TargetError);properties.SetFloat("_VGLoadingCount",input.Loading);
+                    if(input.Debug.IsValid()){properties.SetBuffer("_VGVisibleDebug",(GraphicsBuffer)input.Debug);}
+                }else if(applyShared){
+                    for(int i=0;i<AmbientIds.Length;i++){properties.SetVector(AmbientIds[i],input.Lighting.Ambient[i]);}
+                    properties.SetVector(LightDataId,input.Lighting.LightData);properties.SetVector(PackedLightIndicesId,input.Lighting.PackedLightIndices);
+                    float handedness=1;if(input.InvertCulling){handedness=-1;}
+                    properties.SetVector(WorldTransformParamsId,new Vector4(0,0,0,handedness));
+                    if(ReflectionProbe.defaultTexture!=null){
+                        properties.SetTexture(SpecCubeId,ReflectionProbe.defaultTexture);properties.SetVector(SpecCubeHdrId,ReflectionProbe.defaultTextureHDRDecodeValues);
+                    }
+                }
+                // procedural描画は負のscaleで裏表が反転しても自動で反転されないため、通常Rendererと同じ面を残すよう明示する。
+                context.cmd.SetInvertCulling(input.InvertCulling&&input.DebugMode==0);
+                context.cmd.DrawProceduralIndirect(matrix,input.Material,input.Pass,MeshTopology.Triangles,(GraphicsBuffer)input.Arguments,input.ArgumentsOffset,properties);
+                context.cmd.SetInvertCulling(false);
+            }
+
             public DrawPass(ComputeShader selectionShader,Material material,CopyDepthPass depthCopy){
                 this.depthCopy=depthCopy;
                 this.selectionShader=selectionShader;this.material=material;
@@ -234,6 +366,9 @@ namespace VirtualizedGeometry{
             public void Setup(Camera camera){this.camera=camera;}
 
             public override void RecordRenderGraph(RenderGraph graph,ContextContainer frameData){
+                using(RecordMarker.Auto()){this.Record(graph,frameData);}
+            }
+            private void Record(RenderGraph graph,ContextContainer frameData){
                 if(this.camera==null){return;}
                 UniversalResourceData resources=frameData.Get<UniversalResourceData>();
                 IReadOnlyList<VirtualGeometryRenderer> renderers=VirtualGeometryRenderRegistry.Renderers;
@@ -274,21 +409,34 @@ namespace VirtualizedGeometry{
                         });
                     }
                 }
-                                UniversalLightData lightData=frameData.Get<UniversalLightData>();
-                bool drewVirtual=false;
+                UniversalLightData lightData=frameData.Get<UniversalLightData>();
                 Plane[] planes=GeometryUtility.CalculateFrustumPlanes(this.camera);
-                Vector4[] planeVectors=new Vector4[6];
-                for(int i=0;i<planes.Length;i++){planeVectors[i]=new Vector4(planes[i].normal.x,planes[i].normal.y,planes[i].normal.z,planes[i].distance);}
+                for(int i=0;i<planes.Length;i++){this.planeVectors[i]=new Vector4(planes[i].normal.x,planes[i].normal.y,planes[i].normal.z,planes[i].distance);}
+                this.selectCount=0;this.drawCount=0;this.feedbackCount=0;this.lightingByLayer.Clear();
+                Matrix4x4 viewProjection=GL.GetGPUProjectionMatrix(this.camera.projectionMatrix,true)*this.camera.worldToCameraMatrix;
+                int pixelHeight=Mathf.Max(1,this.camera.pixelHeight);
+                float projectionScale=0.5f*pixelHeight/Mathf.Tan(this.camera.fieldOfView*Mathf.Deg2Rad*0.5f);
+                if(this.camera.orthographic){projectionScale=pixelHeight/(2f*this.camera.orthographicSize);}
+                int reversedZ=0;if(SystemInfo.usesReversedZBuffer){reversedZ=1;}
+                float textureYSign=1;if(SystemInfo.graphicsUVStartsAtTop){textureYSign=-1;}
+                int orthographic=0;if(this.camera.orthographic){orthographic=1;}
+                Vector3 cameraPosition=this.camera.transform.position;
+                float nearPlane=Mathf.Max(1e-5f,this.camera.nearClipPlane);
+                // 手順1: 描く部品ごとに、選択・描画・feedbackの項目を集める(passはまだ作らない)。bufferのimportと宣言は、passを作るときにまとめて行う。
                 for(int rendererIndex=0;rendererIndex<renderers.Count;rendererIndex++){
                     VirtualGeometryRenderer instance=renderers[rendererIndex];
-                    if(instance==null||!instance.isActiveAndEnabled||(this.camera.cullingMask&(1<<instance.gameObject.layer))==0||
-                        !instance.TryGetGpuPage(out VirtualGeometryGpuPage page)){continue;}
-                    if(!instance.CanDrawVirtual(this.camera)){continue;}
+                    VirtualGeometryGpuPage page=null;bool gate;
+                    using(RecordGateMarker.Auto()){gate=this.PassesGate(instance,planes,out page);}
+                    if(!gate){continue;}
                     BufferHandle vertices=graph.ImportBuffer(page.VertexBuffer);
                     BufferHandle sourceIndices=graph.ImportBuffer(page.IndexBuffer);
-                    VirtualGeometrySelectionState selection=page.HasHierarchy?instance.GetSelection(this.camera):null;
-                    BufferHandle arguments=graph.ImportBuffer(selection!=null?selection.ArgumentsBuffer:page.ArgumentsBuffer);
+                    VirtualGeometrySelectionState selection=null;
+                    if(page.HasHierarchy){selection=instance.GetSelection(this.camera);}
+                    GraphicsBuffer argumentsBuffer=page.ArgumentsBuffer;
+                    if(selection!=null){argumentsBuffer=selection.ArgumentsBuffer;}
+                    BufferHandle arguments=graph.ImportBuffer(argumentsBuffer);
                     BufferHandle drawIndices=sourceIndices;
+                    Matrix4x4 objectToWorld=instance.transform.localToWorldMatrix;
                     if(page.HasHierarchy){
                         if(this.selectionShader==null){
                             if(!this.reportedMissingSelector){
@@ -297,150 +445,141 @@ namespace VirtualizedGeometry{
                             }
                             continue;
                         }
-                        BufferHandle clusters=graph.ImportBuffer(page.ClusterBuffer);
-                        BufferHandle nodes=graph.ImportBuffer(page.NodeBuffer);
-                        BufferHandle ranges=graph.ImportBuffer(page.MaterialRangeBuffer);
-                        BufferHandle residency=graph.ImportBuffer(page.PageResidencyBuffer);
-                        BufferHandle visible=graph.ImportBuffer(selection.VisibleIndexBuffer);
-                        BufferHandle refinement=graph.ImportBuffer(selection.RefinementStateBuffer);
-                        BufferHandle flags=graph.ImportBuffer(selection.SelectionFlagsBuffer);
-                        BufferHandle statistics=graph.ImportBuffer(selection.CullingStatisticsBuffer);
-                        BufferHandle pageTable=graph.ImportBuffer(page.PageTableBuffer);
-                        BufferHandle requests=graph.ImportBuffer(selection.FeedbackBuffer);
-                        using(IComputeRenderGraphBuilder builder=graph.AddComputePass<SelectionPassData>("Virtual Geometry Select and Cull",out SelectionPassData data,VirtualGeometryDiagnostics.Select)){
-                            data.PageTable=pageTable;data.Requests=requests;data.Streaming=page.IsStreaming?1:0;data.RequestCapacity=page.RequestCapacity;
-                            builder.UseBuffer(pageTable,AccessFlags.Read);builder.UseBuffer(requests,AccessFlags.ReadWrite);
+                        using(RecordSelectMarker.Auto()){
+                            SelectionPassData data=this.AcquireSelect();
+                            data.Page=page;
+                            data.PageTable=graph.ImportBuffer(page.PageTableBuffer);data.Requests=graph.ImportBuffer(selection.FeedbackBuffer);
+                            data.Streaming=0;if(page.IsStreaming){data.Streaming=1;}
+                            data.RequestCapacity=page.RequestCapacity;
                             data.Shader=this.selectionShader;data.ResetKernel=this.resetKernel;data.SelectKernel=this.selectKernel;
-                            data.Debug=graph.ImportBuffer(selection.DebugBuffer);data.DebugMode=(int)instance.DebugView;builder.UseBuffer(data.Debug,AccessFlags.Write);
-                            data.CullingStatistics=statistics;data.Hzb=hzb;data.ScreenSize=screenSize;data.HzbSize=hzbSize;
-                            data.ViewProjection=GL.GetGPUProjectionMatrix(this.camera.projectionMatrix,true)*this.camera.worldToCameraMatrix;
-                            data.FrustumPlanes=planeVectors;data.FrustumEnabled=instance.EnableFrustumCulling?1:0;
-                            data.OcclusionEnabled=instance.EnableOcclusionCulling?1:0;data.ReversedZ=SystemInfo.usesReversedZBuffer?1:0;
-                            data.TextureYSign=SystemInfo.graphicsUVStartsAtTop?-1:1;
-                            builder.UseBuffer(statistics,AccessFlags.ReadWrite);builder.UseTexture(hzb,AccessFlags.Read);
-                            data.SourceIndices=sourceIndices;data.Clusters=clusters;data.Nodes=nodes;data.MaterialRanges=ranges;data.PageResidency=residency;
-                            data.VisibleIndices=visible;data.RefinementState=refinement;data.SelectionFlags=flags;data.Arguments=arguments;
-                            data.ObjectToWorld=instance.transform.localToWorldMatrix;data.CameraPosition=this.camera.transform.position;
+                            data.Debug=graph.ImportBuffer(selection.DebugBuffer);data.DebugMode=(int)instance.DebugView;
+                            data.CullingStatistics=graph.ImportBuffer(selection.CullingStatisticsBuffer);data.Hzb=hzb;data.ScreenSize=screenSize;data.HzbSize=hzbSize;
+                            data.ViewProjection=viewProjection;
+                            data.FrustumPlanes=this.planeVectors;data.FrustumEnabled=0;if(instance.EnableFrustumCulling){data.FrustumEnabled=1;}
+                            data.OcclusionEnabled=0;if(instance.EnableOcclusionCulling){data.OcclusionEnabled=1;}
+                            data.ReversedZ=reversedZ;data.TextureYSign=textureYSign;
+                            data.SourceIndices=sourceIndices;data.Clusters=graph.ImportBuffer(page.ClusterBuffer);data.Nodes=graph.ImportBuffer(page.NodeBuffer);
+                            data.MaterialRanges=graph.ImportBuffer(page.MaterialRangeBuffer);data.PageResidency=graph.ImportBuffer(page.PageResidencyBuffer);
+                            data.VisibleIndices=graph.ImportBuffer(selection.VisibleIndexBuffer);data.RefinementState=graph.ImportBuffer(selection.RefinementStateBuffer);
+                            data.SelectionFlags=graph.ImportBuffer(selection.SelectionFlagsBuffer);data.Arguments=arguments;
+                            data.ObjectToWorld=objectToWorld;data.CameraPosition=cameraPosition;
                             data.MaximumScale=instance.MaximumWorldScale;
-                            int pixelHeight=Mathf.Max(1,this.camera.pixelHeight);
-                            data.ProjectionScale=this.camera.orthographic?pixelHeight/(2f*this.camera.orthographicSize):
-                                0.5f*pixelHeight/Mathf.Tan(this.camera.fieldOfView*Mathf.Deg2Rad*0.5f);
-                            data.NearPlane=Mathf.Max(1e-5f,this.camera.nearClipPlane);
+                            data.ProjectionScale=projectionScale;data.NearPlane=nearPlane;
                             data.TargetErrorPixels=instance.LodErrorThresholdPixels;data.Hysteresis=instance.LodHysteresis;
-                            data.Orthographic=this.camera.orthographic?1:0;data.MaterialCount=page.MaterialCount;data.NodeCount=page.NodeCount;data.PageCount=page.PageCount;
-                            builder.UseBuffer(sourceIndices,AccessFlags.Read);builder.UseBuffer(clusters,AccessFlags.Read);builder.UseBuffer(nodes,AccessFlags.Read);
-                            builder.UseBuffer(ranges,AccessFlags.Read);builder.UseBuffer(residency,AccessFlags.Read);builder.UseBuffer(visible,AccessFlags.Write);
-                            builder.UseBuffer(refinement,AccessFlags.ReadWrite);builder.UseBuffer(flags,AccessFlags.Write);builder.UseBuffer(arguments,AccessFlags.Write);
-                            builder.SetRenderFunc(static(SelectionPassData input,ComputeGraphContext context)=>{
-                                ComputeShader shader=input.Shader;
-                                context.cmd.SetComputeIntParam(shader,"_VGDebugMode",input.DebugMode);context.cmd.SetComputeBufferParam(shader,input.SelectKernel,"_VGVisibleDebug",input.Debug);
-                                context.cmd.SetComputeIntParam(shader,StreamingId,input.Streaming);
-                                context.cmd.SetComputeIntParam(shader,RequestCapacityId,input.RequestCapacity);
-                                context.cmd.SetComputeBufferParam(shader,input.ResetKernel,RequestsId,input.Requests);
-                                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,RequestsId,input.Requests);
-                                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,PageTableId,input.PageTable);
-
-                                context.cmd.SetComputeBufferParam(shader,input.ResetKernel,CullingStatisticsId,input.CullingStatistics);
-                                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,CullingStatisticsId,input.CullingStatistics);
-                                context.cmd.SetComputeTextureParam(shader,input.SelectKernel,HzbId,input.Hzb);
-                                context.cmd.SetComputeVectorParam(shader,ScreenSizeId,input.ScreenSize);
-                                context.cmd.SetComputeVectorParam(shader,HzbSizeId,input.HzbSize);
-                                context.cmd.SetComputeMatrixParam(shader,ViewProjectionId,input.ViewProjection);
-                                context.cmd.SetComputeVectorArrayParam(shader,FrustumPlanesId,input.FrustumPlanes);
-                                context.cmd.SetComputeIntParam(shader,FrustumEnabledId,input.FrustumEnabled);
-                                context.cmd.SetComputeIntParam(shader,OcclusionEnabledId,input.OcclusionEnabled);
-                                context.cmd.SetComputeIntParam(shader,ReversedZId,input.ReversedZ);
-                                context.cmd.SetComputeFloatParam(shader,DepthBiasId,0.00001f);
-                                context.cmd.SetComputeFloatParam(shader,TextureYSignId,input.TextureYSign);
-                                context.cmd.SetComputeIntParam(shader,MaterialCountId,input.MaterialCount);
-                                context.cmd.SetComputeIntParam(shader,NodeCountId,input.NodeCount);
-                                context.cmd.SetComputeBufferParam(shader,input.ResetKernel,MaterialRangesId,input.MaterialRanges);
-                                context.cmd.SetComputeBufferParam(shader,input.ResetKernel,SelectionFlagsId,input.SelectionFlags);
-                                context.cmd.SetComputeBufferParam(shader,input.ResetKernel,ArgumentsId,input.Arguments);
-                                context.cmd.SetComputeIntParam(shader,PageCountId,input.PageCount);
-                                int resetGroups=(Mathf.Max(input.MaterialCount,Mathf.Max(input.NodeCount,input.PageCount))+63)/64;
-                                context.cmd.DispatchCompute(shader,input.ResetKernel,Mathf.Max(1,resetGroups),1,1);
-
-                                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,SourceIndicesId,input.SourceIndices);
-                                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,ClustersId,input.Clusters);
-                                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,NodesId,input.Nodes);
-                                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,MaterialRangesId,input.MaterialRanges);
-                                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,PageResidencyId,input.PageResidency);
-                                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,VisibleIndicesId,input.VisibleIndices);
-                                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,RefinementStateId,input.RefinementState);
-                                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,SelectionFlagsId,input.SelectionFlags);
-                                context.cmd.SetComputeBufferParam(shader,input.SelectKernel,ArgumentsId,input.Arguments);
-                                context.cmd.SetComputeMatrixParam(shader,ObjectToWorldId,input.ObjectToWorld);
-                                context.cmd.SetComputeVectorParam(shader,CameraPositionId,input.CameraPosition);
-                                context.cmd.SetComputeFloatParam(shader,MaximumScaleId,input.MaximumScale);
-                                context.cmd.SetComputeFloatParam(shader,ProjectionScaleId,input.ProjectionScale);
-                                context.cmd.SetComputeFloatParam(shader,NearPlaneId,input.NearPlane);
-                                context.cmd.SetComputeFloatParam(shader,TargetErrorPixelsId,input.TargetErrorPixels);
-                                context.cmd.SetComputeFloatParam(shader,HysteresisId,input.Hysteresis);
-                                context.cmd.SetComputeIntParam(shader,OrthographicId,input.Orthographic);
-                                int selectGroups=input.MaterialCount;
-                                context.cmd.DispatchCompute(shader,input.SelectKernel,Mathf.Max(1,selectGroups),1,1);
-                            });
+                            data.Orthographic=orthographic;data.MaterialCount=page.MaterialCount;data.NodeCount=page.NodeCount;data.PageCount=page.PageCount;
+                            drawIndices=data.VisibleIndices;
                         }
-                        drawIndices=visible;
                     }
-                    PerObjectLighting lighting=CollectLights(lightData,instance.gameObject.layer);
-                    Matrix4x4 objectToWorld=instance.transform.localToWorldMatrix;
-                    for(int materialSlot=0;materialSlot<page.MaterialCount;materialSlot++){
-                        int debugMode=0;if(selection!=null){debugMode=(int)instance.DebugView;}
-                        Material drawMaterial=this.material;int drawPass=0;
-                        if(debugMode==0&&!VirtualGeometryMaterials.TryResolve(instance.GetMaterial(materialSlot),out drawMaterial,out drawPass,out string _)){continue;}
-                        using(IRasterRenderGraphBuilder builder=graph.AddRasterRenderPass<DrawData>("Virtual Geometry Draw",out DrawData data,VirtualGeometryDiagnostics.Draw)){
-                            drewVirtual=true;
+                    PerObjectLighting lighting;
+                    using(RecordLightsMarker.Auto()){
+                        int layer=instance.gameObject.layer;
+                        if(!this.lightingByLayer.TryGetValue(layer,out lighting)){
+                            lighting=CollectLights(lightData,layer);this.lightingByLayer.Add(layer,lighting);
+                        }
+                    }
+                    using(RecordDrawMarker.Auto()){
+                        GraphicsBuffer debugBuffer=page.LegacyDebugBuffer;if(selection!=null){debugBuffer=selection.DebugBuffer;}
+                        BufferHandle debugHandle=graph.ImportBuffer(debugBuffer);
+                        for(int materialSlot=0;materialSlot<page.MaterialCount;materialSlot++){
+                            int debugMode=0;if(selection!=null){debugMode=(int)instance.DebugView;}
+                            Material drawMaterial=this.material;int drawPass=0;
+                            if(debugMode==0&&!instance.TryResolveDrawMaterial(materialSlot,out drawMaterial,out drawPass)){continue;}
+                            DrawData data=this.AcquireDraw();
+                            data.Page=page;data.Selection=selection;
                             data.Material=drawMaterial;data.Pass=drawPass;data.Lighting=lighting;data.DebugMode=debugMode;data.TargetError=instance.LodErrorThresholdPixels;
                             data.Loading=0;
                             if(instance.StreamingStatistics!=null){data.Loading=instance.StreamingStatistics.Queued+instance.StreamingStatistics.Loading+instance.StreamingStatistics.Uploading;}
-                            GraphicsBuffer debugBuffer=page.LegacyDebugBuffer;if(selection!=null){debugBuffer=selection.DebugBuffer;}
-                            data.Debug=graph.ImportBuffer(debugBuffer);builder.UseBuffer(data.Debug,AccessFlags.Read);
-                            // 利用者shaderは影map・SSAO・light cookie等のglobal textureを読むため、すべてのglobal textureの利用を宣言する。
-                            builder.UseAllGlobalTextures(true);
+                            data.Debug=debugHandle;
                             data.Vertices=vertices;data.Indices=drawIndices;data.Arguments=arguments;
                             data.ObjectToWorld=objectToWorld;data.InvertCulling=objectToWorld.determinant<0;
                             data.ArgumentsOffset=materialSlot*4*sizeof(uint);
-                            builder.UseBuffer(vertices,AccessFlags.Read);builder.UseBuffer(drawIndices,AccessFlags.Read);builder.UseBuffer(arguments,AccessFlags.Read);
-                            builder.SetRenderAttachment(resources.activeColorTexture,0,AccessFlags.ReadWrite);
-                            builder.SetRenderAttachmentDepth(resources.activeDepthTexture,AccessFlags.ReadWrite);
-                            builder.SetRenderFunc(static(DrawData input,RasterGraphContext context)=>{
-                                MaterialPropertyBlock properties=context.renderGraphPool.GetTempMaterialPropertyBlock();
-                                properties.SetBuffer(VerticesId,(GraphicsBuffer)input.Vertices);
-                                properties.SetBuffer(IndicesId,(GraphicsBuffer)input.Indices);
-                                properties.SetBuffer("_VGDrawArguments",(GraphicsBuffer)input.Arguments);properties.SetInt("_VGDrawCommand",input.ArgumentsOffset/16);
-                                Matrix4x4 matrix=input.ObjectToWorld;
-                                if(input.DebugMode!=0){
-                                    // debug用VG Unlitは_VGObjectToWorldで自前に変換する。
-                                    matrix=Matrix4x4.identity;
-                                    properties.SetMatrix(ObjectToWorldId,input.ObjectToWorld);properties.SetColor(BaseColorId,Color.white);
-                                    properties.SetInt("_VGDebugMode",input.DebugMode);properties.SetFloat("_VGDebugTargetError",input.TargetError);properties.SetFloat("_VGLoadingCount",input.Loading);
-                                    if(input.Debug.IsValid()){properties.SetBuffer("_VGVisibleDebug",(GraphicsBuffer)input.Debug);}
-                                }else{
-                                    for(int i=0;i<AmbientIds.Length;i++){properties.SetVector(AmbientIds[i],input.Lighting.Ambient[i]);}
-                                    properties.SetVector(LightDataId,input.Lighting.LightData);properties.SetVector(PackedLightIndicesId,input.Lighting.PackedLightIndices);
-                                    float handedness=1;if(input.InvertCulling){handedness=-1;}
-                                    properties.SetVector(WorldTransformParamsId,new Vector4(0,0,0,handedness));
-                                    if(ReflectionProbe.defaultTexture!=null){
-                                        properties.SetTexture(SpecCubeId,ReflectionProbe.defaultTexture);properties.SetVector(SpecCubeHdrId,ReflectionProbe.defaultTextureHDRDecodeValues);
-                                    }
-                                }
-                                // procedural描画は負のscaleで裏表が反転しても自動で反転されないため、通常Rendererと同じ面を残すよう明示する。
-                                context.cmd.SetInvertCulling(input.InvertCulling&&input.DebugMode==0);
-                                context.cmd.DrawProceduralIndirect(matrix,input.Material,input.Pass,MeshTopology.Triangles,(GraphicsBuffer)input.Arguments,input.ArgumentsOffset,properties);
-                                context.cmd.SetInvertCulling(false);
-                            });
                         }
                     }
-                    if(page.IsStreaming&&selection!=null){
-                        using(IUnsafeRenderGraphBuilder builder=graph.AddUnsafePass<FeedbackPassData>("Virtual Geometry Async Page Requests",out FeedbackPassData feedback)){
-                            feedback.Page=page;feedback.Selection=selection;
-                            builder.UseBuffer(graph.ImportBuffer(selection.FeedbackBuffer),AccessFlags.Read);
-                            builder.UseTexture(resources.activeColorTexture,AccessFlags.Read);
-                            builder.AllowPassCulling(false);
-                            builder.SetRenderFunc(static(FeedbackPassData input,UnsafeGraphContext context)=>input.Page.RecordFeedback(context.cmd,input.Selection));
+                    // 全pageが常駐済み、またはcameraが静止して要求がない間はfeedbackのreadbackを出さない(間引きの規則はShouldRequestFeedback)。
+                    bool feedbackNeeded=false;
+                    if(page.IsStreaming&&selection!=null&&!page.StreamingController.IsFullyResident){
+                        VirtualGeometryStreamingStatistics streaming=page.StreamingController.Statistics;
+                        feedbackNeeded=selection.ShouldRequestFeedback(rendererIndex,streaming.Queued+streaming.Loading+streaming.Uploading>0);
+                    }
+                    if(feedbackNeeded){
+                        FeedbackPassData feedback=this.AcquireFeedback();
+                        feedback.Page=page;feedback.Selection=selection;
+                    }
+                }
+                // 手順2: 集めた項目をcameraにつき1 passずつにまとめて出す。順序は 選択 → 描画 → feedback(描画は選択の結果を、feedbackは選択のrequest bufferを読む)。
+                VirtualGeometryDiagnostics.LastSelectItems=this.selectCount;VirtualGeometryDiagnostics.LastDrawItems=this.drawCount;VirtualGeometryDiagnostics.LastFeedbackItems=this.feedbackCount;
+                int batchSize=PassBatchSize;
+                for(int start=0;start<this.selectCount;start+=batchSize){
+                    int end=Mathf.Min(this.selectCount,start+batchSize);
+                    this.declaredPages.Clear();
+                    using(IComputeRenderGraphBuilder builder=graph.AddComputePass<SelectionBatch>("Virtual Geometry Select and Cull",out SelectionBatch batch,VirtualGeometryDiagnostics.Select)){
+                        batch.Items=this.selectItems;batch.Start=start;batch.End=end;
+                        builder.UseTexture(hzb,AccessFlags.Read);
+                        for(int i=start;i<end;i++){
+                            SelectionPassData item=this.selectItems[i];
+                            if(this.declaredPages.Add(item.Page)){
+                                builder.UseBuffer(item.PageTable,AccessFlags.Read);builder.UseBuffer(item.SourceIndices,AccessFlags.Read);builder.UseBuffer(item.Clusters,AccessFlags.Read);
+                                builder.UseBuffer(item.Nodes,AccessFlags.Read);builder.UseBuffer(item.MaterialRanges,AccessFlags.Read);builder.UseBuffer(item.PageResidency,AccessFlags.Read);
+                            }
+                            // 以下はinstance×cameraごとの選択状態で、項目ごとに別のbuffer。
+                            builder.UseBuffer(item.Requests,AccessFlags.ReadWrite);builder.UseBuffer(item.Debug,AccessFlags.Write);builder.UseBuffer(item.CullingStatistics,AccessFlags.ReadWrite);
+                            builder.UseBuffer(item.VisibleIndices,AccessFlags.Write);builder.UseBuffer(item.RefinementState,AccessFlags.ReadWrite);
+                            builder.UseBuffer(item.SelectionFlags,AccessFlags.Write);builder.UseBuffer(item.Arguments,AccessFlags.Write);
                         }
+                        builder.SetRenderFunc(static(SelectionBatch input,ComputeGraphContext context)=>{
+                            for(int i=input.Start;i<input.End;i++){ExecuteSelect(input.Items[i],context);}
+                        });
+                    }
+                }
+                bool drewVirtual=this.drawCount>0;
+                for(int start=0;start<this.drawCount;start+=batchSize){
+                    int end=Mathf.Min(this.drawCount,start+batchSize);
+                    this.declaredPages.Clear();this.declaredSelections.Clear();
+                    using(IRasterRenderGraphBuilder builder=graph.AddRasterRenderPass<DrawBatch>("Virtual Geometry Draw",out DrawBatch batch,VirtualGeometryDiagnostics.Draw)){
+                        batch.Items=this.drawItems;batch.Start=start;batch.End=end;
+                        // 利用者shaderは影map・SSAO・light cookie等のglobal textureを読むため、すべてのglobal textureの利用を宣言する。
+                        builder.UseAllGlobalTextures(true);
+                        for(int i=start;i<end;i++){
+                            DrawData item=this.drawItems[i];
+                            if(this.declaredPages.Add(item.Page)){
+                                builder.UseBuffer(item.Vertices,AccessFlags.Read);
+                                if(item.Selection==null){
+                                    builder.UseBuffer(item.Indices,AccessFlags.Read);builder.UseBuffer(item.Arguments,AccessFlags.Read);builder.UseBuffer(item.Debug,AccessFlags.Read);
+                                }
+                            }
+                            if(item.Selection!=null&&this.declaredSelections.Add(item.Selection)){
+                                builder.UseBuffer(item.Indices,AccessFlags.Read);builder.UseBuffer(item.Arguments,AccessFlags.Read);builder.UseBuffer(item.Debug,AccessFlags.Read);
+                            }
+                        }
+                        builder.SetRenderAttachment(resources.activeColorTexture,0,AccessFlags.ReadWrite);
+                        builder.SetRenderAttachmentDepth(resources.activeDepthTexture,AccessFlags.ReadWrite);
+                        builder.SetRenderFunc(static(DrawBatch input,RasterGraphContext context)=>{
+                            // 描画命令はMaterialPropertyBlockの値を記録時にコピーするため、1つを使い回し、光源などが変わったときだけ設定し直す。
+                            MaterialPropertyBlock shared=context.renderGraphPool.GetTempMaterialPropertyBlock();
+                            PerObjectLighting lighting=null;bool inverted=false;
+                            for(int i=input.Start;i<input.End;i++){
+                                DrawData item=input.Items[i];
+                                if(item.DebugMode!=0){ExecuteDraw(item,context,context.renderGraphPool.GetTempMaterialPropertyBlock(),true);continue;}
+                                bool applyShared=lighting==null||!ReferenceEquals(lighting,item.Lighting)||inverted!=item.InvertCulling;
+                                ExecuteDraw(item,context,shared,applyShared);
+                                if(applyShared){lighting=item.Lighting;inverted=item.InvertCulling;}
+                            }
+                        });
+                    }
+                }
+                for(int start=0;start<this.feedbackCount;start+=batchSize){
+                    int end=Mathf.Min(this.feedbackCount,start+batchSize);
+                    using(RecordFeedbackMarker.Auto())
+                    using(IUnsafeRenderGraphBuilder builder=graph.AddUnsafePass<FeedbackBatch>("Virtual Geometry Async Page Requests",out FeedbackBatch batch)){
+                        batch.Items=this.feedbackItems;batch.Start=start;batch.End=end;
+                        for(int i=start;i<end;i++){
+                            builder.UseBuffer(graph.ImportBuffer(this.feedbackItems[i].Selection.FeedbackBuffer),AccessFlags.Read);
+                        }
+                        builder.UseTexture(resources.activeColorTexture,AccessFlags.Read);
+                        builder.AllowPassCulling(false);
+                        builder.SetRenderFunc(static(FeedbackBatch input,UnsafeGraphContext context)=>{
+                            for(int i=input.Start;i<input.End;i++){input.Items[i].Page.RecordFeedback(context.cmd,input.Items[i].Selection);}
+                        });
                     }
                 }
                 // URP may have copied depth before this injection point. Refresh the public texture after VG writes.

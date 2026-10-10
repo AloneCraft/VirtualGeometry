@@ -35,7 +35,8 @@ namespace VirtualizedGeometry{
                 result.streamMetadata=metadata;
                 result.StreamingController=new VirtualGeometryStreamingController(metadata,settings,
                     new VirtualGeometryFilePageStore(path,metadata,settings.IoDelayMilliseconds));
-                result.MaterialCount=metadata.Roots.Length;result.NodeCount=metadata.Nodes.Length;result.PageCount=metadata.Pages.Length;result.NodeLevels=ReadLevels(metadata.Nodes);
+                result.MaterialCount=metadata.Roots.Length;
+                result.NodeCount=metadata.Nodes.Length;result.PageCount=metadata.Pages.Length;result.NodeLevels=ReadLevels(metadata.Nodes);
                 int slots=result.StreamingController.SlotCount;
                 result.VertexBuffer=new GraphicsBuffer(GraphicsBuffer.Target.Structured,checked(slots*metadata.SlotVertices),32);
                 result.IndexBuffer=new GraphicsBuffer(GraphicsBuffer.Target.Structured,checked(slots*metadata.SlotIndices),4);
@@ -65,13 +66,14 @@ namespace VirtualizedGeometry{
 
         public void RecordFeedback(UnsafeCommandBuffer command,VirtualGeometrySelectionState selection){
             if(this.StreamingController==null||this.streamingDisposed||selection.Disposed||selection.PendingFeedback>=2){return;}
-            long submission=++this.lastSubmitted;long frame=this.streamFrame;selection.PendingFeedback++;
+            long submission=++this.lastSubmitted;long frame=this.streamFrame;int moveStamp=selection.MoveStamp;selection.PendingFeedback++;
             // 描画後の同一GPU command streamに置いたreadbackの完了は、それ以前のdraw完了も保証する。
             command.RequestAsyncReadback(selection.FeedbackBuffer,request=>{
                 selection.PendingFeedback--;this.completedSubmission=Math.Max(this.completedSubmission,submission);
                 if(this.streamingDisposed||selection.Disposed){return;}
                 if(request.hasError){this.StreamingController.Statistics.LastError="GPU request feedback readback failed.";return;}
                 var words=request.GetData<uint>();int count=(int)Math.Min(words[0],(uint)this.RequestCapacity);
+                if(selection.MoveStamp==moveStamp){selection.FeedbackQuiet=words[0]==0&&words[2]==0;}
                 this.StreamingController.Statistics.QueueOverflow+=words[1];
                 this.StreamingController.Statistics.QualityTargetMisses=words[2];
                 for(int i=0;i<count;i++){

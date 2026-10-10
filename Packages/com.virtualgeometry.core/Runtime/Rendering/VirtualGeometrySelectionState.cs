@@ -12,6 +12,30 @@ namespace VirtualizedGeometry{
         public readonly Camera Camera;private readonly long baseBytes;public GraphicsBuffer DebugBuffer{get;private set;}
         public long Bytes=>this.baseBytes+(this.DebugBuffer!=null?(long)this.DebugBuffer.count*16:0);
         private readonly int nodeCount;private readonly int materialCount;private readonly int capacity;
+        private Matrix4x4 feedbackView,feedbackProjection;private bool cameraKnown;
+        /// <summary>cameraが動いた回数。feedbackは出した時点の値を持ち、返ってきた時点で動いていれば「静止して要求なし」の判定に使わない。</summary>
+        public int MoveStamp{get;private set;}
+        /// <summary>直近の完了したfeedbackが、新しい要求も品質目標の未達も含まなかったか。cameraが動くとfalseに戻る。</summary>
+        public bool FeedbackQuiet;
+        /// <summary>
+        /// このinstance×cameraでGPU feedbackのreadbackを今frame出すか。readbackは1回ごとにD3D12のstaging resourceを作るため、部品数×camera数で毎frame出すと描画時間の大半になる。
+        /// cameraが止まり、直近のfeedbackが空で、読込中のpageもなければ出さない。動いている間や読込中は、instanceごとにframeをずらして FeedbackInterval frameに1回出す
+        /// (RequestTimeoutFrames=120、優先度の窓=8 frameに対して十分短い)。
+        /// </summary>
+        public bool ShouldRequestFeedback(int stagger,bool streamingActive){
+            Camera camera=this.Camera;
+            if(camera==null){return true;}
+            Matrix4x4 view=camera.worldToCameraMatrix;Matrix4x4 projection=camera.projectionMatrix;
+            bool moved=!this.cameraKnown||view!=this.feedbackView||projection!=this.feedbackProjection;
+            this.feedbackView=view;this.feedbackProjection=projection;this.cameraKnown=true;
+            if(moved){this.MoveStamp++;this.FeedbackQuiet=false;}
+            if(!moved&&this.FeedbackQuiet&&!streamingActive){return false;}
+            // 間隔はこの状態が描かれた回数で数える(Time.frameCountは検証や複数cameraの描画で進み方が揃わない)。instanceごとにずらすと、同じframeに全部品が一斉に出さない。
+            this.feedbackTicks++;
+            return (this.feedbackTicks+stagger)%FeedbackInterval==0;
+        }
+        private const int FeedbackInterval=4;
+        private int feedbackTicks;
         public VirtualGeometrySelectionState(VirtualGeometryGpuPage page,Camera camera){
             this.Camera=camera;this.nodeCount=page.NodeCount;this.materialCount=page.MaterialCount;this.capacity=Math.Max(1,page.VisibleIndexCapacity);
             try{

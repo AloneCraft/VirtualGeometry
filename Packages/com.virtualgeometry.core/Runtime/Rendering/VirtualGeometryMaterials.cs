@@ -21,7 +21,7 @@ namespace VirtualizedGeometry{
             material=null;pass=-1;reason=null;
             if(source==null){reason="Materialがありません。";return false;}
             if(source.renderQueue>2500){reason="半透明のMaterial("+source.name+")はVirtual Geometryでは描けません。";return false;}
-            pass=source.FindPass(PassName);
+            pass=FindVirtualPass(source);
             if(pass>=0){material=source;return true;}
             Shader shader=FindVirtualShader(source.shader);
             if(shader==null){
@@ -44,7 +44,7 @@ namespace VirtualizedGeometry{
             reason=null;
             if(source==null){reason="Materialがありません。";return false;}
             if(source.renderQueue>2500){reason="半透明のMaterial("+source.name+")はVirtual Geometryでは描けません。";return false;}
-            if(source.FindPass(PassName)>=0){return true;}
+            if(FindVirtualPass(source)>=0){return true;}
             if(FindVirtualShader(source.shader)!=null){return true;}
             reason="shader \""+source.shader.name+"\" に対応するVirtual Geometry Shaderがありません。shaderを右クリック→「Virtual Geometry Shaderを作成」で作り、Materialのshaderを「"+ShaderPrefix+source.shader.name+"」にしてください。";
             return false;
@@ -57,6 +57,19 @@ namespace VirtualizedGeometry{
         }
 
         private static readonly Dictionary<Shader,Shader> virtualShaders=new Dictionary<Shader,Shader>();
+        // FindPassは名前の文字列比較になり、描画判定は部品×slot×cameraごとに毎frame呼ばれるため、shaderごとに結果を覚える。
+        // shaderの編集で番号が変わりうるので、覚えた値は一定のframeで捨てて引き直す。
+        private const int PassCacheFrames=120;
+        private static readonly Dictionary<Shader,KeyValuePair<int,int>> virtualPasses=new Dictionary<Shader,KeyValuePair<int,int>>();
+        private static int FindVirtualPass(Material source){
+            Shader shader=source.shader;
+            if(shader==null){return -1;}
+            int frame=Time.frameCount;
+            if(virtualPasses.TryGetValue(shader,out KeyValuePair<int,int> cached)&&frame-cached.Value<PassCacheFrames&&frame>=cached.Value){return cached.Key;}
+            int pass=source.FindPass(PassName);
+            virtualPasses[shader]=new KeyValuePair<int,int>(pass,frame);
+            return pass;
+        }
 
         // 描画判定はcamera・instance・slotごとに毎frame呼ばれるため、見つかった対応shaderを覚える。
         // 見つからない結果は覚えない(Editorで後から.vgshaderを作ったときにすぐ反映するため)。削除されたshaderはnull比較で捨てる。
@@ -79,7 +92,7 @@ namespace VirtualizedGeometry{
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         public static void Reset(){
             foreach(Material material in derived.Values){if(material!=null){DestroyObject(material);}}
-            derived.Clear();virtualShaders.Clear();bundledLoaded=false;
+            derived.Clear();virtualShaders.Clear();virtualPasses.Clear();bundledLoaded=false;
         }
     }
 }

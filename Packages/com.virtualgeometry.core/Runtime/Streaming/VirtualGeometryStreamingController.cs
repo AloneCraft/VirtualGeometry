@@ -98,14 +98,16 @@ namespace VirtualizedGeometry{
         public VirtualGeometryStreamingStatistics Statistics{get;}=new VirtualGeometryStreamingStatistics();
         public int SlotCount=>this.slotPages.Length;
         /// <summary>root と、Proxyと同じ段までの常駐pageがすべてGPUへ公開済みか。専用描画への切替条件。</summary>
-        public bool RootReady{
-            get{
-                for(int page=0;page<this.entries.Length;page++){
-                    if(this.pinned[page]&&this.entries[page].State!=VirtualGeometryPageState.Resident){return false;}
-                }
-                return true;
-            }
-        }
+        // 全部品×cameraで毎frame何度も読まれるため、状態が変わるとき(RefreshStatistics)に求めた値を返す。
+        public bool RootReady=>this.rootReady;
+        private bool rootReady;
+        // 読込・転送・退避・要求し直しなど、Tickで進める作業が残っているか。無ければTickは何もしないので、全pageの走査を省く。RefreshStatisticsが更新する。
+        private bool needsTick=true;
+        /// <summary>
+        /// 全pageがGPUへ公開済みか。そうなると新しい要求も退避も起きないため、GPU feedbackのreadbackを描画ごとに発行する必要がない。
+        /// 予算がpage全体より小さい間は常にfalse。値はTickごとに更新される統計から取る。
+        /// </summary>
+        public bool IsFullyResident=>this.entries.Length>0&&this.Statistics.Resident==this.entries.Length;
         public bool IsPinned(int page)=>page>=0&&page<this.pinned.Length&&this.pinned[page];
         public VirtualGeometryPageState GetState(int page)=>this.entries[page].State;
 
@@ -177,6 +179,8 @@ namespace VirtualizedGeometry{
             this.Statistics.Requests++;Entry entry=this.entries[page];
             if(entry.EverResident&&!entry.Wanted){this.Statistics.ReRequests++;}
             entry.Wanted=true;
+            // 読み込み済みで未要求だったpage(Cached)が要求されると転送が始まる。状態が変わらないまま戻る経路もあるため、次のTickを必ず走らせる。
+            this.needsTick=true;
             if(!float.IsFinite(priority)||priority<0){priority=0;}
             if(this.pinned[page]){priority=float.MaxValue;}
             ObservePriority(entry,priority,frame);
@@ -246,6 +250,7 @@ namespace VirtualizedGeometry{
             if(this.disposed){return;}
             if(this.transferFrame!=frame){this.transferFrame=frame;this.Statistics.TransferBytesThisFrame=0;}
             this.Statistics.CompletedSubmission=completedSubmission;
+            if(!this.needsTick){return;}
             // 固定pageはGPU feedbackを待たずに要求し直す。専用描画はそれらの常駐後に始まるため、feedbackだけに頼ると要求queueが溢れたときに永久にProxyのままになる。
             for(int page=0;page<this.entries.Length;page++){
                 VirtualGeometryPageState state=this.entries[page].State;
@@ -438,7 +443,15 @@ namespace VirtualizedGeometry{
 
         private void RefreshStatistics(){
             this.Statistics.Queued=0;this.Statistics.Loading=0;this.Statistics.Uploading=0;this.Statistics.Resident=0;this.Statistics.Failed=0;this.Statistics.GpuResidentBytes=0;
+            bool ready=true;bool pending=false;
             for(int page=0;page<this.entries.Length;page++){
+                Entry current=this.entries[page];
+                VirtualGeometryPageState state=current.State;
+                if(this.pinned[page]&&state!=VirtualGeometryPageState.Resident){ready=false;}
+                // Tickが進める作業: 読込待ち・読込中・転送中・退避中、要求されて読み込み済みの転送待ち、固定pageの要求し直し。
+                if(state==VirtualGeometryPageState.Queued||state==VirtualGeometryPageState.Loading||state==VirtualGeometryPageState.Uploading||current.Retiring||
+                    (state==VirtualGeometryPageState.Cached&&current.Wanted)||
+                    (this.pinned[page]&&(state==VirtualGeometryPageState.Missing||state==VirtualGeometryPageState.Cancelled))){pending=true;}
                 switch(this.entries[page].State){
                     case VirtualGeometryPageState.Queued:this.Statistics.Queued++;break;
                     case VirtualGeometryPageState.Loading:this.Statistics.Loading++;break;
@@ -447,6 +460,7 @@ namespace VirtualizedGeometry{
                     case VirtualGeometryPageState.Failed:this.Statistics.Failed++;break;
                 }
             }
+            this.rootReady=ready;this.needsTick=pending;
             this.Statistics.PeakGpuResidentBytes=Math.Max(this.Statistics.PeakGpuResidentBytes,this.Statistics.GpuResidentBytes);
             this.Statistics.PeakCpuBytes=Math.Max(this.Statistics.PeakCpuBytes,this.Statistics.CpuBytes);
         }

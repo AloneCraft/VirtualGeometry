@@ -4,7 +4,7 @@
 
 | 項目 | 現在の実装と境界 | 実証 |
 |---|---|---|
-| 変換の入口 | Unity 標準 ModelImporter の全形式(FBX・OBJ・DAE・3DS・DXF・.blend 等)で、モデルの「Virtual Geometry」チェックによりインポート時に変換。GameObject は MeshFilter(低密度の代替 Mesh)+ MeshRenderer のまま VG で描画。glTF・USD 等の独自インポーター、`.asset` の Mesh、SkinnedMeshRenderer は対象外 | OBJ(EditMode・全検証 scene)。FBX は Blender 書き出しの space_elevator.fbx(28 Mesh・422 部品)で、半透明の雲以外の全部品が VG 描画されること・元 Mesh と模様が一致することを確認(SpaceElevatorValidation)。DAE 等は同じ経路だが実ファイルでは未実証 |
+| 変換の入口 | Unity 標準 ModelImporter の全形式(FBX・OBJ・DAE・3DS・DXF・.blend 等)で、モデルの「Virtual Geometry」チェックによりインポート時に変換。GameObject は MeshFilter(低密度の代替 Mesh)+ MeshRenderer のまま VG で描画。glTF・USD 等の独自インポーター、`.asset` の Mesh、SkinnedMeshRenderer は対象外 | OBJ(EditMode・全検証 scene)。FBX は Blender 書き出しの space_elevator.fbx(25 Mesh・419 部品)で、全部品が VG 描画されること・元 Mesh と模様が一致することを確認(SpaceElevatorValidation)。DAE 等は同じ経路だが実ファイルでは未実証 |
 | 描画 | URP RenderGraph、Forward / Forward+、opaque、SM5、compute、indirect | Editor / Development Player |
 | camera | 独立 Base Camera、perspective / orthographic、Game camera / Scene View | 2 Base + Scene View、順序変更。平面反射用の鏡映 camera(斜め near 平面・GL.invertCulling)でも VG 描画(SpaceElevatorValidation) |
 | transform | 移動、負 scale、非一様 scale。shear / ゼロ / 非有限は診断付き Proxy | 画像比較 + 境界テスト |

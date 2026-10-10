@@ -220,11 +220,26 @@ void Reset(uint3 id:SV_DispatchThreadID)
     }
 }
 
-// 各materialは独立した可変長DFSを実行するため1 thread/groupとし、未使用lane分のstack予約を避ける。
-[numthreads(1,1,1)]
-void Select(uint3 id:SV_DispatchThreadID)
+// 各materialは独立した可変長DFSを実行する。DFS(階層の走査・cull・統計・要求)は1 lane(lane 0)が直列に行い、
+// 採用したclusterを小さな塊(chunk)としてgroupsharedに溜め、塊ごとにgroupの全lane(VG_SELECT_LANES)で可視indexを並列にコピーする。
+// 以前は1 thread/groupで全indexのコピーまで直列に行い、大きなmaterialではこのコピーがGPU時間の大半を占めた。
+// 出力する可視indexの並び(cluster順、cluster内はindex順)と、argsの値は変わらない。
+#define VG_SELECT_LANES 64u
+#define VG_CHUNK_CAPACITY 32u
+
+groupshared uint gsStack[VG_STACK_CAPACITY];
+groupshared uint gsChunkCount;
+groupshared uint gsState; // 0: 続きがある、1: 走査完了、2: 中断(argsは0にして書き済み)
+groupshared uint gsChunkFirstIndex[VG_CHUNK_CAPACITY];
+groupshared uint gsChunkIndexCount[VG_CHUNK_CAPACITY];
+groupshared uint gsChunkOutput[VG_CHUNK_CAPACITY];
+groupshared uint gsChunkPage[VG_CHUNK_CAPACITY];
+groupshared float4 gsChunkDebug[VG_CHUNK_CAPACITY];
+
+[numthreads(VG_SELECT_LANES,1,1)]
+void Select(uint3 groupId:SV_GroupID,uint lane:SV_GroupIndex)
 {
-    uint material=id.x;
+    uint material=groupId.x;
     if(material >= _VGMaterialCount)
     {
         return;
@@ -236,91 +251,174 @@ void Select(uint3 id:SV_DispatchThreadID)
         return;
     }
 
-    uint stack[VG_STACK_CAPACITY];
+    // lane 0 だけが使う走査の状態。pendingNode は clusterOffset 番目から続きを出すnode(chunkが満杯で中断したとき)。
     uint top=0;
     uint writeCount=0;
-    stack[top++]=range.RootNode;
-
-    while(top > 0)
+    uint pendingNode=VG_INVALID_NODE;
+    uint clusterOffset=0;
+    float pendingScreenError=0;
+    if(lane == 0)
     {
-        uint nodeIndex=stack[--top];
-        VGNode node=_VGNodes[nodeIndex];
-        if(_VGStreaming!=0 && _VGFrustumEnabled!=0 && OutsideFrustum(mul(_VGObjectToWorld,float4(node.BoundsCenter,1)).xyz,node.BoundsRadius*_VGMaximumScale)) { continue; }
+        gsStack[top++]=range.RootNode;
+    }
 
-        bool childrenResident=node.ChildCount > 0;
-        for(uint childOffset=0;childOffset<node.ChildCount && childrenResident;childOffset++)
+    uint state=0;
+    [loop]
+    for(;;)
+    {
+        if(lane == 0)
         {
-            childrenResident=IsResident(_VGNodes[node.FirstChild+childOffset].PageId);
+            uint count=0;
+            uint result=0;
+            [loop]
+            while(true)
+            {
+                if(pendingNode == VG_INVALID_NODE)
+                {
+                    if(top == 0)
+                    {
+                        result=1;
+                        break;
+                    }
+                    uint nodeIndex=gsStack[--top];
+                    VGNode node=_VGNodes[nodeIndex];
+                    if(_VGStreaming!=0 && _VGFrustumEnabled!=0 && OutsideFrustum(mul(_VGObjectToWorld,float4(node.BoundsCenter,1)).xyz,node.BoundsRadius*_VGMaximumScale)) { continue; }
+
+                    bool childrenResident=node.ChildCount > 0;
+                    for(uint childOffset=0;childOffset<node.ChildCount && childrenResident;childOffset++)
+                    {
+                        childrenResident=IsResident(_VGNodes[node.FirstChild+childOffset].PageId);
+                    }
+
+                    bool wasRefined=_VGRefinementState[nodeIndex] != 0;
+                    float threshold=_VGTargetErrorPixels*(wasRefined ? 1.0-_VGHysteresis : 1.0+_VGHysteresis);
+                    float screenError=ScreenError(node);
+                    bool wantsRefinement=node.ChildCount>0 && screenError>threshold;
+                    bool refine=childrenResident && wantsRefinement && top+node.ChildCount <= VG_STACK_CAPACITY;
+                    if(_VGStreaming!=0 && wantsRefinement && !childrenResident) { InterlockedAdd(_VGRequests[2],1); }
+                    // 子pageの優先度は、それを必要とする親のscreen errorに揃える(CPU参照: VirtualGeometryLodSelector)。
+                    // 誤差は親>=子なので、現在のcutが依存するpageは子孫の要求より低くならず、退避と再要求が振動しない。
+                    if(nodeIndex == range.RootNode && IsResident(node.PageId)) { TouchPage(node.PageId,screenError); }
+                    if(_VGStreaming!=0 && wantsRefinement)
+                    {
+                        for(uint childOffset=0;childOffset<node.ChildCount;childOffset++)
+                        {
+                            uint page=_VGNodes[node.FirstChild+childOffset].PageId;
+                            if(IsResident(page)) { TouchPage(page,screenError); }
+                            else { EmitRequest(page,screenError); }
+                        }
+                    }
+
+                    if(refine)
+                    {
+                        _VGRefinementState[nodeIndex]=1;
+                        for(uint childOffset=node.ChildCount;childOffset>0;childOffset--)
+                        {
+                            gsStack[top++]=node.FirstChild+childOffset-1;
+                        }
+                        continue;
+                    }
+
+                    if(!IsResident(node.PageId))
+                    {
+                        _VGArguments.Store4(material*16,uint4(0,1,range.OutputStart,0));
+                        result=2;
+                        break;
+                    }
+
+                    _VGRefinementState[nodeIndex]=0;
+                    _VGSelectionFlags[nodeIndex]=1;
+                    pendingNode=nodeIndex;
+                    clusterOffset=0;
+                    pendingScreenError=screenError;
+                }
+
+                VGNode pending=_VGNodes[pendingNode];
+                bool full=false;
+                while(clusterOffset < pending.ClusterCount)
+                {
+                    if(count == VG_CHUNK_CAPACITY)
+                    {
+                        full=true;
+                        break;
+                    }
+                    VGCluster cluster=_VGClusters[pending.FirstCluster+clusterOffset];
+                    uint thisCluster=clusterOffset;
+                    clusterOffset++;
+                    InterlockedAdd(_VGCullingStatistics[0],1);
+                    float3 center=mul(_VGObjectToWorld,float4(cluster.BoundsCenter,1)).xyz;
+                    float radius=cluster.BoundsRadius*_VGMaximumScale;
+                    if(_VGFrustumEnabled != 0 && OutsideFrustum(center,radius))
+                    {
+                        InterlockedAdd(_VGCullingStatistics[1],1);
+                        continue;
+                    }
+                    if(_VGOcclusionEnabled != 0 && Occluded(center,radius))
+                    {
+                        InterlockedAdd(_VGCullingStatistics[2],1);
+                        continue;
+                    }
+                    InterlockedAdd(_VGCullingStatistics[3],1);
+                    if(writeCount+cluster.IndexCount > range.OutputCapacity)
+                    {
+                        _VGArguments.Store4(material*16,uint4(0,1,range.OutputStart,0));
+                        result=2;
+                        break;
+                    }
+                    gsChunkFirstIndex[count]=cluster.FirstIndex;
+                    gsChunkIndexCount[count]=cluster.IndexCount;
+                    gsChunkOutput[count]=range.OutputStart+writeCount;
+                    gsChunkPage[count]=cluster.PageId;
+                    gsChunkDebug[count]=float4(pending.FirstCluster+thisCluster,pending.Level,pendingScreenError,cluster.PageId);
+                    count++;
+                    writeCount+=cluster.IndexCount;
+                }
+                if(result == 2 || full)
+                {
+                    break;
+                }
+                pendingNode=VG_INVALID_NODE;
+            }
+            gsChunkCount=count;
+            gsState=result;
         }
+        GroupMemoryBarrierWithGroupSync();
 
-        bool wasRefined=_VGRefinementState[nodeIndex] != 0;
-        float threshold=_VGTargetErrorPixels*(wasRefined ? 1.0-_VGHysteresis : 1.0+_VGHysteresis);
-        float screenError=ScreenError(node);
-        bool wantsRefinement=node.ChildCount>0 && screenError>threshold;
-        bool refine=childrenResident && wantsRefinement && top+node.ChildCount <= VG_STACK_CAPACITY;
-        if(_VGStreaming!=0 && wantsRefinement && !childrenResident) { InterlockedAdd(_VGRequests[2],1); }
-        // 子pageの優先度は、それを必要とする親のscreen errorに揃える(CPU参照: VirtualGeometryLodSelector)。
-        // 誤差は親>=子なので、現在のcutが依存するpageは子孫の要求より低くならず、退避と再要求が振動しない。
-        if(nodeIndex == range.RootNode && IsResident(node.PageId)) { TouchPage(node.PageId,screenError); }
-        if(_VGStreaming!=0 && wantsRefinement)
+        uint chunkCount=gsChunkCount;
+        state=gsState;
+        if(state != 2)
         {
-            for(uint childOffset=0;childOffset<node.ChildCount;childOffset++)
+            for(uint chunk=0;chunk<chunkCount;chunk++)
             {
-                uint page=_VGNodes[node.FirstChild+childOffset].PageId;
-                if(IsResident(page)) { TouchPage(page,screenError); }
-                else { EmitRequest(page,screenError); }
+                uint firstIndex=gsChunkFirstIndex[chunk];
+                uint indexCount=gsChunkIndexCount[chunk];
+                uint outputStart=gsChunkOutput[chunk];
+                uint pageX=0;
+                uint pageY=0;
+                if(_VGStreaming != 0)
+                {
+                    uint4 table=_VGPageTable[gsChunkPage[chunk]];
+                    pageX=table.x;
+                    pageY=table.y;
+                }
+                for(uint indexOffset=lane;indexOffset<indexCount;indexOffset+=VG_SELECT_LANES)
+                {
+                    uint outputIndex=outputStart+indexOffset;
+                    if(_VGDebugMode>0&&_VGDebugMode<=4){_VGVisibleDebug[outputIndex]=gsChunkDebug[chunk];}
+                    _VGVisibleIndices[outputIndex]=_VGSourceIndices[firstIndex+indexOffset+pageY]+pageX;
+                }
             }
         }
-
-        if(refine)
+        // lane 0 が次のchunkを書き始める前に、全laneがコピーを終える。
+        GroupMemoryBarrierWithGroupSync();
+        if(state != 0)
         {
-            _VGRefinementState[nodeIndex]=1;
-            for(uint childOffset=node.ChildCount;childOffset>0;childOffset--)
-            {
-                stack[top++]=node.FirstChild+childOffset-1;
-            }
-            continue;
-        }
-
-        if(!IsResident(node.PageId))
-        {
-            _VGArguments.Store4(material*16,uint4(0,1,range.OutputStart,0));
-            return;
-        }
-
-        _VGRefinementState[nodeIndex]=0;
-        _VGSelectionFlags[nodeIndex]=1;
-        for(uint clusterOffset=0;clusterOffset<node.ClusterCount;clusterOffset++)
-        {
-            VGCluster cluster=_VGClusters[node.FirstCluster+clusterOffset];
-            InterlockedAdd(_VGCullingStatistics[0],1);
-            float3 center=mul(_VGObjectToWorld,float4(cluster.BoundsCenter,1)).xyz;
-            float radius=cluster.BoundsRadius*_VGMaximumScale;
-            if(_VGFrustumEnabled != 0 && OutsideFrustum(center,radius))
-            {
-                InterlockedAdd(_VGCullingStatistics[1],1);
-                continue;
-            }
-            if(_VGOcclusionEnabled != 0 && Occluded(center,radius))
-            {
-                InterlockedAdd(_VGCullingStatistics[2],1);
-                continue;
-            }
-            InterlockedAdd(_VGCullingStatistics[3],1);
-            if(writeCount+cluster.IndexCount > range.OutputCapacity)
-            {
-                _VGArguments.Store4(material*16,uint4(0,1,range.OutputStart,0));
-                return;
-            }
-            for(uint indexOffset=0;indexOffset<cluster.IndexCount;indexOffset++)
-            {
-                uint outputIndex=range.OutputStart+writeCount++;
-                if(_VGDebugMode>0&&_VGDebugMode<=4){_VGVisibleDebug[outputIndex]=float4(node.FirstCluster+clusterOffset,node.Level,screenError,cluster.PageId);}
-                _VGVisibleIndices[outputIndex]=_VGSourceIndices[cluster.FirstIndex+indexOffset+(_VGStreaming!=0 ? _VGPageTable[cluster.PageId].y : 0)]+
-                    (_VGStreaming!=0 ? _VGPageTable[cluster.PageId].x : 0);
-            }
+            break;
         }
     }
 
-    _VGArguments.Store4(material*16,uint4(writeCount,1,range.OutputStart,0));
+    if(lane == 0 && state == 1)
+    {
+        _VGArguments.Store4(material*16,uint4(writeCount,1,range.OutputStart,0));
+    }
 }

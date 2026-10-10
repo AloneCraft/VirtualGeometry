@@ -129,7 +129,11 @@ namespace VirtualizedGeometry{
         public int DiagnosticCameraStateCount=>this.cameraSelections.Count;
         public bool SharesStreamingResourceWith(VirtualGeometryRenderer other)=>other!=null&&this.gpuPage!=null&&ReferenceEquals(this.gpuPage,other.gpuPage);
 
+        private static readonly Unity.Profiling.ProfilerMarker TryGetPageMarker=new Unity.Profiling.ProfilerMarker("VG.TryGetGpuPage");
         internal bool TryGetGpuPage(out VirtualGeometryGpuPage page){
+            using(TryGetPageMarker.Auto()){return this.TryGetGpuPageCore(out page);}
+        }
+        private bool TryGetGpuPageCore(out VirtualGeometryGpuPage page){
             if(this.isActiveAndEnabled&&((this.gpuPage==null&&this.lastError==null)||(this.resourceLease!=null&&!this.resourceLease.IsValid))){this.Reload();}
             this.gpuPage?.TickStreaming(Time.frameCount);page=this.gpuPage;return page!=null;
         }
@@ -145,7 +149,11 @@ namespace VirtualizedGeometry{
         }
 
         private void OnDrawGizmos(){if(this.debugView==VirtualGeometryDebugView.Loading||this.debugView==VirtualGeometryDebugView.Culling){Gizmos.color=this.IsStreamingRootReady?Color.green:Color.yellow;Bounds bounds=this.WorldBounds;Gizmos.DrawWireCube(bounds.center,bounds.size);}}
+        private static readonly Unity.Profiling.ProfilerMarker UpdateMarker=new Unity.Profiling.ProfilerMarker("VG.Update");
         private void Update(){
+            using(UpdateMarker.Auto()){this.UpdateCore();}
+        }
+        private void UpdateCore(){
             if(this.reloadPending){this.ApplySerializedChanges();}
             this.gpuPage?.TickStreaming(Time.frameCount);
             List<Camera> expired=null;foreach(var pair in this.cameraSelections){if(pair.Key==null){expired??=new List<Camera>();expired.Add(pair.Key);}}
@@ -194,7 +202,7 @@ namespace VirtualizedGeometry{
         private VirtualGeometryMeshAsset loadedAsset;private string loadedKey;
 
         private void Reload(){
-            this.reloadPending=false;
+            this.reloadPending=false;this.InvalidateMaterialCache();
             this.Release();this.lastError=null;this.loadedAsset=null;this.loadedKey=null;
             if(!this.isActiveAndEnabled||!this.InScene){this.DestroyProxy();return;}this.CreateProxy();
             if(this.meshAsset==null){return;}

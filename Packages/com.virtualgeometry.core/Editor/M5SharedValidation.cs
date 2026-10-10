@@ -124,8 +124,9 @@ namespace VirtualizedGeometry.Editor{
                 image=M0Validation.Capture(secondCamera,Width,Height);Object.DestroyImmediate(image);
                 uint[] preserved=first.ReadbackSelectionForDiagnostics(camera).Arguments;
                 for(int i=0;i<preserved.Length;i++){if(preserved[i]!=firstCameraArguments[i]){throw new InvalidOperationException("Second camera overwrote the first camera arguments.");}}
-                if(first.DiagnosticCameraStateCount!=2||second.DiagnosticCameraStateCount!=2){throw new InvalidOperationException("Camera state was not separated.");}
-                results.Add("per-instance/per-camera selection states=4; earlier camera args preserved: PASS");
+                // 選択状態はcameraが描く(視錐台に入る)instanceにだけ作られる。副cameraは Shared A(x=-9)を視錐台の外に置くため、A は主cameraの1つ、B は両cameraの2つ。
+                if(first.DiagnosticCameraStateCount!=1||second.DiagnosticCameraStateCount!=2){throw new InvalidOperationException("Camera state was not separated: A="+first.DiagnosticCameraStateCount+", B="+second.DiagnosticCameraStateCount);}
+                results.Add("per-instance/per-camera selection states=3 (frustum-culled A has none for the secondary camera); earlier camera args preserved: PASS");
                 first.SetFallbackOverride(false,true);second.SetFallbackOverride(true);
                 image=M0Validation.Capture(camera,Width,Height);File.WriteAllBytes("TestResults/M5/ForcedFallback.png",image.EncodeToPNG());Object.DestroyImmediate(image);
                 if(!first.IsFallbackVisible||!second.IsFallbackVisible){throw new InvalidOperationException("Forced fallback did not activate.");}
