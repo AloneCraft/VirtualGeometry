@@ -30,10 +30,13 @@ namespace VirtualGeometry.Omni.Editor{
     /// </summary>
     public static class P2OmniPlanetValidation{
         private const string Root="Assets/Development/PlanetWorld/P2";
-        private const string Results="TestResults/Planet/P2";
+        private static string Results="TestResults/Planet/P2";
         private const string ShaderPath="Packages/com.virtualgeometry.omni/Shaders/RadialGlobalLit.vgshader";
-        private const float Radius=10000;
-        private const float Height=300;
+        private static float Radius=10000;
+        private static float Height=300;
+        private static int MaximumLevel=16;
+        private static float BaseWavelength=4000;
+        private static int Octaves=13;
         private const float Target=2;
         private const int Width=640;
         private const int ImageHeight=480;
@@ -57,6 +60,17 @@ namespace VirtualGeometry.Omni.Editor{
         private static readonly List<string> errors=new List<string>();
 
         public static void Run(){
+            Results="TestResults/Planet/P2";Radius=10000;Height=300;MaximumLevel=16;BaseWavelength=4000;Octaves=13;
+            Start();
+        }
+
+        /// <summary>半径 600km、Hmax 3000m。最小の波長は約 0.9m(18 octave)。</summary>
+        public static void RunLarge(){
+            Results="TestResults/Planet/P2Large";Radius=600000;Height=3000;MaximumLevel=PlanetTerrainSource.GpuMaximumLevel;BaseWavelength=240000;Octaves=18;
+            Start();
+        }
+
+        private static void Start(){
             report.Clear();failures.Clear();errors.Clear();started=EditorApplication.timeSinceStartup;
             Directory.CreateDirectory(Results);
             Application.logMessageReceived+=Record;
@@ -135,16 +149,18 @@ namespace VirtualGeometry.Omni.Editor{
             settings.FindProperty("poolCapacity").intValue=2048;
             settings.FindProperty("maximumDrawSlots").intValue=2048;
             settings.FindProperty("generationBudget").intValue=32;
+            settings.FindProperty("baseWavelength").floatValue=BaseWavelength;
+            settings.FindProperty("octaves").intValue=Octaves;
             settings.ApplyModifiedPropertiesWithoutUndo();
             planet.Material=material;
-            planet.Configure(Radius,Height,16,Target);
+            planet.Configure(Radius,Height,MaximumLevel,Target);
             offset=LogicalVector3.Zero;
             SetLogical(planetLogical,Vector3.zero,Quaternion.identity);
             holder.SetActive(true);
         }
 
         private static IEnumerator Steps(){
-            report.Add("planet: radius="+Radius+" height="+Height+" target="+Target+"px pool="+planet.PoolCapacity+" shader="+planet.Material.shader.name);
+            report.Add("planet: radius="+Radius+" height="+Height+" maximumLevel="+MaximumLevel+" wavelength="+BaseWavelength+" octaves="+Octaves+" target="+Target+"px pool="+planet.PoolCapacity+" shader="+planet.Material.shader.name);
             var views=new (string Name,float Altitude,float Pitch)[]{("High10km",10000,35),("Low100m",100,15),("Eye1.7m",1.7f,8)};
             var standard=new Texture2D[views.Length];
             var omni=new Texture2D[views.Length];
@@ -167,6 +183,7 @@ namespace VirtualGeometry.Omni.Editor{
                 ReportView("Omni"+views[v].Name);
                 Measure("Omni"+views[v].Name,omni[v],true);
                 CompareImages("Omni"+views[v].Name+"VsStandard",omni[v],standard[v],true,false,true);
+                ProbePrecision("Omni"+views[v].Name);
             }
             // 3. 惑星と camera を Logical で遠くへずらす(Unity の安全域 ±10km の外)。画像は変わらないはず。
             // 選択はヒステリシスで履歴に依存するので、惑星を作り直して 2 と同じ「履歴なし」から始める。
@@ -209,6 +226,24 @@ namespace VirtualGeometry.Omni.Editor{
             Place(views[0].Altitude,views[0].Pitch);
             foreach(object step in Converge("AfterCycles")){yield return step;}
             Measure("AfterCycles",Capture(),true);
+            // 6. 高さの振幅をほぼ 0 にした球で、地上 1.7m の頂点の精度を測る(地形の曲率に隠れない)。
+            float height=Height;
+            Height=0.01f;
+            planet.Configure(Radius,Height,MaximumLevel,Target);
+            Place(1.7f,8);
+            foreach(object step in Converge("SmoothEye1.7m")){yield return step;}
+            Texture2D smooth=Capture();
+            Save("SmoothEye1.7m",smooth);
+            Measure("SmoothEye1.7m",smooth,false);
+            ProbePrecision("SmoothEye1.7m");
+            Height=height;
+            planet.Configure(Radius,Height,MaximumLevel,Target);
+            // 7. 実際の地形で、地面から 1.7m(地面の高さは生成した頂点から読み戻す)。
+            foreach(object step in PlaceOnGround("TerrainEye1.7m",1.7f,8)){yield return step;}
+            Texture2D terrain=Capture();
+            Save("TerrainEye1.7m",terrain);
+            Measure("TerrainEye1.7m",terrain,true);
+            ProbePrecision("TerrainEye1.7m");
             report.Add("pool: used="+planet.UsedSlots+" capacity="+planet.PoolCapacity+" lastError="+(planet.LastError??"(none)"));
             if(planet.LastError!=null){failures.Add("設定エラー: "+planet.LastError);}
         }
@@ -263,13 +298,52 @@ namespace VirtualGeometry.Omni.Editor{
 
         // 方向 up の地表の真上(R+Hmax+altitude)に置き、地平線の方向から pitch 度下を見る。標準の配置では Unity の Transform も同じ値になる。
         private static void Place(float altitude,float pitch){
-            Vector3 up=new Vector3(0.3f,1f,0.2f).normalized;
+            Vector3 up=Up();
             Vector3 forward=Vector3.ProjectOnPlane(Vector3.forward,up).normalized;
             Vector3 right=Vector3.Cross(up,forward);
             Vector3 look=Quaternion.AngleAxis(pitch,right)*forward;
             Quaternion rotation=Quaternion.LookRotation(look,up);
             SetLogical(cameraLogical,up*(Radius+Height+altitude),rotation);
             reference.transform.SetPositionAndRotation(up*(Radius+Height+altitude),rotation);
+        }
+
+        // 地面の高さを読み戻しながら、地面から eye の高さへ近づける(選択が細かくなるほど地面の値も正確になる)。
+        private static IEnumerable<object> PlaceOnGround(string name,float eye,float pitch){
+            float ground=Radius+Height;
+            for(int iteration=0;iteration<4;iteration++){
+                Place(ground+eye-Radius-Height,pitch);
+                foreach(object step in Converge(name+"Iteration"+iteration)){yield return step;}
+                if(TrySampleGround(out float sampled)){ground=sampled;}
+            }
+            Place(ground+eye-Radius-Height,pitch);
+            foreach(object step in Converge(name)){yield return step;}
+            report.Add(name+": ground="+(ground-Radius).ToString("0.000",CultureInfo.InvariantCulture)+"m above R");
+        }
+
+        // camera の真下(方向 Up)に最も近い選択中の Cell の頂点から、Up の線に最も近い頂点の Up 方向の距離を返す。
+        private static bool TrySampleGround(out float ground){
+            ground=0;
+            Vector3 up=Up();
+            PlanetCellKey best=default;float closest=float.MaxValue;bool found=false;
+            foreach(PlanetCellKey key in planet.LastSelected){
+                if(!planet.TryReadbackCellForDiagnostics(in key,out VirtualGeometryPackedVertex[] _,out PlanetCellFrame frame)){continue;}
+                float angle=Vector3.Angle(frame.ApproximateOrigin,up);
+                if(angle<closest||(angle==closest&&key.Level>best.Level)){closest=angle;best=key;found=true;}
+            }
+            if(!found||!planet.TryReadbackCellForDiagnostics(in best,out VirtualGeometryPackedVertex[] vertices,out PlanetCellFrame cell)){return false;}
+            int grid=(PlanetTerrainSource.CellQuads+1)*(PlanetTerrainSource.CellQuads+1);
+            float distance=float.MaxValue;
+            for(int i=0;i<grid;i++){
+                Vector3 point=cell.ApproximateOrigin+vertices[i].Position;
+                float along=Vector3.Dot(point,up);
+                float off=(point-up*along).magnitude;
+                if(off<distance){distance=off;ground=along;}
+            }
+            return true;
+        }
+
+        private static Vector3 Up(){
+            return new Vector3(0.3f,1f,0.2f).normalized;
         }
 
         private static Texture2D Capture(int width=Width,int height=ImageHeight){
@@ -336,6 +410,29 @@ namespace VirtualGeometry.Omni.Editor{
             report.Add(name+": holes="+holes+" covered="+covered+" cells="+planet.LastSelected.Count+" draws="+arguments[1]+" cull(considered,frustum,hzb,visible)="+string.Join(",",statistics));
             if(fail&&holes!=0){failures.Add(name+": 穴が "+holes+" 画素ありました。");}
             if(fail&&covered==0){failures.Add(name+": 惑星が描かれていません(placement="+(placement.LastFailure??"(none)")+")。");}
+        }
+
+        // 描いている最も細かい階層の Cell の頂点を読み戻し、格子に沿った 2 階差分 |p[i−1]−2p[i]+p[i+1]| の最大を測る。
+        // なめらかな地表なら quad の長さよりずっと小さい。頂点の位置が量子化されていると、その刻み程度の値になる。
+        private static void ProbePrecision(string name){
+            int finest=0;
+            foreach(PlanetCellKey key in planet.LastSelected){finest=Mathf.Max(finest,key.Level);}
+            int side=PlanetTerrainSource.CellQuads+1;
+            float maximum=0;float quad=0;int cells=0;
+            foreach(PlanetCellKey key in planet.LastSelected){
+                if(key.Level!=finest||cells>=4){continue;}
+                if(!planet.TryReadbackCellForDiagnostics(in key,out VirtualGeometryPackedVertex[] vertices,out PlanetCellFrame _)){continue;}
+                cells++;
+                for(int j=0;j<side;j++){
+                    for(int i=1;i<side-1;i++){
+                        Vector3 a=vertices[j*side+i-1].Position;Vector3 b=vertices[j*side+i].Position;Vector3 c=vertices[j*side+i+1].Position;
+                        maximum=Mathf.Max(maximum,(a-2*b+c).magnitude);quad=Mathf.Max(quad,(c-b).magnitude);
+                        Vector3 e=vertices[(i-1)*side+j].Position;Vector3 f=vertices[i*side+j].Position;Vector3 g=vertices[(i+1)*side+j].Position;
+                        maximum=Mathf.Max(maximum,(e-2*f+g).magnitude);
+                    }
+                }
+            }
+            report.Add(name+": precision finestLevel="+finest+" cells="+cells+" quad="+quad.ToString("G4",CultureInfo.InvariantCulture)+"m maxSecondDifference="+maximum.ToString("G4",CultureInfo.InvariantCulture)+"m");
         }
 
         // 輪郭(背景かどうか)の差と色の差を数える。band なら、基準の輪郭から 1px の帯に入る輪郭の差を許す。

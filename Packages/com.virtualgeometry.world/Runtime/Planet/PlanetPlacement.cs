@@ -30,10 +30,10 @@ namespace VirtualGeometry.World{
         bool UsesProperties{get;}
 
         /// <summary>
-        /// 原点 cellOrigin(惑星のローカル座標)の Cell の draw の値。頂点は cellOrigin からの相対位置で書かれている。
+        /// Cell の draw の値。頂点は Cell の原点(cell.Origin、惑星のローカル座標、Logical 精度)からの相対位置で書かれている。
         /// properties は UsesProperties が true のときだけ渡る。値を作れないときは false(この Cell を描かない)。
         /// </summary>
-        bool Describe(in PlanetPlacementFrame frame,Vector3 cellOrigin,out Matrix4x4 objectToWorld,out Matrix4x4 objectToCull,MaterialPropertyBlock properties);
+        bool Describe(in PlanetPlacementFrame frame,in PlanetCellFrame cell,out Matrix4x4 objectToWorld,out Matrix4x4 objectToCull,MaterialPropertyBlock properties);
     }
 
     /// <summary>Unity の world 空間に惑星を置く(float の精度で足りる大きさに限る)。</summary>
@@ -51,8 +51,8 @@ namespace VirtualGeometry.World{
             return true;
         }
 
-        public bool Describe(in PlanetPlacementFrame frame,Vector3 cellOrigin,out Matrix4x4 objectToWorld,out Matrix4x4 objectToCull,MaterialPropertyBlock properties){
-            objectToWorld=this.localToWorld*Matrix4x4.Translate(cellOrigin);
+        public bool Describe(in PlanetPlacementFrame frame,in PlanetCellFrame cell,out Matrix4x4 objectToWorld,out Matrix4x4 objectToCull,MaterialPropertyBlock properties){
+            objectToWorld=this.localToWorld*Matrix4x4.Translate(cell.ApproximateOrigin);
             objectToCull=objectToWorld;
             return true;
         }

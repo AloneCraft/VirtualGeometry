@@ -497,6 +497,14 @@ namespace VirtualizedGeometry{
             return Mathf.Max(x,Mathf.Max(y,z));
         }
 
+        /// <summary>検証用。slot の頂点(配置は Layout)を同期 readback で返す。</summary>
+        public VirtualGeometryPackedVertex[] ReadbackSlotVerticesForDiagnostics(int slot){
+            int count=this.pool.Layout.SlotVertexCount;
+            var result=new VirtualGeometryPackedVertex[count];
+            this.pool.Vertices.GetData(result,0,slot*count,count);
+            return result;
+        }
+
         /// <summary>検証用。直近のcullの統計(候補cluster、Frustum棄却、HZB棄却、可視)を同期readbackで返す。</summary>
         public uint[] ReadbackStatisticsForDiagnostics(Camera camera){
             uint[] result=new uint[4];

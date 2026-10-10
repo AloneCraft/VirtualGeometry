@@ -1,5 +1,9 @@
 {
   "name": "VirtualGeometry.World",
   "rootNamespace": "VirtualGeometry.World",
-  "references": ["VirtualizedGeometry.Runtime"]
+  "references": [
+    "VirtualizedGeometry.Runtime",
+    "Radial.Runtime",
+    "Unity.Mathematics"
+  ]
 }

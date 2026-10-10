@@ -142,9 +142,12 @@ Omni の ViewSnapshot の値を使い、使えないときは描く側へ倒す(
 |---|---|---|
 | `com.virtualgeometry.core` | クラスター供給元の抽象、選択・カリング・描画、cluster ごとの変換、座標入力の抽象(恒等の実装)、外部互換型のレジストリ | URP |
 | `com.virtualgeometry.omni`(asmdef `VirtualGeometry.Omni`) | 惑星を Omni の Logical 座標に置く `OmniPlanetPlacement`(ViewSnapshot によるカメラ入力、eye 相対の cull 空間、Cell ごとの Omni の物体の値)、Radial shader(`Shaders/RadialGlobalLit.vgshader`) | VG core、世界パッケージ、`com.omni.rendering` |
-| 世界パッケージ | Domain、Cell、Field、Layer、Override、惑星、海、降下カメラ | VG core(Omni は adapter 経由) |
+| 世界パッケージ(`com.virtualgeometry.world`) | Domain、Cell、Field、Layer、Override、惑星、海、降下カメラ。Cell の原点などの高精度の値は Omni の Logical(`Omni.Logical.Scalar` など)で求める | VG core、`com.omni.rendering`(Logical の型と演算だけ。描画の接続は adapter) |
 
 VG core は Omni に依存しない。
+
+世界パッケージは Omni の Logical の型と演算を直接使う(2026-10-11 に決定。10^20 m を 1mm で扱うには double でも足りず、
+Omni の Q95.96 固定小数点を位置の正本にするため)。Omni の Radial 描画への接続は adapter(`com.virtualgeometry.omni`)が受け持つ。
 
 Omni は tgz をリポジトリ外のパスから `file:` で参照する。
 
@@ -357,9 +360,7 @@ Cell の bounds は、生成済みなら GPU が求めた cluster の bounds を
 2026-10-10 の確認:解析的な bounds だけでは、地上 10m で Cell が 947 個選ばれて pool(2048)が枯渇した。
 実際の bounds に変えると 79 個になり、退避も枯渇も無くなった。
 
-GPU は面の通し番号を float で扱うため、階層は 18 までに限る(`PlanetTerrainSource.GpuMaximumLevel`)。
-
-それより細かい階層は、Cell の局所原点(P4)で扱う。
+Cell の生成の精度は §12 を参照。
 
 ### 検証(`VirtualGeometry.World.Editor.P3bPlanetValidation`)
 
@@ -431,8 +432,47 @@ Logical の camera が安全域(±10km)の外にあると、Unity の camera は
 
 未実施:
 
-- 半径 600km での確認
+- 半径 600km は §12 で、穴 0、頂点の精度、Hmax の球から 1.7m〜10km の 3 視点で Standard との輪郭の差 0 を確認した。地面に近い視点での Standard との比較は、基準自体が float の量子化を含むので行っていない
 - M≠1 の View Scale、eye が warp 中心に無い場合(fail-open の経路)
 - z-fighting と深度の分解能の測定
 - Play/Stop の往復と、GraphicsBuffer のリークの計数
 - Scene View での表示
+
+
+## 12. Cell の精度の基盤(P4a)
+
+### 方式
+
+Cell の中心の値を CPU が Logical 精度で求め(`PlanetCellFrame`)、GPU は Cell の中心からの相対量だけを float で計算する。
+
+- 中心の角度は π·n/2^(L+2)(n=2x+1−2^L)。n/2^(L+2) を固定小数点で正確に作るため、階層は 94 まで(`PlanetCellFrame.MaximumLevel`)
+- 中心の正接 x0、y0 は、角度の sin と cos をテイラー展開(14 項、|角度|≤π/4)で求めて割る。半角の公式の繰り返しは、深い階層で角度の誤差が倍々に増えるので使わない
+- Cell の原点 = R·p0/|p0|(p0=n+x0·u+y0·v)。R を掛けるのは正規化の後(R² を作らない)
+- ノイズの格子は octave ごとに、原点の格子番号(2^32 で巡回)と端数を CPU が求め、GPU は端数 + 相対位置の格子だけを float で扱う
+- GPU は、頂点の正接の差 tan(a0+δ)−tan(a0) を x0 と δ から差だけで求め(小さな δ は級数)、球面上の点の差 R·(p/|p|−p0/|p0|) を、大きな値どうしの引き算をしない形で求める
+- 選択の解析的な bounds は、階層 14 以上では中心の方向を `PlanetCellFrame` で求める(`PlanetCellSelector.FrameBounds`)。
+  中心から角・辺の中点までの角度は、面の角度の幅の最大 0.816 倍(面の角の Cell)なので、0.85 倍で見込む
+- Omni の配置は、Cell の原点を float にせず Logical のまま惑星の姿勢と合成する
+
+頂点の誤差は惑星の大きさではなく Cell の大きさに比例する。
+
+同じ階層で隣り合う Cell の境界の頂点は、別の中心から求めるので相対誤差 1e-7 程度の差が残りうる(skirt が隠す)。
+
+### 確認(`P2OmniPlanetValidation.RunLarge`、半径 600km、Hmax 3000m)
+
+精度は、最も細かい階層の Cell の頂点を読み戻し、格子に沿った 2 階差分の最大で測る(なめらかな面なら quad² / R 程度)。
+
+2026-10-11 の結果:
+
+| 条件 | 修正前 | 修正後 |
+|---|---|---|
+| 高さの振幅 1cm の球、地上 1.7m | 階層 18 止まり、quad 0.056m に対し 2 階差分 0.18m(float の刻み約 6cm に量子化)、画像に凸凹と縞 | 階層 21(quad 6.9mm)、2 階差分 1.0e-7m、画像はなめらか |
+| 実際の地形、地面から 1.7m(地面の高さは頂点の読み戻しから求めた) | (未測定) | 階層 21、2 階差分 0.9mm(地形の曲率)、穴 0 |
+
+半径 10km の P2・P3b・P3a と、世界パッケージの EditMode テスト 18 本も合格した。
+
+未実施・未解決:
+
+- 半径 6,371km 以上(選択のカメラ位置と bounds は惑星ローカルの float のままで、大きな惑星では地上付近の選択が粗くなりうる)
+- 地面から 1.7m では pool(2048)を使い切る(半径 600km で 586 Cell 描画、使用 2048)。退避と生成待ちは起きるが、穴と設定エラーは無い
+- 粗い Cell は quad より短い波長の octave も評価している(帯域制限は P4b で Field と一緒に扱う)

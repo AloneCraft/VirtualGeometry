@@ -3,10 +3,15 @@
   "displayName": "Virtualized Geometry World",
   "version": "0.1.0",
   "unity": "6000.6",
-  "description": "Virtualized Geometry の実行時生成 cluster で天体を描く世界の部品。cube-sphere の Cell の四分木、画面誤差による選択、地形の GPU 生成。設計は Requirements/PlanetWorld.md。",
+  "description": "Virtualized Geometry の実行時生成 cluster で天体を描く世界の部品。cube-sphere の Cell の四分木、画面誤差による選択、地形の GPU 生成。位置の正本は Omni の Logical 固定小数点。設計は Requirements/PlanetWorld.md。",
   "license": "MIT",
-  "keywords": ["virtualized-geometry", "planet", "terrain"],
+  "keywords": [
+    "virtualized-geometry",
+    "planet",
+    "terrain"
+  ],
   "dependencies": {
-    "com.virtualgeometry.core": "0.1.0"
+    "com.virtualgeometry.core": "0.1.0",
+    "com.omni.rendering": "0.1.0"
   }
 }

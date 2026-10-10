@@ -1,7 +1,15 @@
 {
   "name": "VirtualGeometry.World.Tests.Editor",
   "rootNamespace": "VirtualGeometry.World.Tests",
-  "references": ["VirtualGeometry.World", "VirtualizedGeometry.Runtime"],
-  "includePlatforms": ["Editor"],
-  "optionalUnityReferences": ["TestAssemblies"]
+  "references": [
+    "VirtualGeometry.World",
+    "VirtualizedGeometry.Runtime",
+    "Radial.Runtime"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
 }

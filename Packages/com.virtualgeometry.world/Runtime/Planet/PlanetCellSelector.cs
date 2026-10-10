@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using LogicalScalar=Omni.Logical.Scalar;
 
 namespace VirtualGeometry.World{
     /// <summary>Cell の生成と描画の状態を、選択から問い合わせる口。</summary>
@@ -42,10 +43,15 @@ namespace VirtualGeometry.World{
     /// 3. 子4つがすべて生成済みなら子へ進み、そうでなければ自分を描いて子の生成を要求する(親は子が揃うまで描き続ける)。
     /// 4. 2:1 制約: 隣が2段以上細かい Cell は細分化する(子が揃っていなければ、描いたまま要求だけ出す)。
     /// root が生成済みでなければ、その面は描かない(穴を見せない)。
-    /// 座標は float(P3。Logical 精度は P4 で Cell の局所原点に置き換える)。
+    /// 座標は float。面の座標の float では角が潰れる細かい階層(<see cref="FrameBoundsLevel"/> 以上)では、
+    /// 解析的な bounds の中心の方向を Logical で求める(<see cref="PlanetCellFrame"/>)。
     /// </summary>
     public sealed class PlanetCellSelector{
         private const int BalanceIterations=4;
+        /// <summary>この階層から、解析的な bounds を <see cref="FrameBounds"/> で求める。</summary>
+        public const int FrameBoundsLevel=14;
+        private const int DirectionCacheLimit=1<<16;
+        private readonly Dictionary<PlanetCellKey,Vector3> directions=new Dictionary<PlanetCellKey,Vector3>();
         private readonly Stack<PlanetCellKey> stack=new Stack<PlanetCellKey>();
         private readonly HashSet<PlanetCellKey> selected=new HashSet<PlanetCellKey>();
         private readonly List<PlanetCellKey> scratch=new List<PlanetCellKey>();
@@ -89,6 +95,15 @@ namespace VirtualGeometry.World{
         /// 標本点の間で球面が外へふくらむ分(sagitta)を足す。
         /// </summary>
         public void Bounds(in PlanetCellKey key,out Vector3 center,out float radius){
+            if(key.Level>=FrameBoundsLevel){
+                this.FrameBounds(in key,out center,out radius);
+            }else{
+                this.SampledBounds(in key,out center,out radius);
+            }
+        }
+
+        /// <summary>面の座標(float)の角・辺の中点・中心から作る bounds。粗い階層用。</summary>
+        public void SampledBounds(in PlanetCellKey key,out Vector3 center,out float radius){
             FaceRange(in key,out float s0,out float t0,out float size);
             Vector3 middle=CubeSphere.Direction(key.Face,s0+size*0.5f,t0+size*0.5f);
             float inner=this.Radius-this.HeightAmplitude-this.SkirtDepth(key.Level);
@@ -105,6 +120,25 @@ namespace VirtualGeometry.World{
             // 標本点(半角 widest/2 の間隔)の間の球面のふくらみ。
             float sagitta=outer*(1f-Mathf.Cos(Mathf.Min(widest,Mathf.PI*0.5f)*0.5f));
             radius=farthest+sagitta;
+        }
+
+        /// <summary>
+        /// 中心の方向を Logical で求め、半径を角度の幅から保守的に見積もる bounds。細かい階層用。
+        /// 等角写像では、Cell の中心から角・辺の中点までの角度は面の角度の幅 (π/2)·2^-L の最大 0.816 倍(面の角の Cell。
+        /// 面の中央では √2/2 倍)なので、0.85 倍で見込む。
+        /// </summary>
+        public void FrameBounds(in PlanetCellKey key,out Vector3 center,out float radius){
+            if(!this.directions.TryGetValue(key,out Vector3 direction)){
+                if(!PlanetCellFrame.TryCreate(in key,LogicalScalar.One,out PlanetCellFrame frame)){throw new InvalidOperationException("Cell の中心を求められません: "+key);}
+                direction=frame.ApproximateOrigin;
+                if(this.directions.Count>=DirectionCacheLimit){this.directions.Clear();}
+                this.directions.Add(key,direction);
+            }
+            float inner=this.Radius-this.HeightAmplitude-this.SkirtDepth(key.Level);
+            float outer=this.Radius+this.HeightAmplitude;
+            center=direction*(0.5f*(inner+outer));
+            float angle=Mathf.PI*0.5f*MathF.Pow(2f,-key.Level)*0.85f;
+            radius=outer*angle+0.5f*(outer-inner)+outer*(1f-Mathf.Cos(angle));
         }
 
         /// <summary>

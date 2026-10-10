@@ -55,6 +55,28 @@ namespace VirtualGeometry.World.Tests{
                     }
                 }
             }
+            {
+                //細かい階層(FrameBounds)でも、面の角・辺の近くを含めて、Cell の範囲の点はすべて bounds の球の中にある
+                // 高さの幅で隠れないよう、振幅 0 で角度の見積もりを確かめる。
+                var selector=new PlanetCellSelector(Radius,0f,PlanetTerrainSource.CellQuads,PlanetCellFrame.MaximumLevel,2f);
+                foreach(int child in new[]{0,1,2,3}){
+                    PlanetCellKey key=PlanetCellKey.Root(1);
+                    for(int depth=0;depth<PlanetCellSelector.FrameBoundsLevel+2;depth++){
+                        key=key.Child(child);
+                        if(key.Level<PlanetCellSelector.FrameBoundsLevel){continue;}
+                        selector.FrameBounds(in key,out Vector3 center,out float radius);
+                        PlanetCellSelector.FaceRange(in key,out float s0,out float t0,out float size);
+                        for(int j=0;j<=4;j++){
+                            for(int i=0;i<=4;i++){
+                                Vector3 direction=CubeSphere.Direction(key.Face,s0+size*i/4f,t0+size*j/4f);
+                                foreach(float r in new[]{Radius-selector.SkirtDepth(key.Level),Radius}){
+                                    Assert.That((direction*r-center).magnitude,Is.LessThanOrEqualTo(radius*1.0001f),key.ToString());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         [Test]

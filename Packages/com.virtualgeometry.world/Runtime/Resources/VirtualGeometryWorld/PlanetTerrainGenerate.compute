@@ -2,10 +2,11 @@
 #pragma target 5.0
 
 // 惑星の Cell 1つ分の頂点を、VirtualGeometryGridLayout の配置で pool の slot へ書く。
-// 面の表と等角写像は CubeSphere.cs と同じ。位置は Cell の原点 _CellOrigin(惑星のローカル座標)からの相対位置。
-// 格子点は整数の通し番号 g = cell·N + i から面の座標 g/(N·2^L) を作るので、同じ面で隣り合う Cell の境界の頂点は
-// 同じ入力から同じ値になる。面の境界をまたぐ頂点は別の式から作るので ulp の差が残りうる(skirt が隠す)。
-// 通し番号は float で正確に表せる 2^24 以下に限る(PlanetTerrainSource.GpuMaximumLevel)。
+// 面の表と等角写像は CubeSphere.cs と同じ。位置は Cell の原点(PlanetCellFrame.Origin、惑星のローカル座標)からの相対位置。
+// 大きな値(Cell の原点、中心の正接、ノイズの格子の基点)は CPU が Logical 精度で求めて渡し、
+// GPU は Cell の中心からの相対量だけを float で計算する。大きな値どうしの引き算をしないので、
+// 誤差は惑星の大きさではなく Cell の大きさに比例する。
+// 同じ階層で隣り合う Cell の境界の頂点は、別の中心から求めるので相対誤差 1e-7 程度の差が残りうる(skirt が隠す)。
 
 struct VGPackedVertex
 {
@@ -14,21 +15,28 @@ struct VGPackedVertex
     float2 uv;
 };
 
+#define MAXIMUM_OCTAVES 20
+
 RWStructuredBuffer<VGPackedVertex> _Vertices;
 int _CellQuads;
 int _SlotVertexCount;
 int _GridVertexCount;
 int _Slot;
 int _Face;
-int _Level;
-uint _CellX;
-uint _CellY;
 float _Radius;
 float _HeightAmplitude;
 float _SkirtDepth;
-float _BaseWavelength;
-float3 _CellOrigin;
+// 1 quad の、面の角度での大きさ (π/2)/(N·2^L)。
+float _QuadAngle;
+// 中心の正接 (x0, y0)。
+float2 _CenterTangent;
+// Cell の面の座標の始点と大きさ(UV 用。深い階層では float の精度で潰れるが、形には使わない)。
+float4 _FaceRange;
+float _InverseWavelength;
 int _Octaves;
+// octave ごとの、Cell の原点の格子番号(2^32 で巡回)と端数。
+int4 _NoiseLattice[MAXIMUM_OCTAVES];
+float4 _NoiseFraction[MAXIMUM_OCTAVES];
 
 static const float3 FaceNormal[6]={float3(1,0,0),float3(-1,0,0),float3(0,1,0),float3(0,-1,0),float3(0,0,1),float3(0,0,-1)};
 static const float3 FaceU[6]={float3(0,0,1),float3(0,0,-1),float3(1,0,0),float3(1,0,0),float3(-1,0,0),float3(1,0,0)};
@@ -49,11 +57,9 @@ float3 Gradient(int3 cell,uint octave)
     return normalize(float3(hash&0xffffu)/32767.5-1.0+1e-6);
 }
 
-// 3D の gradient noise(値はおよそ −1〜1)。
-float GradientNoise(float3 p,uint octave)
+// 3D の gradient noise(値はおよそ −1〜1)。格子番号 i と、その中の位置 f(0〜1)。
+float GradientNoise(int3 i,float3 f,uint octave)
 {
-    int3 i=(int3)floor(p);
-    float3 f=p-(float3)i;
     float3 w=f*f*f*(f*(f*6.0-15.0)+10.0);
     float n000=dot(Gradient(i+int3(0,0,0),octave),f-float3(0,0,0));
     float n100=dot(Gradient(i+int3(1,0,0),octave),f-float3(1,0,0));
@@ -68,34 +74,62 @@ float GradientNoise(float3 p,uint octave)
     return lerp(lerp(x00,x10,w.y),lerp(x01,x11,w.y),w.z)*1.5;
 }
 
-// 高さ(m)。fBm を ±_HeightAmplitude に収める(bounds の Hmax を保証するため clamp する)。
-float Height(float3 direction)
+// 高さ(m)。球面上の点(Cell の原点からの相対位置 sphere)で fBm を評価し、±_HeightAmplitude に収める
+// (bounds の Hmax を保証するため clamp する)。格子は「原点の格子番号 + 相対位置の格子」に分けて、大きな座標を float にしない。
+float Height(float3 sphere)
 {
-    float3 p=direction*_Radius;
     float sum=0;
     float amplitude=0.5;
-    float wavelength=_BaseWavelength;
     for(int octave=0;octave<_Octaves;octave++)
     {
-        sum+=amplitude*GradientNoise(p/wavelength,(uint)octave);
+        float3 q=_NoiseFraction[octave].xyz+sphere*(_InverseWavelength*exp2((float)octave));
+        float3 whole=floor(q);
+        sum+=amplitude*GradientNoise(_NoiseLattice[octave].xyz+(int3)whole,q-whole,(uint)octave);
         amplitude*=0.5;
-        wavelength*=0.5;
     }
     return clamp(sum,-1.0,1.0)*_HeightAmplitude;
 }
 
-float3 Direction(float s,float t)
+// tan(a0+δ)−tan(a0) を、tan(a0)=x0 と δ から差だけで求める。小さな δ では tan を級数で求める(GPU の tan は小さな値の相対精度が低い)。
+float TangentOffset(float x0,float delta)
 {
-    float x=tan((2.0*s-1.0)*0.78539816339744830962);
-    float y=tan((2.0*t-1.0)*0.78539816339744830962);
-    return normalize(FaceNormal[_Face]+x*FaceU[_Face]+y*FaceV[_Face]);
+    float t;
+    if(abs(delta) < 0.2)
+    {
+        float d2=delta*delta;
+        t=delta*(1.0+d2*(1.0/3.0+d2*(2.0/15.0+d2*(17.0/315.0+d2*(62.0/2835.0)))));
+    }
+    else
+    {
+        t=tan(delta);
+    }
+    return t*(1.0+x0*x0)/(1.0-x0*t);
 }
 
-// 通し番号 (gu, gv) の地表の点。gu、gv は面の外(−1 や total+1)でもよく、そのときは隣の面の方向へ自然に続く。
-float3 Surface(float gu,float gv,float total,out float3 direction)
+// Cell の中心から格子の番号で (a, b) の位置の、球面上の点(原点からの相対位置)と単位方向。a、b は −1〜N+1。
+// R·(p/|p| − p0/|p0|) = R·(d/|p| − p0·(2p0·d + d·d)/(|p|·|p0|·(|p0|+|p|)))、p = p0 + d。
+void SpherePoint(float a,float b,out float3 sphere,out float3 direction)
 {
-    direction=Direction(gu/total,gv/total);
-    return direction*(_Radius+Height(direction));
+    float half=(float)_CellQuads*0.5;
+    float x0=_CenterTangent.x;
+    float y0=_CenterTangent.y;
+    float dx=TangentOffset(x0,(a-half)*_QuadAngle);
+    float dy=TangentOffset(y0,(b-half)*_QuadAngle);
+    float3 p0=FaceNormal[_Face]+x0*FaceU[_Face]+y0*FaceV[_Face];
+    float3 d=dx*FaceU[_Face]+dy*FaceV[_Face];
+    float3 p=p0+d;
+    float l0=length(p0);
+    float l=length(p);
+    float3 relative=d/l-p0*((2.0*dot(p0,d)+dot(d,d))/(l*l0*(l0+l)));
+    sphere=relative*_Radius;
+    direction=p/l;
+}
+
+float3 Surface(float a,float b,out float3 direction)
+{
+    float3 sphere;
+    SpherePoint(a,b,sphere,direction);
+    return sphere+direction*Height(sphere);
 }
 
 [numthreads(64,1,1)]
@@ -124,22 +158,21 @@ void Generate(uint3 id:SV_DispatchThreadID)
         if(edge == 3) { i=0; }
         skirt=true;
     }
-    float total=(float)_CellQuads*exp2((float)_Level);
-    float gu=(float)(_CellX*(uint)_CellQuads+(uint)i);
-    float gv=(float)(_CellY*(uint)_CellQuads+(uint)j);
+    float a=(float)i;
+    float b=(float)j;
     float3 direction;
-    float3 position=Surface(gu,gv,total,direction);
+    float3 position=Surface(a,b,direction);
     float3 unused;
-    float3 du=Surface(gu+1.0,gv,total,unused)-Surface(gu-1.0,gv,total,unused);
-    float3 dv=Surface(gu,gv+1.0,total,unused)-Surface(gu,gv-1.0,total,unused);
+    float3 du=Surface(a+1.0,b,unused)-Surface(a-1.0,b,unused);
+    float3 dv=Surface(a,b+1.0,unused)-Surface(a,b-1.0,unused);
     float3 normal=normalize(cross(dv,du));
     if(skirt)
     {
         position-=direction*_SkirtDepth;
     }
     VGPackedVertex vertex;
-    vertex.position=position-_CellOrigin;
+    vertex.position=position;
     vertex.normal=normal;
-    vertex.uv=float2(gu,gv)/total;
+    vertex.uv=_FaceRange.xy+float2(a,b)*(_FaceRange.z/(float)_CellQuads);
     _Vertices[_Slot*_SlotVertexCount+index]=vertex;
 }

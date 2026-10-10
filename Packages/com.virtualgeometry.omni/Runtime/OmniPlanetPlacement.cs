@@ -95,11 +95,10 @@ namespace VirtualGeometry.Omni{
             return true;
         }
 
-        public bool Describe(in PlanetPlacementFrame frame,Vector3 cellOrigin,out Matrix4x4 objectToWorld,out Matrix4x4 objectToCull,MaterialPropertyBlock properties){
+        public bool Describe(in PlanetPlacementFrame frame,in PlanetCellFrame cell,out Matrix4x4 objectToWorld,out Matrix4x4 objectToCull,MaterialPropertyBlock properties){
             objectToWorld=default;objectToCull=default;
-            // Cell の原点の Logical 位置 = 惑星 + 基底·cellOrigin。描画も cull もここからの相対で行う。
-            if(!LogicalVector3.TryFromFloat3(cellOrigin,out LogicalVector3 local)||
-                !LogicalMatrix3x3.TryMultiplyVector(in this.planetPose.Basis,in local,out LogicalVector3 offset)||
+            // Cell の原点の Logical 位置 = 惑星 + 基底·cell.Origin(どちらも Logical のまま)。描画も cull もここからの相対で行う。
+            if(!LogicalMatrix3x3.TryMultiplyVector(in this.planetPose.Basis,in cell.Origin,out LogicalVector3 offset)||
                 !LogicalPosition3.TryAdd(this.planetPose.Position,offset,out LogicalPosition3 origin)||
                 !LogicalRenderPose.TryCreate(origin,this.planetPose.Basis,this.planetPose.PrecisionGuaranteed,out LogicalRenderPose pose)||
                 !DrawTransform.TryCreate(this.snapshot.WarpCenter,in pose,out DrawTransform drawTransform)||
@@ -111,7 +110,7 @@ namespace VirtualGeometry.Omni{
             RadialGlobalRenderSystem.WriteRadialTransformParameters(properties,in drawTransform);
             RadialGlobalRenderSystem.WriteGpuFrameParameters(properties,in this.snapshot.GpuFrame);
             // 照明は Omni の契約どおり Unity Proxy の行列から物理位置を作る。
-            objectToWorld=this.planetProxy*Matrix4x4.Translate(cellOrigin);
+            objectToWorld=this.planetProxy*Matrix4x4.Translate(cell.ApproximateOrigin);
             objectToCull=Matrix4x4.Translate(relative)*this.basis;
             return true;
         }
