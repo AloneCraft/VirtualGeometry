@@ -342,6 +342,8 @@ Player のビルドと実行(`M5PlayerBuildValidation`)は、この変更では�
 2026-10-10 の確認:Omni なし・P2 の core の変更(draw ごとの cull 空間と描画、§11)ありで、
 EditMode 51/51 と M0〜M5 の 11 本が合格し、M3 の `Metrics.csv` と `Results.txt` は変更前と一致した。
 
+2026-10-11 の確認:Omni なし・P5a の core の変更(`RequestRegeneration`)ありで、同じく EditMode 51/51 と M0〜M5 の 11 本が合格し、M3 の結果は変更前と一致した。
+
 
 ## 10. 惑星の Cell の選択と生成(P3)
 
@@ -516,7 +518,8 @@ Override(地域の作り込み)と実データの基盤は、まだ実装して�
 ### 降下カメラ(`PlanetDescentCamera`)
 
 - Omni の Logical.Transform(親を持たない)を動かす。Unity の Transform は Omni の `SyncUnityTransform` だけが書く
-- 速度は地表からの高さに比例する。地表から eyeHeight(既定 1.7m)より下へは行かない(CPU の高さの Field、`PlanetTerrainSource.TrySampleSurface`)
+- 速度は地表からの高さに比例する。地表から eyeHeight(既定 1.7m)より下へは行かない(CPU の高さの Field、`PlanetTerrainSource.TrySampleSurface`)。
+  海(`PlanetOceanSource`)を設定すると、海面から波の高さの上限より下へも行かない
 - 操作(Input System): WASD で前後左右(カメラの向き)、E/Q で上下(惑星の中心から外向き)、右ドラッグで向き、ホイールで速度の倍率
 - 瞬間移動は 2 段階にする。`PrepareTeleport` で移動先の真下の Cell と周りの 3×3 を、quad が eyeHeight 以下になる階層まで先に生成させ
   (`PlanetTerrainSource.Prefetch`)、true になってから `Teleport` する
@@ -548,3 +551,49 @@ Override(地域の作り込み)と実データの基盤は、まだ実装して�
 - Override と実データの基盤
 - 10^20 m までの大きさ(P6)
 - 地上での pool の不足(1.7m では 2048 を使い切り、退避が続く)の調整
+
+
+## 14. 海の Layer の形(P5a)
+
+### 構成
+
+地形と海は、どちらも `PlanetLayerSource`(Cell の選択・生成・退避・配置・draw・先読みの共通部分)の派生で、同じ GameObject に置く。
+
+- `PlanetTerrainSource`: 高さの Field の地形。生成は PlanetTerrainGenerate.compute
+- `PlanetOceanSource`: 海面(半径 R の球)を Gerstner 波で動かしたもの。生成は PlanetOceanGenerate.compute。地形(`Terrain`)を参照する
+
+GPU の Cell の格子の部品(面の表、正接の差、Cell の中心からの球面の点)は PlanetCell.hlsl、CPU は `PlanetCellGeometry` で、同じ式。
+
+### 波
+
+- 成分は Pierson–Moskowitz スペクトル(風速 10m/s が既定)を、山の波長の 2 倍から最短波長(既定 0.5m)まで対数で等間隔に 24 個へ分けたもの
+- 方向は 3 次元の単位ベクトル(seed で決める)。位相 = 2π·(Cell の原点での端数 + d·(相対位置)/λ) − ω·t。原点での端数は CPU が Logical で求める(`PlanetCellFrame.TryWavePhase`)
+- 時刻の位相 ω·t は 2π で巻いてから渡す(float の t が大きくなると精度が落ちる。長時間の連続実行での精度は未確認)
+- 帯域制限: 波長が 2·quadLength より短い成分は変位に入れない(P5b で法線と粗さへ移す)
+- 波の入る階層の Cell は、描く frame ごとに作り直す(core の `RequestRegeneration`: 描ける状態のまま作り直しを予約する)。粗い Cell は静止した球面
+- 選択の bounds には、波の変位の上界(Σ振幅·(1+尖り))を含める
+- 水深(海面からの地形の深さ)を UV の x に入れる(P5b の shader で使う)
+
+海岸線は地形と海の深度の交わりで決まる。
+
+### 確認(`VirtualGeometry.Omni.Editor.P5aOceanValidation`、半径 600km、Hmax 3000m)
+
+2026-10-11 の結果:
+
+- 海岸の 4 視点(陸の地上 1.7m、海岸の上 100m・1km・10km)で穴 0
+- CPU と GPU の海面の差は最大 0.2〜4mm、水深の差は最大 1.2mm
+- 帯域制限: 波を落とす Cell で、GPU の頂点は全成分の評価と 0.54〜1.43m 違い(落とした波の分)、帯域制限した CPU の評価とは mm 以下で一致した
+- 時刻を 1.5 秒進めると、海の画素の大半(92,829 画素)が変わった
+- z-fighting: camera を 0.1mm ずらして撮り直すと、海と陸の境から 1px の帯の外で判定が入れ替わる画素は 0。
+  帯の中(境の線そのもの)では 0〜2 画素が入れ替わった(0.1mm のずれで境の線が画素の中心を横切るため。深度の精度の問題とは区別できていない)
+- 高度帯の遷移(目標 1/4 との比較): 1.7m と 10km では海と陸の境が 1px の帯の外で 0。**100m と 1km では 2 画素ずつ帯の外で違い、不合格**。
+  違うのは 1〜2 画素の小さな陸の点(水面からわずかに出た岩の先)で、細かい描画で入る短い波と細かい地形で、水面との上下が入れ替わる。
+  傾きのゆるい海岸では、わずかな上下の差が大きな水平のずれになるので、深度の交わりで海岸線を決める限り残る。
+  Field の高さ(水深)から海岸線を決める方式(P5b の shader)で扱う
+
+未実施・未解決:
+
+- 深度の分解能の実測(Omni の対数深度での、距離ごとの z-fighting が起きる相対距離)
+- 階層の違う Cell の境で、変位に入る波の帯域が違うため、遠くの海に正方形の模様が見える(P5b で、落とした波を法線と粗さへ移す)
+- 陸だけの Cell の海を描かない最適化(今は全部描いて、深度で隠している)
+- 長時間の連続実行での波の時刻の精度

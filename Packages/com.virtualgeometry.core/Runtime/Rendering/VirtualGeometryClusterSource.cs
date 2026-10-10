@@ -348,6 +348,15 @@ namespace VirtualizedGeometry{
             this.ready[slot]=false;this.pendingSet.Add(slot);this.pending.Add(slot);
         }
 
+        /// <summary>
+        /// 生成済みの slot を、描ける状態のまま作り直す(時間で動く頂点など)。作り直しは次の生成で、同じ queue の描画より前に行う。
+        /// まだ生成していない slot は、生成済みになるまで描けないまま(<see cref="RequestGeneration"/> と同じ)。
+        /// </summary>
+        protected void RequestRegeneration(int slot){
+            if(this.pool==null||slot<0||slot>=this.pool.Capacity||this.pendingSet.Contains(slot)){return;}
+            this.pendingSet.Add(slot);this.pending.Add(slot);
+        }
+
         protected bool IsReady(int slot){
             return this.pool!=null&&slot>=0&&slot<this.pool.Capacity&&this.ready[slot];
         }

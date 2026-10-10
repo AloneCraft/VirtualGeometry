@@ -75,6 +75,20 @@ namespace VirtualGeometry.World{
             return true;
         }
 
+        /// <summary>
+        /// 単位方向 direction・波長の逆数 inverseWavelength の平面波の、原点での位相(周期の端数、0〜1)。
+        /// (direction·原点)/波長 を Logical で求めて端数だけを取るので、惑星が大きくても位相が潰れない。
+        /// </summary>
+        public bool TryWavePhase(in LogicalVector3 direction,in LogicalScalar inverseWavelength,out float fraction){
+            fraction=0;
+            if(!LogicalVector3.TryDot(in direction,this.Origin,out LogicalScalar along)||!LogicalScalar.TryMultiply(in along,in inverseWavelength,out LogicalScalar cycles)){
+                return false;
+            }
+            // 2 の補数の raw の Limb1 の下位 32 ビットが、負の無限大方向へ切り捨てた後の端数の上位 32 ビット。
+            fraction=(cycles.Raw.Limb1&0xffffffffUL)*(1f/4294967296f);
+            return true;
+        }
+
         private static bool TryLattice(in LogicalScalar coordinate,in LogicalScalar inverseWavelength,int octave,out int lattice,out float fraction){
             lattice=0;fraction=0;
             if(!LogicalScalar.TryMultiply(in coordinate,in inverseWavelength,out LogicalScalar scaled)||

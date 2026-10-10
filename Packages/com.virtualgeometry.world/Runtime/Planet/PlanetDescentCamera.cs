@@ -18,6 +18,8 @@ namespace VirtualGeometry.World{
     [DisallowMultipleComponent]
     public sealed class PlanetDescentCamera:MonoBehaviour{
         [SerializeField] private PlanetTerrainSource planet;
+        /// <summary>海(任意)。有効なら、海面から波の高さの上限より下へも行かない。</summary>
+        [SerializeField] private PlanetOceanSource ocean;
         [SerializeField,Min(0)] private float eyeHeight=1.7f;
         /// <summary>1 秒に、地表からの高さの何倍だけ進むか。</summary>
         [SerializeField,Min(0)] private float speedPerAltitude=1f;
@@ -30,6 +32,7 @@ namespace VirtualGeometry.World{
         private float speedMultiplier=1f;
 
         public PlanetTerrainSource Planet{get=>this.planet;set=>this.planet=value;}
+        public PlanetOceanSource Ocean{get=>this.ocean;set=>this.ocean=value;}
         public float EyeHeight{get=>this.eyeHeight;set=>this.eyeHeight=Mathf.Max(0,value);}
         public bool ReadInput{get=>this.readInput;set=>this.readInput=value;}
         /// <summary>直近の地表からの高さ(CPU の高さの Field)。</summary>
@@ -75,7 +78,7 @@ namespace VirtualGeometry.World{
         /// </summary>
         public bool Move(Vector3 move,Vector2 look,float deltaTime){
             if(!this.TryBegin(out LogicalRenderPose pose,out LogicalVector3 local,out Vector3 up)){return false;}
-            if(!this.planet.TrySampleSurface(in local,out float _,out float altitude)){return this.Fail("地表の高さを求められない。");}
+            if(!this.TrySurface(in local,out float _,out float altitude)){return this.Fail("地表の高さを求められない。");}
             Quaternion rotation=this.transform.rotation;
             if(look!=Vector2.zero){
                 rotation=Quaternion.AngleAxis(look.x,up)*rotation;
@@ -118,7 +121,7 @@ namespace VirtualGeometry.World{
             target=default;
             direction=direction.normalized;
             if(!LogicalVector3.TryFromFloat3(direction,out LogicalVector3 unit)||!LogicalVector3.TryScale(in unit,this.planet.Selector.LogicalRadius,out LogicalVector3 surface)||
-                !this.planet.TrySampleSurface(in surface,out float height,out float _)){
+                !this.TrySurface(in surface,out float height,out float _)){
                 return this.Fail("移動先の地表の高さを求められない。");
             }
             if(!LogicalScalar.TryFromFloat(height+altitude,out LogicalScalar lift)||
@@ -133,7 +136,7 @@ namespace VirtualGeometry.World{
         private bool Clamp(in LogicalRenderPose pose){
             this.Clamped=false;
             for(int iteration=0;iteration<2;iteration++){
-                if(!this.TryLocal(in pose,out LogicalVector3 local,out Vector3 up)||!this.planet.TrySampleSurface(in local,out float _,out float altitude)){
+                if(!this.TryLocal(in pose,out LogicalVector3 local,out Vector3 up)||!this.TrySurface(in local,out float _,out float altitude)){
                     return this.Fail("地表の高さを求められない。");
                 }
                 this.Altitude=altitude;
@@ -143,6 +146,19 @@ namespace VirtualGeometry.World{
             }
             this.logical.SyncUnityTransform();
             this.LastFailure=null;
+            return true;
+        }
+
+        // 地表(地形と、海があれば波の高さの上限の海面の高い方)の高さと、point のそこからの高さ。
+        private bool TrySurface(in LogicalVector3 point,out float height,out float altitude){
+            if(!this.planet.TrySampleSurface(in point,out height,out altitude)){return false;}
+            if(this.ocean!=null&&this.ocean.isActiveAndEnabled){
+                float sea=this.ocean.WaveAmplitude;
+                if(height<sea){
+                    altitude-=sea-height;
+                    height=sea;
+                }
+            }
             return true;
         }
 
