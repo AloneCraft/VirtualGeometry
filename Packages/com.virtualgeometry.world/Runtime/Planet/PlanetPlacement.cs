@@ -1,18 +1,21 @@
 using UnityEngine;
 using VirtualizedGeometry;
+using LogicalVector3=Omni.Logical.Vector3;
 
 namespace VirtualGeometry.World{
     /// <summary>camera ごとに、惑星をどの空間に置いて選択・cull・描画するかの値。</summary>
     public readonly struct PlanetPlacementFrame{
-        /// <summary>惑星のローカル座標でのカメラの位置(Cell の選択に使う)。</summary>
-        public readonly Vector3 CameraLocal;
-        /// <summary>惑星のローカル座標から cull 空間への行列。</summary>
+        /// <summary>惑星のローカル座標でのカメラの位置(Logical。Cell の選択に使う)。</summary>
+        public readonly LogicalVector3 CameraLocal;
+        /// <summary>惑星のローカル座標の向きを cull 空間へ写す行列(線形部分だけを使う)。</summary>
         public readonly Matrix4x4 LocalToCull;
+        /// <summary>cull 空間でのカメラの位置。</summary>
+        public readonly Vector3 CameraCull;
         public readonly float LocalToCullScale;
         public readonly VirtualGeometryClusterCullSpace CullSpace;
 
-        public PlanetPlacementFrame(Vector3 cameraLocal,Matrix4x4 localToCull,float localToCullScale,VirtualGeometryClusterCullSpace cullSpace){
-            this.CameraLocal=cameraLocal;this.LocalToCull=localToCull;this.LocalToCullScale=localToCullScale;this.CullSpace=cullSpace;
+        public PlanetPlacementFrame(in LogicalVector3 cameraLocal,Matrix4x4 localToCull,Vector3 cameraCull,float localToCullScale,VirtualGeometryClusterCullSpace cullSpace){
+            this.CameraLocal=cameraLocal;this.LocalToCull=localToCull;this.CameraCull=cameraCull;this.LocalToCullScale=localToCullScale;this.CullSpace=cullSpace;
         }
     }
 
@@ -47,7 +50,10 @@ namespace VirtualGeometry.World{
             Vector3 scale=planet.lossyScale;
             float maximum=Mathf.Max(Mathf.Abs(scale.x),Mathf.Max(Mathf.Abs(scale.y),Mathf.Abs(scale.z)));
             var space=new VirtualGeometryClusterCullSpace(view.CameraPosition,view.FrustumPlanes,view.ViewProjection,view.NearPlane,true);
-            frame=new PlanetPlacementFrame(planet.InverseTransformPoint(view.CameraPosition),this.localToWorld,maximum,space);
+            // Unity の world 空間は float なので、カメラの位置も float から作る(大きな惑星では Omni の配置を使う)。
+            frame=default;
+            if(!LogicalVector3.TryFromFloat3(planet.InverseTransformPoint(view.CameraPosition),out LogicalVector3 cameraLocal)){return false;}
+            frame=new PlanetPlacementFrame(in cameraLocal,this.localToWorld,view.CameraPosition,maximum,space);
             return true;
         }
 

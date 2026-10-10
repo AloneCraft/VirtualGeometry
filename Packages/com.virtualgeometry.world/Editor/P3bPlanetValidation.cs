@@ -14,7 +14,7 @@ using VirtualizedGeometry.Editor;
 namespace VirtualGeometry.World.Editor{
     /// <summary>
     /// P3b: 手続き生成の惑星(半径 10km、Hmax 300m、float 座標)を、宇宙から地上まで撮って次を確かめる。
-    /// - 穴・継ぎ目 0: 内側の球(半径 R−Hmax)に当たる光線の画素が背景色でない。左右または上下を地形に挟まれた背景の画素が無い
+    /// - 穴・継ぎ目 0: 内側の球(半径 R−Hmax)に当たる光線の画素が背景色でない。地形に囲まれた背景(画像の縁から背景をたどって届かない画素)が無い
     /// - LOD 遷移 1px 未満: 目標誤差を 1/4 にした細かい描画と比べ、輪郭の差が基準の輪郭から 1px より離れない
     /// - pool の上限: 使用 slot が容量以下で、設定エラーが無い
     /// - 生成予算を超えても穴が無い: 予算 1 で遠くから地上近くへ瞬間移動しても、各 frame で穴が無い
@@ -251,7 +251,7 @@ namespace VirtualGeometry.World.Editor{
             foreach(PlanetCellKey key in planet.LastSelected){coarsest=Mathf.Min(coarsest,key.Level);}
             float edge=planet.Selector.QuadArc(coarsest)*2f;
             float inner=Radius-Height-edge*edge/(8f*(Radius-Height));
-            // 1画素の角度。縁では、地形の輪郭と内側の球の輪郭が画素未満しか離れないので、1画素分内側の光線だけを数える。
+            // 1画素の角度。縁では、地形の輪郭と内側の球の輪郭が近いので、縁から 2 画素分より内側の光線だけを数える(HitsSphere)。
             float pixelAngle=camera.fieldOfView*Mathf.Deg2Rad/height;
             int holes=0;
             if(marked!=null){
@@ -272,7 +272,9 @@ namespace VirtualGeometry.World.Editor{
             return holes;
         }
 
-        // 光線が球に、縁から1画素分(接線の長さ×1画素の角度)より深く入るか。
+        // 縁の許容量は 2 画素。地形の低い所(谷)は内側の球の近くまで下がるので、遠くから見た縁では、本物の谷の切れ込みと内側の球の輪郭が
+        // 1 画素ほどしか離れないことがある(2026-10-11、半径 10km・高度 20km で、R−0.56Hmax の谷の切れ込みを 1 画素の許容量で穴と数えた)。
+        // 光線が球に、縁から 2 画素分(接線の長さ×1画素の角度×2)より深く入るか。
         private static bool HitsSphere(Ray ray,Vector3 center,float radius,float near,float pixelAngle){
             Vector3 offset=ray.origin-center;
             float b=Vector3.Dot(offset,ray.direction);
@@ -286,36 +288,46 @@ namespace VirtualGeometry.World.Editor{
             if(c<=0){return true;}
             float closest=(offset+ray.direction*(-b)).magnitude;
             float tangent=Mathf.Sqrt(c);
-            return radius-closest>tangent*pixelAngle;
+            return radius-closest>2f*tangent*pixelAngle;
         }
 
         private static void Measure(string name,Texture2D image,bool fail){
             int holes=CountHoles(image);
-            int cracks=CountThinGaps(image);
+            int cracks=CountEnclosedBackground(image);
             uint[] statistics=planet.ReadbackStatisticsForDiagnostics(camera);
-            report.Add(name+": holes="+holes+" thinGaps="+cracks+" cull(considered,frustum,hzb,visible)="+string.Join(",",statistics));
+            report.Add(name+": holes="+holes+" enclosed="+cracks+" cull(considered,frustum,hzb,visible)="+string.Join(",",statistics));
             if(fail&&holes!=0){failures.Add(name+": 穴が "+holes+" 画素ありました。");}
-            if(fail&&cracks!=0){failures.Add(name+": 地形に挟まれた細い背景(継ぎ目の候補)が "+cracks+" 画素ありました。");}
+            if(fail&&cracks!=0){failures.Add(name+": 地形に囲まれた背景(継ぎ目の候補)が "+cracks+" 画素ありました。");}
         }
 
-        // 左右または上下を地形に挟まれた、幅1〜2画素の背景。
-        private static int CountThinGaps(Texture2D image){
+        // 地形に囲まれた背景(継ぎ目の候補)。画像の縁の背景から 4 近傍でたどれない背景の画素を数える。
+        // 峰と峰の間の空の切れ込みは空につながるので数えない(2026-10-11 まで使っていた「地形に挟まれた細い背景」は、尖った山の地平線で切れ込みを数えた)。
+        private static int CountEnclosedBackground(Texture2D image){
             Color32[] pixels=image.GetPixels32();
             int width=image.width;int height=image.height;
+            var reached=new bool[pixels.Length];
+            var stack=new Stack<int>();
+            for(int x=0;x<width;x++){Seed(pixels,reached,stack,x);Seed(pixels,reached,stack,(height-1)*width+x);}
+            for(int y=0;y<height;y++){Seed(pixels,reached,stack,y*width);Seed(pixels,reached,stack,y*width+width-1);}
+            while(stack.Count>0){
+                int index=stack.Pop();
+                int x=index%width;int y=index/width;
+                if(x>0){Seed(pixels,reached,stack,index-1);}
+                if(x<width-1){Seed(pixels,reached,stack,index+1);}
+                if(y>0){Seed(pixels,reached,stack,index-width);}
+                if(y<height-1){Seed(pixels,reached,stack,index+width);}
+            }
             int count=0;
-            for(int y=2;y<height-2;y++){
-                for(int x=2;x<width-2;x++){
-                    if(!IsBackground(pixels[y*width+x])){continue;}
-                    bool horizontal=Terrain(pixels,width,x-1,y)&&(Terrain(pixels,width,x+1,y)||Terrain(pixels,width,x+2,y));
-                    bool vertical=Terrain(pixels,width,x,y-1)&&(Terrain(pixels,width,x,y+1)||Terrain(pixels,width,x,y+2));
-                    if(horizontal||vertical){count++;}
-                }
+            for(int i=0;i<pixels.Length;i++){
+                if(IsBackground(pixels[i])&&!reached[i]){count++;}
             }
             return count;
         }
 
-        private static bool Terrain(Color32[] pixels,int width,int x,int y){
-            return !IsBackground(pixels[y*width+x]);
+        private static void Seed(Color32[] pixels,bool[] reached,Stack<int> stack,int index){
+            if(reached[index]||!IsBackground(pixels[index])){return;}
+            reached[index]=true;
+            stack.Push(index);
         }
 
         // 基準(細かい描画)の輪郭から1画素の帯に入らない輪郭の差を数える。

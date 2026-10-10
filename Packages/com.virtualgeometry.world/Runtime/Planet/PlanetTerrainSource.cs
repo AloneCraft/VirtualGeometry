@@ -4,6 +4,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using VirtualizedGeometry;
 using LogicalScalar=Omni.Logical.Scalar;
+using LogicalVector3=Omni.Logical.Vector3;
 
 namespace VirtualGeometry.World{
     /// <summary>
@@ -20,8 +21,12 @@ namespace VirtualGeometry.World{
         public const int ClusterQuads=8;
         /// <summary>選べる最大の階層。Cell の中心の値を Logical で正確に作れる範囲(<see cref="PlanetCellFrame.MaximumLevel"/>)。</summary>
         public const int GpuMaximumLevel=PlanetCellFrame.MaximumLevel;
-        /// <summary>GPU の生成が受け取れる octave の数(PlanetTerrainGenerate.compute の MAXIMUM_OCTAVES)。</summary>
-        public const int MaximumOctaves=20;
+        /// <summary>GPU の生成が受け取れる octave の数(PlanetHeight.hlsl の PLANET_HEIGHT_MAXIMUM_OCTAVES)。</summary>
+        public const int MaximumOctaves=PlanetHeightField.MaximumOctaves;
+        // CPU で地表の高さを求めるとき、点を含む Cell を探す階層(面の座標の float で十分に区別できる粗さ)。
+        private const int SampleLevel=12;
+        // 先読みで点を含む Cell を面の座標の float で探す階層の上限(2^-24 の分解能で Cell を区別できる範囲)。
+        private const int PrefetchLevelLimit=20;
         private const string GeneratorResource="VirtualGeometryWorld/PlanetTerrainGenerate";
 
         [SerializeField,Min(1)] private float radius=10000;
@@ -31,6 +36,7 @@ namespace VirtualGeometry.World{
         [SerializeField,Range(0,GpuMaximumLevel)] private int maximumLevel=16;
         [SerializeField,Min(0.01f)] private float baseWavelength=4000;
         [SerializeField,Range(1,MaximumOctaves)] private int octaves=13;
+        [SerializeField] private PlanetHeightSettings heightSettings=PlanetHeightSettings.Default;
         [SerializeField,Min(0)] private float skirtQuads=2;
         [SerializeField] private bool horizonCulling=true;
 
@@ -47,10 +53,10 @@ namespace VirtualGeometry.World{
         private int[] slotVersion;
         // slot の Cell の中心の値(原点は惑星のローカル座標、Logical 精度)。頂点は原点からの相対位置。
         private PlanetCellFrame[] cellFrames;
-        private LogicalScalar logicalRadius;
         private LogicalScalar inverseWavelength;
         private readonly int[] noiseLattice=new int[4*MaximumOctaves];
         private readonly Vector4[] noiseFraction=new Vector4[MaximumOctaves];
+        private readonly PlanetHeightLattice sampleLattice=new PlanetHeightLattice();
         private IPlanetPlacement placement;
         private readonly StandardPlanetPlacement standardPlacement=new StandardPlanetPlacement();
         private readonly Dictionary<Camera,List<MaterialPropertyBlock>> drawProperties=new Dictionary<Camera,List<MaterialPropertyBlock>>();
@@ -62,6 +68,7 @@ namespace VirtualGeometry.World{
 
         public float Radius=>this.radius;
         public float HeightAmplitude=>this.heightAmplitude;
+        public PlanetHeightSettings HeightSettings=>this.heightSettings;
         public float TargetPixels{get=>this.targetPixels;set{this.targetPixels=value;if(this.selector!=null){this.selector.TargetPixels=value;}}}
         public int MaximumLevel=>this.maximumLevel;
         public PlanetCellSelector Selector=>this.selector;
@@ -91,9 +98,8 @@ namespace VirtualGeometry.World{
             this.keyBySlot=new PlanetCellKey[this.PoolCapacity];this.used=new bool[this.PoolCapacity];this.touchedFrame=new int[this.PoolCapacity];
             this.actualBounds=new Vector4[this.PoolCapacity];this.actualValid=new bool[this.PoolCapacity];this.slotVersion=new int[this.PoolCapacity];
             this.cellFrames=new PlanetCellFrame[this.PoolCapacity];
-            if(!LogicalScalar.TryFromFloat(this.radius,out this.logicalRadius)||!LogicalScalar.TryFromFloat(this.baseWavelength,out LogicalScalar wavelength)||
-                !LogicalScalar.TryReciprocal(in wavelength,out this.inverseWavelength)){
-                Debug.LogError("PlanetTerrainSource: 半径または波長を Logical にできません。",this);
+            if(!LogicalScalar.TryFromFloat(this.baseWavelength,out LogicalScalar wavelength)||!LogicalScalar.TryReciprocal(in wavelength,out this.inverseWavelength)){
+                Debug.LogError("PlanetTerrainSource: 波長を Logical にできません。",this);
             }
             this.placement=this.GetComponent<IPlanetPlacement>();
             this.slotByKey.Clear();this.history.Clear();this.requests.Clear();this.output.Clear();
@@ -118,7 +124,7 @@ namespace VirtualGeometry.World{
             if(current==null){current=this.standardPlacement;}
             if(!current.TryBeginFrame(in view,this.transform,out PlanetPlacementFrame frame)){return;}
             draws.CullSpace=frame.CullSpace;
-            var selectionView=new PlanetSelectionView(frame.CameraLocal,frame.LocalToCull,frame.LocalToCullScale,
+            var selectionView=new PlanetSelectionView(in frame.CameraLocal,this.selector.LogicalRadius,frame.LocalToCull,frame.CameraCull,frame.LocalToCullScale,
                 frame.CullSpace.Planes,view.ProjectionScale,frame.CullSpace.NearPlane,view.Orthographic,this.horizonCulling);
             if(!this.history.TryGetValue(view.Camera,out HashSet<PlanetCellKey> previous)){
                 previous=new HashSet<PlanetCellKey>();this.history.Add(view.Camera,previous);
@@ -153,6 +159,131 @@ namespace VirtualGeometry.World{
             return true;
         }
 
+        /// <summary>
+        /// 惑星のローカル座標の点 point(Logical)の真下(中心からの方向)の地表の高さ(R からの高さ、帯域制限なし)と、point の地表からの高さを CPU で求める。
+        /// GPU の生成と同じ式(<see cref="PlanetHeightField"/>)で、点を含む Cell の原点からの相対位置で計算する。
+        /// </summary>
+        public bool TrySampleSurface(in LogicalVector3 point,out float height,out float altitude){
+            height=0;altitude=0;
+            if(this.selector==null||!point.TryToFloat3(out Unity.Mathematics.float3 approximate)){return false;}
+            Vector3 direction=((Vector3)approximate).normalized;
+            if(direction==Vector3.zero){return false;}
+            PlanetCellKey key=KeyAt(direction,Mathf.Min(SampleLevel,this.maximumLevel));
+            PlanetCellFrame frame=this.selector.Frame(in key);
+            if(!LogicalVector3.TrySubtract(in point,frame.Origin,out LogicalVector3 difference)||!difference.TryToFloat3(out Unity.Mathematics.float3 offset)){return false;}
+            Vector3 sphere=SphereOffset(frame.ApproximateOrigin/this.radius,(Vector3)offset/this.radius,this.radius,out Vector3 _);
+            int octaves=Mathf.Clamp(this.octaves,1,MaximumOctaves);
+            if(!this.sampleLattice.TryFill(in frame,in this.inverseWavelength,octaves)){return false;}
+            height=PlanetHeightField.Evaluate(in this.heightSettings,this.heightAmplitude,1f/this.baseWavelength,octaves,this.sampleLattice,sphere,0f);
+            if(!LogicalVector3.TryLength(in point,out LogicalScalar distance)||!LogicalScalar.TrySubtract(in distance,this.selector.LogicalRadius,out LogicalScalar aboveRadius)||
+                !aboveRadius.TryToFloat(out float above)){
+                return false;
+            }
+            altitude=above-height;
+            return true;
+        }
+
+        /// <summary>
+        /// 検証用。GPU の生成(PlanetTerrainGenerate.compute)と同じ式で、Cell の格子の (i, j) の地表の点(Cell の原点からの相対位置、帯域制限あり)を CPU で求める。
+        /// </summary>
+        public bool TryEvaluateVertexForDiagnostics(in PlanetCellKey key,int i,int j,out Vector3 position){
+            position=default;
+            if(this.selector==null){return false;}
+            PlanetCellFrame frame=this.selector.Frame(in key);
+            int octaves=Mathf.Clamp(this.octaves,1,MaximumOctaves);
+            if(!this.sampleLattice.TryFill(in frame,in this.inverseWavelength,octaves)){return false;}
+            float quadAngle=Mathf.PI*0.5f*MathF.Pow(2f,-key.Level)/CellQuads;
+            float half=CellQuads*0.5f;
+            Vector2 tangent=frame.ApproximateTangent;
+            float dx=TangentOffset(tangent.x,(i-half)*quadAngle);
+            float dy=TangentOffset(tangent.y,(j-half)*quadAngle);
+            Vector3 n=CubeSphere.Normal(key.Face);Vector3 u=CubeSphere.U(key.Face);Vector3 v=CubeSphere.V(key.Face);
+            Vector3 p0=n+tangent.x*u+tangent.y*v;
+            Vector3 sphere=SphereOffset(p0,dx*u+dy*v,this.radius,out Vector3 direction);
+            float height=PlanetHeightField.Evaluate(in this.heightSettings,this.heightAmplitude,1f/this.baseWavelength,octaves,this.sampleLattice,sphere,this.selector.QuadArc(key.Level));
+            position=sphere+direction*height;
+            return true;
+        }
+
+        // GPU の TangentOffset と同じ: tan(a0+δ)−tan(a0)、小さな δ は級数。
+        private static float TangentOffset(float x0,float delta){
+            float t;
+            if(Mathf.Abs(delta)<0.2f){
+                float d2=delta*delta;
+                t=delta*(1f+d2*(1f/3f+d2*(2f/15f+d2*(17f/315f+d2*(62f/2835f)))));
+            }else{
+                t=Mathf.Tan(delta);
+            }
+            return t*(1f+x0*x0)/(1f-x0*t);
+        }
+
+        // p = p0 + d の方向の半径 R の点の、p0 の方向の点からの相対位置 R·(p/|p| − p0/|p0|)(GPU の SpherePoint と同じ形。大きな値どうしを引かない)。
+        private static Vector3 SphereOffset(Vector3 p0,Vector3 d,float radius,out Vector3 direction){
+            Vector3 p=p0+d;
+            float l0=p0.magnitude;float l=p.magnitude;
+            direction=p/l;
+            return (d/l-p0*((2f*Vector3.Dot(p0,d)+Vector3.Dot(d,d))/(l*l0*(l0+l))))*radius;
+        }
+
+        /// <summary>
+        /// point(惑星のローカル座標、Logical)の真下の Cell とその周りの 3×3 を、quad が eyeHeight 以下になる階層まで生成するよう要求する。
+        /// すべて生成済みなら true。瞬間移動の前に true になるまで呼び、それから移すと、生成が追いつかない間に描く粗い Cell の面が
+        /// カメラより上に来ない(粗い面は細かい地形をならすので、谷では本当の地表より高い)。
+        /// </summary>
+        public bool Prefetch(in LogicalVector3 point,float eyeHeight){
+            if(this.selector==null||!point.TryToFloat3(out Unity.Mathematics.float3 approximate)){return false;}
+            Vector3 direction=((Vector3)approximate).normalized;
+            if(direction==Vector3.zero){return false;}
+            int target=0;
+            while(target<Mathf.Min(this.maximumLevel,PrefetchLevelLimit)&&this.selector.QuadArc(target)>eyeHeight){target++;}
+            bool ready=true;
+            for(int level=0;level<=target;level++){
+                PlanetCellKey center=KeyAt(direction,level);
+                ready&=this.RequestBlock(in center);
+            }
+            return ready;
+        }
+
+        // center を中心とする 3×3(x の −・中・+ の列の、それぞれ y の −・中・+)を、生成済みなら使用中にし、まだなら要求する。
+        // Neighbor の方向は 0:−x、1:+x、2:−y、3:+y。
+        private bool RequestBlock(in PlanetCellKey center){
+            bool ready=true;
+            PlanetCellKey[] columns={center.Neighbor(0),center,center.Neighbor(1)};
+            foreach(PlanetCellKey column in columns){
+                ready&=this.RequestOne(in column);
+                ready&=this.RequestOne(column.Neighbor(2));
+                ready&=this.RequestOne(column.Neighbor(3));
+            }
+            return ready;
+        }
+
+        private bool RequestOne(in PlanetCellKey key){
+            if(this.IsReady(in key)){
+                this.Touch(in key);
+                return true;
+            }
+            this.Request(in key,float.MaxValue*0.5f);
+            return false;
+        }
+
+        // 単位方向 direction を含む、階層 level の Cell。
+        private static PlanetCellKey KeyAt(Vector3 direction,int level){
+            int face=0;float best=-1;
+            for(int candidate=0;candidate<CubeSphere.FaceCount;candidate++){
+                float dot=Vector3.Dot(direction,(Vector3)CubeSphere.Normal(candidate));
+                if(dot>best){best=dot;face=candidate;}
+            }
+            float x=Vector3.Dot(direction,(Vector3)CubeSphere.U(face))/best;
+            float y=Vector3.Dot(direction,(Vector3)CubeSphere.V(face))/best;
+            // 等角写像の逆: s = (atan(x)/(π/4)+1)/2。
+            float s=(Mathf.Atan(x)/(Mathf.PI*0.25f)+1f)*0.5f;
+            float t=(Mathf.Atan(y)/(Mathf.PI*0.25f)+1f)*0.5f;
+            ulong cells=1UL<<level;
+            ulong cx=(ulong)Mathf.Clamp(Mathf.FloorToInt(s*cells),0,(int)cells-1);
+            ulong cy=(ulong)Mathf.Clamp(Mathf.FloorToInt(t*cells),0,(int)cells-1);
+            return new PlanetCellKey(face,level,new PlanetCellCoordinate(cx,0),new PlanetCellCoordinate(cy,0));
+        }
+
         public bool IsReady(in PlanetCellKey key){
             return this.slotByKey.TryGetValue(key,out int slot)&&this.IsReady(slot);
         }
@@ -163,11 +294,11 @@ namespace VirtualGeometry.World{
             this.requests[key]=priority;
         }
 
-        public bool TryGetBounds(in PlanetCellKey key,out Vector3 center,out float radius){
-            center=default;radius=0;
+        public bool TryGetBounds(in PlanetCellKey key,out Vector3 offset,out float radius){
+            offset=default;radius=0;
             if(!this.slotByKey.TryGetValue(key,out int slot)||!this.actualValid[slot]){return false;}
             Vector4 bounds=this.actualBounds[slot];
-            center=new Vector3(bounds.x,bounds.y,bounds.z);radius=bounds.w;
+            offset=new Vector3(bounds.x,bounds.y,bounds.z);radius=bounds.w;
             return true;
         }
 
@@ -194,8 +325,8 @@ namespace VirtualGeometry.World{
                 Vector3 extent=new Vector3(cluster.w,cluster.w,cluster.w);
                 low=Vector3.Min(low,center-extent);high=Vector3.Max(high,center+extent);
             }
-            // cluster の bounds は Cell の原点からの相対位置なので、惑星のローカル座標へ戻す。
-            Vector3 middle=(low+high)*0.5f+this.cellFrames[slot].ApproximateOrigin;
+            // cluster の bounds は Cell の原点からの相対位置。選択もこの相対位置のまま使う(大きな惑星で float の原点を足さない)。
+            Vector3 middle=(low+high)*0.5f;
             this.actualBounds[slot]=new Vector4(middle.x,middle.y,middle.z,((high-low)*0.5f).magnitude);
             this.actualValid[slot]=true;
         }
@@ -213,7 +344,7 @@ namespace VirtualGeometry.World{
             for(int i=0;i<this.requestOrder.Count&&i<limit;i++){
                 PlanetCellKey key=this.requestOrder[i].Key;
                 if(this.slotByKey.ContainsKey(key)){continue;}
-                if(!PlanetCellFrame.TryCreate(in key,in this.logicalRadius,out PlanetCellFrame frame)){continue;}
+                PlanetCellFrame frame=this.selector.Frame(in key);
                 if(!this.TryAllocateSlot(out int slot)){
                     if(!this.TryEvict()||!this.TryAllocateSlot(out slot)){
                         this.StarvedRequests+=this.requestOrder.Count-i;
@@ -267,6 +398,9 @@ namespace VirtualGeometry.World{
             int octaves=Mathf.Clamp(this.octaves,1,MaximumOctaves);
             commands.SetComputeFloatParam(shader,"_InverseWavelength",1f/this.baseWavelength);
             commands.SetComputeIntParam(shader,"_Octaves",octaves);
+            PlanetHeightSettings height=this.heightSettings;
+            commands.SetComputeVectorParam(shader,"_HeightShape",new Vector4(height.SeaLevel,height.ShoreWidth,height.OceanDepth,height.PlainsHeight));
+            commands.SetComputeVectorParam(shader,"_HeightBands",new Vector4(height.MountainOctave,height.MountainAmplitude,height.DetailOctave,height.DetailAmplitude));
             commands.SetComputeBufferParam(shader,this.kernel,"_Vertices",poolVertices);
             for(int i=0;i<slots.Count;i++){
                 int slot=slots[i];
@@ -286,6 +420,7 @@ namespace VirtualGeometry.World{
                 commands.SetComputeIntParams(shader,"_NoiseLattice",this.noiseLattice);
                 commands.SetComputeVectorArrayParam(shader,"_NoiseFraction",this.noiseFraction);
                 commands.SetComputeFloatParam(shader,"_SkirtDepth",this.selector.SkirtDepth(key.Level));
+                commands.SetComputeFloatParam(shader,"_QuadLength",this.selector.QuadArc(key.Level));
                 commands.DispatchCompute(shader,this.kernel,(layout.SlotVertexCount+63)/64,1,1);
             }
         }

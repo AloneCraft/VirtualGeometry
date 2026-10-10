@@ -71,26 +71,21 @@ namespace VirtualGeometry.Omni{
             if(!TryToMatrix(in this.planetPose.Basis,out this.basis)){
                 return this.Fail("惑星の基底を float にできない。");
             }
-            // 惑星のローカル座標でのカメラ位置は、Logical で差を取り、基底の逆で戻してから float にする。
+            // 惑星のローカル座標でのカメラ位置は、Logical で差を取り、基底の逆で戻す(Logical のまま選択に渡す)。
             if(!LogicalPosition3.TryDifference(this.snapshot.Eye,this.planetPose.Position,out LogicalVector3 eyeFromPlanet)||
                 !this.planetPose.Basis.TryInverse(out LogicalMatrix3x3 inverse)||
-                !LogicalMatrix3x3.TryMultiplyVector(in inverse,in eyeFromPlanet,out LogicalVector3 eyeLocal)||
-                !eyeLocal.TryToFloat3(out float3 cameraLocal)){
+                !LogicalMatrix3x3.TryMultiplyVector(in inverse,in eyeFromPlanet,out LogicalVector3 eyeLocal)){
                 return this.Fail("カメラの惑星ローカル位置を求められない。");
-            }
-            if(!LogicalPosition3.TryDifference(this.planetPose.Position,this.snapshot.Eye,out LogicalVector3 planetFromEye)||
-                !planetFromEye.TryToFloat3(out float3 planetRelative)){
-                return this.Fail("惑星の eye 相対位置を float にできない。");
             }
             if(!this.snapshot.NearClip.TryToFloat(out float near)||!(near>0.0f)){
                 return this.Fail("Omni の near を float にできない。");
             }
             this.planetProxy=planet.localToWorldMatrix;
             Matrix4x4 viewProjection=this.BuildPlanes(near);
-            Matrix4x4 localToCull=Matrix4x4.Translate(planetRelative)*this.basis;
             float scale=Mathf.Max(this.basis.GetColumn(0).magnitude,Mathf.Max(this.basis.GetColumn(1).magnitude,this.basis.GetColumn(2).magnitude));
             var space=new VirtualGeometryClusterCullSpace(Vector3.zero,this.planes,viewProjection,near,false);
-            frame=new PlanetPlacementFrame(cameraLocal,localToCull,scale,space);
+            // cull 空間は eye が原点なので、カメラの cull 空間での位置は 0、惑星のローカルの向きは基底で写す。
+            frame=new PlanetPlacementFrame(in eyeLocal,this.basis,Vector3.zero,scale,space);
             this.lastFailure=null;
             return true;
         }

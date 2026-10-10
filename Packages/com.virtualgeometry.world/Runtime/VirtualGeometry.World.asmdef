@@ -4,6 +4,7 @@
   "references": [
     "VirtualizedGeometry.Runtime",
     "Radial.Runtime",
-    "Unity.Mathematics"
+    "Unity.Mathematics",
+    "Unity.InputSystem"
   ]
 }

@@ -3,6 +3,7 @@
 
 // 惑星の Cell 1つ分の頂点を、VirtualGeometryGridLayout の配置で pool の slot へ書く。
 // 面の表と等角写像は CubeSphere.cs と同じ。位置は Cell の原点(PlanetCellFrame.Origin、惑星のローカル座標)からの相対位置。
+// 高さは PlanetHeight.hlsl(C# の PlanetHeightField と同じ式)。
 // 大きな値(Cell の原点、中心の正接、ノイズの格子の基点)は CPU が Logical 精度で求めて渡し、
 // GPU は Cell の中心からの相対量だけを float で計算する。大きな値どうしの引き算をしないので、
 // 誤差は惑星の大きさではなく Cell の大きさに比例する。
@@ -15,7 +16,7 @@ struct VGPackedVertex
     float2 uv;
 };
 
-#define MAXIMUM_OCTAVES 20
+#include "PlanetHeight.hlsl"
 
 RWStructuredBuffer<VGPackedVertex> _Vertices;
 int _CellQuads;
@@ -24,71 +25,19 @@ int _GridVertexCount;
 int _Slot;
 int _Face;
 float _Radius;
-float _HeightAmplitude;
 float _SkirtDepth;
 // 1 quad の、面の角度での大きさ (π/2)/(N·2^L)。
 float _QuadAngle;
+// 1 quad の弧長(高さの帯域制限に使う)。
+float _QuadLength;
 // 中心の正接 (x0, y0)。
 float2 _CenterTangent;
 // Cell の面の座標の始点と大きさ(UV 用。深い階層では float の精度で潰れるが、形には使わない)。
 float4 _FaceRange;
-float _InverseWavelength;
-int _Octaves;
-// octave ごとの、Cell の原点の格子番号(2^32 で巡回)と端数。
-int4 _NoiseLattice[MAXIMUM_OCTAVES];
-float4 _NoiseFraction[MAXIMUM_OCTAVES];
 
 static const float3 FaceNormal[6]={float3(1,0,0),float3(-1,0,0),float3(0,1,0),float3(0,-1,0),float3(0,0,1),float3(0,0,-1)};
 static const float3 FaceU[6]={float3(0,0,1),float3(0,0,-1),float3(1,0,0),float3(1,0,0),float3(-1,0,0),float3(1,0,0)};
 static const float3 FaceV[6]={float3(0,1,0),float3(0,1,0),float3(0,0,1),float3(0,0,-1),float3(0,1,0),float3(0,1,0)};
-
-uint3 Pcg3d(uint3 v)
-{
-    v=v*1664525u+1013904223u;
-    v.x+=v.y*v.z;v.y+=v.z*v.x;v.z+=v.x*v.y;
-    v^=v>>16u;
-    v.x+=v.y*v.z;v.y+=v.z*v.x;v.z+=v.x*v.y;
-    return v;
-}
-
-float3 Gradient(int3 cell,uint octave)
-{
-    uint3 hash=Pcg3d(asuint(cell)+uint3(octave*0x9e3779b9u,octave*0x85ebca6bu,octave*0xc2b2ae35u));
-    return normalize(float3(hash&0xffffu)/32767.5-1.0+1e-6);
-}
-
-// 3D の gradient noise(値はおよそ −1〜1)。格子番号 i と、その中の位置 f(0〜1)。
-float GradientNoise(int3 i,float3 f,uint octave)
-{
-    float3 w=f*f*f*(f*(f*6.0-15.0)+10.0);
-    float n000=dot(Gradient(i+int3(0,0,0),octave),f-float3(0,0,0));
-    float n100=dot(Gradient(i+int3(1,0,0),octave),f-float3(1,0,0));
-    float n010=dot(Gradient(i+int3(0,1,0),octave),f-float3(0,1,0));
-    float n110=dot(Gradient(i+int3(1,1,0),octave),f-float3(1,1,0));
-    float n001=dot(Gradient(i+int3(0,0,1),octave),f-float3(0,0,1));
-    float n101=dot(Gradient(i+int3(1,0,1),octave),f-float3(1,0,1));
-    float n011=dot(Gradient(i+int3(0,1,1),octave),f-float3(0,1,1));
-    float n111=dot(Gradient(i+int3(1,1,1),octave),f-float3(1,1,1));
-    float x00=lerp(n000,n100,w.x);float x10=lerp(n010,n110,w.x);
-    float x01=lerp(n001,n101,w.x);float x11=lerp(n011,n111,w.x);
-    return lerp(lerp(x00,x10,w.y),lerp(x01,x11,w.y),w.z)*1.5;
-}
-
-// 高さ(m)。球面上の点(Cell の原点からの相対位置 sphere)で fBm を評価し、±_HeightAmplitude に収める
-// (bounds の Hmax を保証するため clamp する)。格子は「原点の格子番号 + 相対位置の格子」に分けて、大きな座標を float にしない。
-float Height(float3 sphere)
-{
-    float sum=0;
-    float amplitude=0.5;
-    for(int octave=0;octave<_Octaves;octave++)
-    {
-        float3 q=_NoiseFraction[octave].xyz+sphere*(_InverseWavelength*exp2((float)octave));
-        float3 whole=floor(q);
-        sum+=amplitude*GradientNoise(_NoiseLattice[octave].xyz+(int3)whole,q-whole,(uint)octave);
-        amplitude*=0.5;
-    }
-    return clamp(sum,-1.0,1.0)*_HeightAmplitude;
-}
 
 // tan(a0+δ)−tan(a0) を、tan(a0)=x0 と δ から差だけで求める。小さな δ では tan を級数で求める(GPU の tan は小さな値の相対精度が低い)。
 float TangentOffset(float x0,float delta)
@@ -129,7 +78,7 @@ float3 Surface(float a,float b,out float3 direction)
 {
     float3 sphere;
     SpherePoint(a,b,sphere,direction);
-    return sphere+direction*Height(sphere);
+    return sphere+direction*PlanetHeight(sphere,_QuadLength);
 }
 
 [numthreads(64,1,1)]

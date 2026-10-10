@@ -398,7 +398,9 @@ namespace VirtualGeometry.Omni.Editor{
             if(t<=near){return false;}
             if(c<=0){return true;}
             float closest=(offsetFromCenter+direction*(-b)).magnitude;
-            return radius-closest>Mathf.Sqrt(c)*pixelAngle;
+            // 縁の許容量は 2 画素。地形の低い所(谷)は内側の球の近くまで下がるので、遠くから見た縁では、本物の谷の切れ込みと内側の球の輪郭が
+            // 1 画素ほどしか離れないことがある(2026-10-11、半径 10km・高度 20km で、R−0.56Hmax の谷の切れ込みを 1 画素の許容量で穴と数えた)。
+            return radius-closest>2f*Mathf.Sqrt(c)*pixelAngle;
         }
 
         private static void Measure(string name,Texture2D image,bool fail){
