@@ -10,7 +10,7 @@ using VirtualizedGeometry.Editor;
 namespace PlanetSpike.Editor{
     /// <summary>Spike S1: Omni の Radial Lit を .vgshader で変換し、VG 用 pass を DX12 向けにコンパイルできるか調べる。</summary>
     internal static class S1VgShaderSpike{
-        private const string VgShaderPath="Assets/Development/PlanetSpike/RadialGlobalLit.vgshader";
+        private const string VgShaderPath="Packages/com.virtualgeometry.omni/Shaders/RadialGlobalLit.vgshader";
         private const string SourcePath="Packages/com.omni.rendering/Runtime/Sharders/RadialGlobalLit.shader";
         private const string ReportPath="TestResults/Planet/S1VgShader.txt";
         private const string ConvertedPath="TestResults/Planet/S1RadialGlobalLit.converted.shader";

@@ -261,6 +261,16 @@
         "com.unity.modules.physics": "1.0.0"
       }
     },
+    "com.virtualgeometry.omni": {
+      "version": "file:com.virtualgeometry.omni",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {
+        "com.virtualgeometry.core": "0.1.0",
+        "com.virtualgeometry.world": "0.1.0",
+        "com.omni.rendering": "0.1.0"
+      }
+    },
     "com.virtualgeometry.world": {
       "version": "file:com.virtualgeometry.world",
       "depth": 0,

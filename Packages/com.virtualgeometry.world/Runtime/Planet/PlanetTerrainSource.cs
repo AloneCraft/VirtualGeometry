@@ -9,7 +9,9 @@ namespace VirtualGeometry.World{
     /// 手続き生成の地形の惑星を、実行時生成 cluster で描く。惑星の中心はこの GameObject の原点。
     /// Cell の選択は <see cref="PlanetCellSelector"/>、頂点の生成は PlanetTerrainGenerate.compute が行う。
     /// Cell と pool の slot の対応を持ち、pool が足りないときは使っていない Cell を下(葉)から退避する。
-    /// 座標は float(P3。半径は float の精度で足りる大きさに限る。Logical 精度は P4)。
+    /// 頂点は Cell の原点(Cell の中心の方向の半径 R の点、惑星のローカル座標)からの相対位置で持ち、Cell ごとに draw する。
+    /// 惑星を置く空間は <see cref="IPlanetPlacement"/> が決める(OnEnable の時に同じ GameObject にある実装。無い、または無効なら Unity の world 空間)。
+    /// Cell の原点は float(P2。Logical の原点は P4)。
     /// </summary>
     [ExecuteAlways]
     public sealed class PlanetTerrainSource:VirtualGeometryClusterSource,IPlanetCellResidency{
@@ -43,6 +45,11 @@ namespace VirtualGeometry.World{
         private Vector4[] actualBounds;
         private bool[] actualValid;
         private int[] slotVersion;
+        // slot の Cell の原点(惑星のローカル座標)。頂点はここからの相対位置。
+        private Vector3[] cellOrigin;
+        private IPlanetPlacement placement;
+        private readonly StandardPlanetPlacement standardPlacement=new StandardPlanetPlacement();
+        private readonly Dictionary<Camera,List<MaterialPropertyBlock>> drawProperties=new Dictionary<Camera,List<MaterialPropertyBlock>>();
         private readonly Dictionary<Camera,HashSet<PlanetCellKey>> history=new Dictionary<Camera,HashSet<PlanetCellKey>>();
         private readonly Dictionary<PlanetCellKey,float> requests=new Dictionary<PlanetCellKey,float>();
         private readonly List<KeyValuePair<PlanetCellKey,float>> requestOrder=new List<KeyValuePair<PlanetCellKey,float>>();
@@ -79,6 +86,8 @@ namespace VirtualGeometry.World{
             };
             this.keyBySlot=new PlanetCellKey[this.PoolCapacity];this.used=new bool[this.PoolCapacity];this.touchedFrame=new int[this.PoolCapacity];
             this.actualBounds=new Vector4[this.PoolCapacity];this.actualValid=new bool[this.PoolCapacity];this.slotVersion=new int[this.PoolCapacity];
+            this.cellOrigin=new Vector3[this.PoolCapacity];
+            this.placement=this.GetComponent<IPlanetPlacement>();
             this.slotByKey.Clear();this.history.Clear();this.requests.Clear();this.output.Clear();
             this.StarvedRequests=0;this.Evictions=0;
             for(int face=0;face<CubeSphere.FaceCount;face++){this.Request(PlanetCellKey.Root(face),float.MaxValue);}
@@ -88,16 +97,21 @@ namespace VirtualGeometry.World{
         protected override void OnDisable(){
             this.slotByKey.Clear();this.history.Clear();this.requests.Clear();this.output.Clear();
             this.keyBySlot=null;this.used=null;this.touchedFrame=null;this.selector=null;
-            this.actualBounds=null;this.actualValid=null;this.slotVersion=null;
+            this.actualBounds=null;this.actualValid=null;this.slotVersion=null;this.cellOrigin=null;
+            this.placement=null;this.drawProperties.Clear();
             base.OnDisable();
         }
 
-        protected override void SelectSlots(in VirtualGeometryClusterView view,List<int> drawSlots){
+        protected override void SelectDraws(in VirtualGeometryClusterView view,VirtualGeometryClusterDraws draws){
             if(this.selector==null){return;}
-            Matrix4x4 localToWorld=this.transform.localToWorldMatrix;
-            float scale=Mathf.Max(localToWorld.lossyScale.x,Mathf.Max(localToWorld.lossyScale.y,localToWorld.lossyScale.z));
-            var selectionView=new PlanetSelectionView(this.transform.InverseTransformPoint(view.CameraPosition),localToWorld,Mathf.Abs(scale),
-                view.FrustumPlanes,view.ProjectionScale,view.NearPlane,view.Orthographic,this.horizonCulling);
+            IPlanetPlacement current=this.placement;
+            // 配置の component が無い、破棄された、または無効なら Unity の world 空間に置く。
+            if(current is Behaviour behaviour&&(behaviour==null||!behaviour.isActiveAndEnabled)){current=null;}
+            if(current==null){current=this.standardPlacement;}
+            if(!current.TryBeginFrame(in view,this.transform,out PlanetPlacementFrame frame)){return;}
+            draws.CullSpace=frame.CullSpace;
+            var selectionView=new PlanetSelectionView(frame.CameraLocal,frame.LocalToCull,frame.LocalToCullScale,
+                frame.CullSpace.Planes,view.ProjectionScale,frame.CullSpace.NearPlane,view.Orthographic,this.horizonCulling);
             if(!this.history.TryGetValue(view.Camera,out HashSet<PlanetCellKey> previous)){
                 previous=new HashSet<PlanetCellKey>();this.history.Add(view.Camera,previous);
             }
@@ -105,8 +119,21 @@ namespace VirtualGeometry.World{
             // 今回の細分化を次の frame の履歴にする(2つの集合を入れ替えて使い回す)。
             this.history[view.Camera]=this.refinedScratch;this.refinedScratch=previous;
             this.FlushRequests();
+            List<MaterialPropertyBlock> blocks=null;
+            if(current.UsesProperties&&!this.drawProperties.TryGetValue(view.Camera,out blocks)){
+                blocks=new List<MaterialPropertyBlock>();this.drawProperties.Add(view.Camera,blocks);
+            }
+            int used=0;
             for(int i=0;i<this.output.Count;i++){
-                if(this.slotByKey.TryGetValue(this.output[i],out int slot)){drawSlots.Add(slot);}
+                if(!this.slotByKey.TryGetValue(this.output[i],out int slot)||!this.IsReady(slot)){continue;}
+                MaterialPropertyBlock block=null;
+                if(blocks!=null){
+                    if(used==blocks.Count){blocks.Add(new MaterialPropertyBlock());}
+                    block=blocks[used++];
+                }
+                if(!current.Describe(in frame,this.cellOrigin[slot],out Matrix4x4 objectToWorld,out Matrix4x4 objectToCull,block)){continue;}
+                draws.Begin(objectToWorld,objectToCull,block);
+                draws.Add(slot);
             }
         }
 
@@ -151,7 +178,8 @@ namespace VirtualGeometry.World{
                 Vector3 extent=new Vector3(cluster.w,cluster.w,cluster.w);
                 low=Vector3.Min(low,center-extent);high=Vector3.Max(high,center+extent);
             }
-            Vector3 middle=(low+high)*0.5f;
+            // cluster の bounds は Cell の原点からの相対位置なので、惑星のローカル座標へ戻す。
+            Vector3 middle=(low+high)*0.5f+this.cellOrigin[slot];
             this.actualBounds[slot]=new Vector4(middle.x,middle.y,middle.z,((high-low)*0.5f).magnitude);
             this.actualValid[slot]=true;
         }
@@ -177,6 +205,8 @@ namespace VirtualGeometry.World{
                 }
                 this.slotByKey.Add(key,slot);this.keyBySlot[slot]=key;this.used[slot]=true;this.touchedFrame[slot]=Time.frameCount;
                 this.actualValid[slot]=false;this.slotVersion[slot]++;
+                PlanetCellSelector.FaceRange(in key,out float s0,out float t0,out float size);
+                this.cellOrigin[slot]=CubeSphere.Direction(key.Face,s0+size*0.5f,t0+size*0.5f)*this.radius;
                 this.RequestGeneration(slot);
             }
         }
@@ -229,6 +259,7 @@ namespace VirtualGeometry.World{
                 commands.SetComputeIntParam(shader,"_Level",key.Level);
                 commands.SetComputeIntParam(shader,"_CellX",(int)(uint)key.X.Low);
                 commands.SetComputeIntParam(shader,"_CellY",(int)(uint)key.Y.Low);
+                commands.SetComputeVectorParam(shader,"_CellOrigin",this.cellOrigin[slot]);
                 commands.SetComputeFloatParam(shader,"_SkirtDepth",this.selector.SkirtDepth(key.Level));
                 commands.DispatchCompute(shader,this.kernel,(layout.SlotVertexCount+63)/64,1,1);
             }

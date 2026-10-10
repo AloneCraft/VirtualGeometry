@@ -141,7 +141,7 @@ Omni の ViewSnapshot の値を使い、使えないときは描く側へ倒す(
 | 単位 | 責務 | 依存 |
 |---|---|---|
 | `com.virtualgeometry.core` | クラスター供給元の抽象、選択・カリング・描画、cluster ごとの変換、座標入力の抽象(恒等の実装)、外部互換型のレジストリ | URP |
-| `VirtualGeometry.Omni`(asmdef) | Logical の差の符号化、ViewSnapshot によるカメラ入力、Omni の RendererFeature の互換登録、Radial shader 経路 | VG core、`com.omni.rendering` |
+| `com.virtualgeometry.omni`(asmdef `VirtualGeometry.Omni`) | 惑星を Omni の Logical 座標に置く `OmniPlanetPlacement`(ViewSnapshot によるカメラ入力、eye 相対の cull 空間、Cell ごとの Omni の物体の値)、Radial shader(`Shaders/RadialGlobalLit.vgshader`) | VG core、世界パッケージ、`com.omni.rendering` |
 | 世界パッケージ | Domain、Cell、Field、Layer、Override、惑星、海、降下カメラ | VG core(Omni は adapter 経由) |
 
 VG core は Omni に依存しない。
@@ -249,7 +249,7 @@ VG 用 pass は D3D 向けに vertex・fragment ともコンパイルできる
 VG 用 pass は Omni の vertex 関数へ VG の頂点を渡し、
 fragment(`SV_Depth` の出力を含む)は Omni のものをそのまま使う。
 
-確認したのはコンパイルまでで、実画面での描画は未実施である。
+この `.vgshader` は `Packages/com.virtualgeometry.omni/Shaders/RadialGlobalLit.vgshader` に置き、P2 の検証で実際に描画した(§11)。
 
 URP 標準 Lit を Omni が変換した shader は、
 Omni の変換が Renderer 上の material だけを集めるため、まだ VG の対象にできない。
@@ -325,7 +325,7 @@ sha256: `e4c507d7380035f68bf08a9afcd635a9094710e70734a1c1380717c309503233`
 VG core の回帰(EditMode と M0〜M5)は、**Omni を入れないプロジェクト**で実行する。
 
 - 理由:Omni を入れると、Unity のバージョンの違いで Omni がエラーを出し(§8.4)、VG の検証が不合格になる。VG core は Omni に依存しない
-- Omni 接続の検証(`Assets/Development/PlanetSpike` の P3a など)は、Omni を入れたプロジェクトで実行する
+- Omni を入れたプロジェクトで実行する検証:P3a(`Assets/Development/PlanetSpike`)、P3b(世界パッケージ)、P2(`com.virtualgeometry.omni`)
 
 新しい git worktree では、`core.autocrlf=true` のため、検証が生成する OBJ が CRLF で取り出される。
 
@@ -335,6 +335,9 @@ VG core の回帰(EditMode と M0〜M5)は、**Omni を入れないプロジェ�
 2026-10-10 の確認:Omni なし・P3a の変更あり(コミット前)で、EditMode 51/51 と M0〜M5 の 11 本が合格した。
 M3 の cull の統計(Frustum 棄却、HZB 棄却、可視 cluster、画像の差分)は、変更前の記録と全シナリオで一致した。
 Player のビルドと実行(`M5PlayerBuildValidation`)は、この変更では実行していない。
+
+2026-10-10 の確認:Omni なし・P2 の core の変更(draw ごとの cull 空間と描画、§11)ありで、
+EditMode 51/51 と M0〜M5 の 11 本が合格し、M3 の `Metrics.csv` と `Results.txt` は変更前と一致した。
 
 
 ## 10. 惑星の Cell の選択と生成(P3)
@@ -365,6 +368,71 @@ GPU は面の通し番号を float で扱うため、階層は 18 までに限�
 縁では地形の輪郭と内側の球の輪郭が画素未満しか離れないため、許容量なしでは描画が正しくても穴と数える
 (2026-10-10 に、許容量なしで 32 画素を数え、1 画素分の許容量で 0 になった)。
 
-2026-10-10 の結果(半径 10km、Hmax 300m、目標 2px、640×480 と 320×240):固定の 4 視点で穴と継ぎ目の候補が 0、
+選択の収束は撮影と同じ解像度で待つ。解像度で画面誤差が変わるので、別の解像度で収束させてから撮ると、
+子の生成が間に合わない 1 frame を撮ることになり、結果が直前の pool の中身に依存する。
+
+2026-10-10 の結果(半径 10km、Hmax 300m、目標 2px、640×480 で収束、経路は 320×240):固定の 4 視点で穴と継ぎ目の候補が 0、
 目標を 1/4 にした描画との輪郭の差が 1px の帯の外で 0、宇宙から地上までの 121 frame で穴 0、
-生成予算 1 での瞬間移動の 60 frame で穴 0、使用 slot は最大 1626/2048。
+生成予算 1 での瞬間移動の 60 frame で穴 0。
+使用 slot は最大 2048/2048 で、目標 1/4 の細かい描画(最大 1216 Cell)の後の経路では退避 1281 回、
+pool が足りずに生成を待たせた要求が 3604 回あった(設定エラーと穴は無し)。
+
+
+## 11. Omni の Radial 接続(P2)
+
+### core の draw の単位
+
+実行時生成 cluster の供給元は、camera ごとに draw の一覧(`VirtualGeometryClusterDraws`)を組み立てる。
+
+draw ごとに、描画行列(`unity_ObjectToWorld`)、cull 空間への行列、MaterialPropertyBlock(null なら共有)と、描く slot を持つ。
+
+cull は供給元が決めた空間(`VirtualGeometryClusterCullSpace`。既定は world)で行う。
+
+深度が投影行列と同じ写像でない空間(対数描画)では、HZB の遮蔽判定を使わない(`OcclusionAllowed=false`)。
+
+既定の実装(`SelectSlots` を上書きする供給元)は、Transform の行列で 1 つの draw を作る。この場合の挙動は変更前と同じ(§9)。
+
+### 惑星の配置
+
+`PlanetTerrainSource` は Cell の頂点を、Cell の原点(Cell の中心の方向の半径 R の点、惑星のローカル座標)からの相対位置で生成し、Cell ごとに draw する。
+
+惑星を置く空間は `IPlanetPlacement` が決める。
+
+`PlanetTerrainSource` が OnEnable の時に同じ GameObject にある実装を使い、無い、または無効なら Unity の world 空間に置く(`StandardPlanetPlacement`)。
+
+`OmniPlanetPlacement`(`VirtualGeometry.Omni`)は、惑星を Omni の Logical 座標に置く。
+
+- camera ごとに `RadialViewRegistry.TryGetCurrent` の `ViewSnapshot` を読み、無ければその camera では描かない(理由は `LastFailure`)
+- 惑星の姿勢は `RenderPose.TryResolve` で Logical のまま解決する
+- 惑星ローカルでのカメラ位置は、Logical で eye との差を取り、基底の逆で戻してから float にする
+- cull は eye を原点とする world 軸の物理空間で行う。平面は Snapshot の錐台から作り、far は使わない
+- `CanUseConeCulling` が false(Radial で eye が warp 中心に無いなど)なら、全面を通す(fail-open)
+- Cell の Logical 原点 = 惑星 + 基底·Cell の原点。`DrawTransform.TryCreate(WarpCenter, …)` の値と `GpuFrame` を、Cell ごとの MaterialPropertyBlock へ書く
+- 描画行列は惑星の Unity Proxy の行列 × Cell の原点への平行移動(照明の物理位置は Omni の契約どおり Proxy から作る)
+- OnEnable で `ExternalDrawPaths.Register(SceneViewContent)` を宣言する
+
+Radial の写像は warp 中心から見た方向を保つので、eye が warp 中心にあれば、頂点の画面位置と三角形の被覆は Unity の world 空間で描いたときと同じになる。
+
+### 検証(`VirtualGeometry.Omni.Editor.P2OmniPlanetValidation`)
+
+半径 10km、Hmax 300m、目標 2px、640×480。camera は `Logical.Transform` と `RadialCamera`(`SetIdentityViewScale`、M=1)。
+
+Logical の camera が安全域(±10km)の外にあると、Unity の camera は原点に固定される。
+
+そのため Standard の基準は、Omni の部品を付けない別の camera を同じ姿勢に置いて撮る。
+
+2026-10-10 の結果(Omni を入れたプロジェクト):
+
+- 高度 10km、100m、1.7m(Hmax の球からの距離)で穴 0。Snapshot は Radial 有効、eye は warp 中心
+- Standard との比較:輪郭の差 0 画素。色の差は最大 2/255(Omni が照明の物理位置と視線を画素ごとに作り直す丸め)
+- 惑星と camera を Logical で (1e9, −2e9, 3e9) m ずらしても、3 視点とも画像がビット単位で一致
+- 遠方に置いたまま、宇宙(30km)から 1.7m までの 121 frame で穴 0
+- 惑星の有効・無効を 10 回繰り返した後も、エラー無しで描き直せる
+
+未実施:
+
+- 半径 600km での確認
+- M≠1 の View Scale、eye が warp 中心に無い場合(fail-open の経路)
+- z-fighting と深度の分解能の測定
+- Play/Stop の往復と、GraphicsBuffer のリークの計数
+- Scene View での表示

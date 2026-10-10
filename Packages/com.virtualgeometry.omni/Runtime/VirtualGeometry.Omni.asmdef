@@ -1,0 +1,5 @@
+{
+  "name": "VirtualGeometry.Omni",
+  "rootNamespace": "VirtualGeometry.Omni",
+  "references": ["VirtualizedGeometry.Runtime", "VirtualGeometry.World", "Radial.Runtime", "Unity.Mathematics"]
+}

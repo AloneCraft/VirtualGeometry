@@ -177,11 +177,11 @@ namespace VirtualGeometry.World.Editor{
             if(planet.LastError!=null){failures.Add("設定エラー: "+planet.LastError);}
         }
 
-        // 生成待ちが無くなり、選択が2 frame 続けて変わらなくなるまで描き続ける。
+        // 撮影と同じ解像度で、生成待ちが無くなり選択が2 frame 続けて変わらなくなるまで描き続ける(解像度で画面誤差が変わるため)。
         private static IEnumerable<object> Converge(string name){
             int stable=0;int previous=-1;int frames=0;
             while(frames<ConvergeLimit){
-                Capture(320,240);
+                Capture();
                 Track();
                 int signature=Signature();
                 if(planet.PendingGeneration==0&&signature==previous){stable++;}else{stable=0;}

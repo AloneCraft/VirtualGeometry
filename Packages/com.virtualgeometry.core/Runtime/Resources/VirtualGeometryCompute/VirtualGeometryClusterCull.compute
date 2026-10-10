@@ -5,7 +5,8 @@
 
 // 実行時に生成したclusterの共通処理。供給元(VirtualGeometryClusterSource)がslotの頂点を書いた後、
 // ComputeBoundsがclusterのboundsを作る。camera毎にResetArguments → CullClustersの順で、
-// 候補slotの全clusterをFrustum・HZBでcullし、可視clusterのindexを詰めてindirect argsを書く。
+// 候補slotの全clusterを、そのslotのdrawの行列でcull空間へ移してFrustum・HZBでcullし、
+// 可視clusterのindexをdrawごとの区間へ詰めて、drawごとのindirect argsを書く。
 
 struct VGPackedVertex
 {
@@ -28,11 +29,20 @@ RWStructuredBuffer<float4> _VGClusterBounds;
 StructuredBuffer<uint> _VGBoundsSlots;
 uint _VGBoundsSlotCount;
 
-// CullClusters: このcameraで描く候補slotの一覧。
-StructuredBuffer<uint> _VGCandidateSlots;
+// CullClusters: このcameraで描く候補 (slot, draw) の一覧と、drawごとの cull 空間への行列・出力先。
+struct VGDrawRecord
+{
+    float4 row0;
+    float4 row1;
+    float4 row2;
+    uint outputStart;
+    float scale;
+    uint2 padding;
+};
+StructuredBuffer<uint2> _VGCandidateSlots;
+StructuredBuffer<VGDrawRecord> _VGDrawRecords;
 uint _VGCandidateCount;
-float4x4 _VGObjectToWorld;
-float _VGMaximumScale;
+uint _VGDrawCount;
 int _VGFrustumEnabled;
 int _VGOcclusionEnabled;
 RWStructuredBuffer<uint> _VGVisibleIndices;
@@ -65,11 +75,16 @@ void ComputeBounds(uint3 id:SV_DispatchThreadID)
     _VGClusterBounds[slot*_VGSlotClusterCount+cluster]=float4(center,radius);
 }
 
-[numthreads(1,1,1)]
+[numthreads(64,1,1)]
 void ResetArguments(uint3 id:SV_DispatchThreadID)
 {
-    _VGArguments.Store4(0,uint4(0,1,0,0));
-    for(uint i=0;i<4;i++) { _VGCullingStatistics[i]=0; }
+    if(id.x == 0)
+    {
+        for(uint i=0;i<4;i++) { _VGCullingStatistics[i]=0; }
+    }
+    if(id.x >= _VGDrawCount) { return; }
+    // startVertex に draw の出力先を入れる(VGDrawVertexId が足す)。
+    _VGArguments.Store4(id.x*16,uint4(0,1,_VGDrawRecords[id.x].outputStart,0));
 }
 
 #define VG_CULL_LANES 64u
@@ -83,14 +98,17 @@ void CullClusters(uint3 groupId:SV_GroupID,uint lane:SV_GroupIndex)
 {
     uint work=groupId.x+groupId.y*65535u;
     if(work >= _VGCandidateCount*_VGSlotClusterCount) { return; }
-    uint slot=_VGCandidateSlots[work/_VGSlotClusterCount];
+    uint2 candidate=_VGCandidateSlots[work/_VGSlotClusterCount];
+    uint slot=candidate.x;
+    VGDrawRecord record=_VGDrawRecords[candidate.y];
     uint cluster=work%_VGSlotClusterCount;
     uint2 range=_VGClusterTemplateRanges[cluster];
     if(lane == 0)
     {
         float4 bounds=_VGClusterBounds[slot*_VGSlotClusterCount+cluster];
-        float3 center=mul(_VGObjectToWorld,float4(bounds.xyz,1)).xyz;
-        float radius=bounds.w*_VGMaximumScale;
+        float4 local=float4(bounds.xyz,1);
+        float3 center=float3(dot(record.row0,local),dot(record.row1,local),dot(record.row2,local));
+        float radius=bounds.w*record.scale;
         uint visible=1;
         InterlockedAdd(_VGCullingStatistics[0],1);
         if(_VGFrustumEnabled != 0 && OutsideFrustum(center,radius))
@@ -107,7 +125,8 @@ void CullClusters(uint3 groupId:SV_GroupID,uint lane:SV_GroupIndex)
         if(visible != 0)
         {
             InterlockedAdd(_VGCullingStatistics[3],1);
-            _VGArguments.InterlockedAdd(0,range.y,output);
+            _VGArguments.InterlockedAdd(candidate.y*16,range.y,output);
+            output+=record.outputStart;
         }
         gsVisible=visible;
         gsOutput=output;

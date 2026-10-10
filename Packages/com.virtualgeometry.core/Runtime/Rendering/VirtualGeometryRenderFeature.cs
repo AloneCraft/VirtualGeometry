@@ -189,13 +189,13 @@ namespace VirtualizedGeometry{
             }
             private sealed class ClusterCullPassData{
                 public ComputeShader Shader;public int ResetKernel;public int CullKernel;
-                public VirtualGeometryClusterCameraState State;public int CandidateCount;
-                public BufferHandle Candidates;public BufferHandle Bounds;public BufferHandle TemplateRanges;public BufferHandle TemplateIndices;
+                public VirtualGeometryClusterCameraState State;public int CandidateCount;public int DrawCount;
+                public BufferHandle Candidates;public BufferHandle DrawRecords;public BufferHandle Bounds;public BufferHandle TemplateRanges;public BufferHandle TemplateIndices;
                 public BufferHandle VisibleIndices;public BufferHandle Arguments;public BufferHandle Statistics;
                 public int SlotVertexCount;public int SlotClusterCount;
                 public TextureHandle Hzb;public Vector4 ScreenSize;public Vector4 HzbSize;public Matrix4x4 ViewProjection;public Vector4[] FrustumPlanes;
                 public int FrustumEnabled;public int OcclusionEnabled;public int ReversedZ;public float TextureYSign;
-                public Matrix4x4 ObjectToWorld;public Vector3 CameraPosition;public float MaximumScale;public float NearPlane;
+                public Vector3 CameraPosition;public float NearPlane;
             }
             private sealed class DrawData{
                 // 同じbufferを複数の項目で使うとき、passに1回だけ宣言するための所有者(ビルド済みはpage、実行時生成は供給元×cameraの状態)。
@@ -206,6 +206,8 @@ namespace VirtualizedGeometry{
                 public BufferHandle Indices;
                 public BufferHandle Arguments;
                 public Matrix4x4 ObjectToWorld;public bool InvertCulling;
+                // draw 専用の値(Omni の物体ごとの値など)。null なら共有の MaterialPropertyBlock を使う。
+                public MaterialPropertyBlock Properties;
                 public PerObjectLighting Lighting;public BufferHandle Debug;public int DebugMode;public float TargetError;public int Loading;
                 public int ArgumentsOffset;
             }
@@ -379,14 +381,15 @@ namespace VirtualizedGeometry{
             private static float Pack(uint low,uint high){return System.BitConverter.Int32BitsToSingle((int)((low&0xFFFF)|((high&0xFFFF)<<16)));}
             public void Setup(Camera camera){this.camera=camera;}
 
-            // 実行時生成clusterの供給元ごとに、候補slotのcull passを出し、描画項目を足す。供給元はcameraあたり数個なのでpassはまとめない。
+            // 実行時生成clusterの供給元ごとに、候補slotのcull passを出し、drawごとの描画項目を足す。供給元はcameraあたり数個なのでpassはまとめない。
+            // cull は供給元が決めた空間(既定は world、Omni ではカメラ相対の物理空間)で行う。
             private void RecordClusterSources(RenderGraph graph,TextureHandle hzb,Vector4 screenSize,Vector4 hzbSize,Matrix4x4 viewProjection,Plane[] planes,
                 float projectionScale,float nearPlane,int reversedZ,float textureYSign,Vector3 cameraPosition,UniversalLightData lightData){
                 IReadOnlyList<VirtualGeometryClusterSource> sources=VirtualGeometryClusterSourceRegistry.Sources;
                 if(sources.Count==0){return;}
                 ComputeShader shader=VirtualGeometryClusterShaders.Cull;
                 if(shader==null||!hzb.IsValid()){return;}
-                var view=new VirtualGeometryClusterView(this.camera,cameraPosition,planes,projectionScale,nearPlane,this.camera.orthographic);
+                var view=new VirtualGeometryClusterView(this.camera,cameraPosition,planes,projectionScale,nearPlane,this.camera.orthographic,viewProjection);
                 for(int sourceIndex=0;sourceIndex<sources.Count;sourceIndex++){
                     VirtualGeometryClusterSource source=sources[sourceIndex];
                     if(source==null||!source.isActiveAndEnabled||(this.camera.cullingMask&(1<<source.gameObject.layer))==0||!source.CanDraw(this.camera)){continue;}
@@ -395,24 +398,24 @@ namespace VirtualizedGeometry{
                     VirtualGeometryClusterCameraState state=source.GetCameraState(this.camera);
                     int candidates=source.CollectCandidates(in view,state);
                     if(candidates==0){continue;}
-                    Matrix4x4 objectToWorld=source.transform.localToWorldMatrix;
                     BufferHandle vertices=graph.ImportBuffer(pool.Vertices);
                     BufferHandle visible=graph.ImportBuffer(state.VisibleIndices);
                     BufferHandle arguments=graph.ImportBuffer(state.Arguments);
+                    VirtualGeometryClusterCullSpace space=state.CullSpace;
                     using(IComputeRenderGraphBuilder builder=graph.AddComputePass<ClusterCullPassData>("Virtual Geometry Cluster Cull",out ClusterCullPassData data,VirtualGeometryDiagnostics.Select)){
                         data.Shader=shader;data.ResetKernel=VirtualGeometryClusterShaders.ResetKernel;data.CullKernel=VirtualGeometryClusterShaders.CullKernel;
-                        data.State=state;data.CandidateCount=candidates;
-                        data.Candidates=graph.ImportBuffer(state.Candidates);data.Bounds=graph.ImportBuffer(pool.ClusterBounds);
+                        data.State=state;data.CandidateCount=candidates;data.DrawCount=state.DrawCount;
+                        data.Candidates=graph.ImportBuffer(state.Candidates);data.DrawRecords=graph.ImportBuffer(state.DrawRecords);data.Bounds=graph.ImportBuffer(pool.ClusterBounds);
                         data.TemplateRanges=graph.ImportBuffer(pool.TemplateRanges);data.TemplateIndices=graph.ImportBuffer(pool.TemplateIndices);
                         data.VisibleIndices=visible;data.Arguments=arguments;data.Statistics=graph.ImportBuffer(state.Statistics);
                         data.SlotVertexCount=pool.Layout.SlotVertexCount;data.SlotClusterCount=pool.Layout.SlotClusterCount;
-                        data.Hzb=hzb;data.ScreenSize=screenSize;data.HzbSize=hzbSize;data.ViewProjection=viewProjection;data.FrustumPlanes=this.planeVectors;
+                        data.Hzb=hzb;data.ScreenSize=screenSize;data.HzbSize=hzbSize;data.ViewProjection=space.ViewProjection;data.FrustumPlanes=state.PlaneData;
                         data.FrustumEnabled=0;if(source.EnableFrustumCulling){data.FrustumEnabled=1;}
-                        data.OcclusionEnabled=0;if(source.EnableOcclusionCulling){data.OcclusionEnabled=1;}
+                        data.OcclusionEnabled=0;if(source.EnableOcclusionCulling&&space.OcclusionAllowed){data.OcclusionEnabled=1;}
                         data.ReversedZ=reversedZ;data.TextureYSign=textureYSign;
-                        data.ObjectToWorld=objectToWorld;data.CameraPosition=cameraPosition;data.MaximumScale=MaximumScale(objectToWorld);data.NearPlane=nearPlane;
+                        data.CameraPosition=space.CameraPosition;data.NearPlane=space.NearPlane;
                         builder.UseTexture(hzb,AccessFlags.Read);
-                        builder.UseBuffer(data.Candidates,AccessFlags.ReadWrite);builder.UseBuffer(data.Bounds,AccessFlags.Read);
+                        builder.UseBuffer(data.Candidates,AccessFlags.ReadWrite);builder.UseBuffer(data.DrawRecords,AccessFlags.ReadWrite);builder.UseBuffer(data.Bounds,AccessFlags.Read);
                         builder.UseBuffer(data.TemplateRanges,AccessFlags.Read);builder.UseBuffer(data.TemplateIndices,AccessFlags.Read);
                         builder.UseBuffer(data.VisibleIndices,AccessFlags.Write);builder.UseBuffer(data.Arguments,AccessFlags.ReadWrite);builder.UseBuffer(data.Statistics,AccessFlags.ReadWrite);
                         builder.SetRenderFunc(static(ClusterCullPassData input,ComputeGraphContext context)=>ExecuteClusterCull(input,context));
@@ -422,27 +425,32 @@ namespace VirtualizedGeometry{
                     if(!this.lightingByLayer.TryGetValue(layer,out lighting)){
                         lighting=CollectLights(lightData,layer);this.lightingByLayer.Add(layer,lighting);
                     }
-                    DrawData draw=this.AcquireDraw();
-                    draw.Owner=state;draw.Page=null;draw.Selection=null;
-                    draw.Material=drawMaterial;draw.Pass=drawPass;draw.Lighting=lighting;draw.DebugMode=0;draw.TargetError=0;draw.Loading=0;
-                    draw.Debug=graph.ImportBuffer(pool.DebugDummy);
-                    draw.Vertices=vertices;draw.Indices=visible;draw.Arguments=arguments;
-                    draw.ObjectToWorld=objectToWorld;draw.InvertCulling=objectToWorld.determinant<0;draw.ArgumentsOffset=0;
+                    BufferHandle debug=graph.ImportBuffer(pool.DebugDummy);
+                    for(int d=0;d<state.DrawCount;d++){
+                        DrawData draw=this.AcquireDraw();
+                        draw.Owner=state;draw.Page=null;draw.Selection=null;draw.Properties=state.DrawProperties[d];
+                        draw.Material=drawMaterial;draw.Pass=drawPass;draw.Lighting=lighting;draw.DebugMode=0;draw.TargetError=0;draw.Loading=0;
+                        draw.Debug=debug;
+                        draw.Vertices=vertices;draw.Indices=visible;draw.Arguments=arguments;
+                        Matrix4x4 objectToWorld=state.DrawObjectToWorld[d];
+                        draw.ObjectToWorld=objectToWorld;draw.InvertCulling=objectToWorld.determinant<0;draw.ArgumentsOffset=d*4*sizeof(uint);
+                    }
                 }
             }
 
             private static void ExecuteClusterCull(ClusterCullPassData input,ComputeGraphContext context){
                 ComputeShader shader=input.Shader;
                 ComputeCommandBuffer cmd=context.cmd;
-                cmd.SetBufferData((GraphicsBuffer)input.Candidates,input.State.CandidateData,0,0,input.CandidateCount);
+                cmd.SetBufferData((GraphicsBuffer)input.Candidates,input.State.CandidateData,0,0,input.CandidateCount*2);
+                cmd.SetBufferData((GraphicsBuffer)input.DrawRecords,input.State.RecordData,0,0,input.DrawCount);
+                cmd.SetComputeIntParam(shader,VirtualGeometryClusterShaders.DrawCountId,input.DrawCount);
+                cmd.SetComputeBufferParam(shader,input.ResetKernel,VirtualGeometryClusterShaders.DrawRecordsId,input.DrawRecords);
                 cmd.SetComputeBufferParam(shader,input.ResetKernel,VirtualGeometryClusterShaders.ArgumentsId,input.Arguments);
                 cmd.SetComputeBufferParam(shader,input.ResetKernel,VirtualGeometryClusterShaders.StatisticsId,input.Statistics);
-                cmd.DispatchCompute(shader,input.ResetKernel,1,1,1);
+                cmd.DispatchCompute(shader,input.ResetKernel,(input.DrawCount+63)/64,1,1);
                 cmd.SetComputeIntParam(shader,VirtualGeometryClusterShaders.SlotVertexCountId,input.SlotVertexCount);
                 cmd.SetComputeIntParam(shader,VirtualGeometryClusterShaders.SlotClusterCountId,input.SlotClusterCount);
                 cmd.SetComputeIntParam(shader,VirtualGeometryClusterShaders.CandidateCountId,input.CandidateCount);
-                cmd.SetComputeMatrixParam(shader,VirtualGeometryClusterShaders.ObjectToWorldId,input.ObjectToWorld);
-                cmd.SetComputeFloatParam(shader,VirtualGeometryClusterShaders.MaximumScaleId,input.MaximumScale);
                 cmd.SetComputeIntParam(shader,VirtualGeometryClusterShaders.FrustumEnabledId,input.FrustumEnabled);
                 cmd.SetComputeIntParam(shader,VirtualGeometryClusterShaders.OcclusionEnabledId,input.OcclusionEnabled);
                 cmd.SetComputeVectorParam(shader,ScreenSizeId,input.ScreenSize);
@@ -457,6 +465,7 @@ namespace VirtualizedGeometry{
                 int kernel=input.CullKernel;
                 cmd.SetComputeTextureParam(shader,kernel,HzbId,input.Hzb);
                 cmd.SetComputeBufferParam(shader,kernel,VirtualGeometryClusterShaders.CandidateSlotsId,input.Candidates);
+                cmd.SetComputeBufferParam(shader,kernel,VirtualGeometryClusterShaders.DrawRecordsId,input.DrawRecords);
                 cmd.SetComputeBufferParam(shader,kernel,VirtualGeometryClusterShaders.ClusterBoundsId,input.Bounds);
                 cmd.SetComputeBufferParam(shader,kernel,VirtualGeometryClusterShaders.TemplateRangesId,input.TemplateRanges);
                 cmd.SetComputeBufferParam(shader,kernel,VirtualGeometryClusterShaders.TemplateIndicesId,input.TemplateIndices);
@@ -466,13 +475,6 @@ namespace VirtualizedGeometry{
                 int groups=input.CandidateCount*input.SlotClusterCount;
                 int groupsX=Mathf.Min(groups,65535);int groupsY=(groups+65534)/65535;
                 cmd.DispatchCompute(shader,kernel,groupsX,groupsY,1);
-            }
-
-            private static float MaximumScale(Matrix4x4 matrix){
-                float x=new Vector3(matrix.m00,matrix.m10,matrix.m20).magnitude;
-                float y=new Vector3(matrix.m01,matrix.m11,matrix.m21).magnitude;
-                float z=new Vector3(matrix.m02,matrix.m12,matrix.m22).magnitude;
-                return Mathf.Max(x,Mathf.Max(y,z));
             }
 
             public override void RecordRenderGraph(RenderGraph graph,ContextContainer frameData){
@@ -595,7 +597,7 @@ namespace VirtualizedGeometry{
                             Material drawMaterial=this.material;int drawPass=0;
                             if(debugMode==0&&!instance.TryResolveDrawMaterial(materialSlot,out drawMaterial,out drawPass)){continue;}
                             DrawData data=this.AcquireDraw();
-                            data.Owner=page;data.Page=page;data.Selection=selection;
+                            data.Owner=page;data.Page=page;data.Selection=selection;data.Properties=null;
                             data.Material=drawMaterial;data.Pass=drawPass;data.Lighting=lighting;data.DebugMode=debugMode;data.TargetError=instance.LodErrorThresholdPixels;
                             data.Loading=0;
                             if(instance.StreamingStatistics!=null){data.Loading=instance.StreamingStatistics.Queued+instance.StreamingStatistics.Loading+instance.StreamingStatistics.Uploading;}
@@ -671,6 +673,7 @@ namespace VirtualizedGeometry{
                             for(int i=input.Start;i<input.End;i++){
                                 DrawData item=input.Items[i];
                                 if(item.DebugMode!=0){ExecuteDraw(item,context,context.renderGraphPool.GetTempMaterialPropertyBlock(),true);continue;}
+                                if(item.Properties!=null){ExecuteDraw(item,context,item.Properties,true);continue;}
                                 bool applyShared=lighting==null||!ReferenceEquals(lighting,item.Lighting)||inverted!=item.InvertCulling;
                                 ExecuteDraw(item,context,shared,applyShared);
                                 if(applyShared){lighting=item.Lighting;inverted=item.InvertCulling;}

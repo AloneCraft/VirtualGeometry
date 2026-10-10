@@ -15,7 +15,7 @@ namespace VirtualGeometry.World{
         bool TryGetBounds(in PlanetCellKey key,out Vector3 center,out float radius);
     }
 
-    /// <summary>選択に使う視点。位置は惑星のローカル座標、平面は world 座標。</summary>
+    /// <summary>選択に使う視点。カメラの位置は惑星のローカル座標、平面は cull 空間(LocalToWorld が惑星のローカルから cull 空間への行列)。</summary>
     public readonly struct PlanetSelectionView{
         public readonly Vector3 CameraLocal;
         public readonly Matrix4x4 LocalToWorld;

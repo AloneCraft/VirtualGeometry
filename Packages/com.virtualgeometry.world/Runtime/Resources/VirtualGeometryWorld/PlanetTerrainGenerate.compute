@@ -2,7 +2,7 @@
 #pragma target 5.0
 
 // 惑星の Cell 1つ分の頂点を、VirtualGeometryGridLayout の配置で pool の slot へ書く。
-// 面の表と等角写像は CubeSphere.cs と同じ。位置は惑星のローカル座標(中心が原点、float)。
+// 面の表と等角写像は CubeSphere.cs と同じ。位置は Cell の原点 _CellOrigin(惑星のローカル座標)からの相対位置。
 // 格子点は整数の通し番号 g = cell·N + i から面の座標 g/(N·2^L) を作るので、同じ面で隣り合う Cell の境界の頂点は
 // 同じ入力から同じ値になる。面の境界をまたぐ頂点は別の式から作るので ulp の差が残りうる(skirt が隠す)。
 // 通し番号は float で正確に表せる 2^24 以下に限る(PlanetTerrainSource.GpuMaximumLevel)。
@@ -27,6 +27,7 @@ float _Radius;
 float _HeightAmplitude;
 float _SkirtDepth;
 float _BaseWavelength;
+float3 _CellOrigin;
 int _Octaves;
 
 static const float3 FaceNormal[6]={float3(1,0,0),float3(-1,0,0),float3(0,1,0),float3(0,-1,0),float3(0,0,1),float3(0,0,-1)};
@@ -137,7 +138,7 @@ void Generate(uint3 id:SV_DispatchThreadID)
         position-=direction*_SkirtDepth;
     }
     VGPackedVertex vertex;
-    vertex.position=position;
+    vertex.position=position-_CellOrigin;
     vertex.normal=normal;
     vertex.uv=float2(gu,gv)/total;
     _Vertices[_Slot*_SlotVertexCount+index]=vertex;
