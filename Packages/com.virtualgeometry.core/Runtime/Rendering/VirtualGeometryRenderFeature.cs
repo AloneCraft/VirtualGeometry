@@ -55,9 +55,10 @@ namespace VirtualizedGeometry{
                 if(!(feature is IVirtualGeometryCompatibleRenderFeature compatible)||compatible.RequiresEarlyGeometry){reason="先行depth/normalを必要とする、または互換未確認のRendererFeature: "+feature.GetType().Name;break;}
             }}
             foreach(var instance in VirtualGeometryRenderRegistry.Renderers){if(instance!=null&&instance.isActiveAndEnabled){instance.SetCameraSupport(cameraData.camera,reason);}}
+            foreach(var source in VirtualGeometryClusterSourceRegistry.Sources){if(source!=null&&source.isActiveAndEnabled){source.SetCameraSupport(cameraData.camera,reason);}}
         }
         public override void AddRenderPasses(ScriptableRenderer renderer,ref RenderingData renderingData){
-            if(this.pass!=null&&VirtualGeometryRenderRegistry.Renderers.Count>0){this.pass.Setup(renderingData.cameraData.camera);renderer.EnqueuePass(this.pass);}
+            if(this.pass!=null&&(VirtualGeometryRenderRegistry.Renderers.Count>0||VirtualGeometryClusterSourceRegistry.Sources.Count>0)){this.pass.Setup(renderingData.cameraData.camera);renderer.EnqueuePass(this.pass);}
         }
         private static string GetUnsupportedReason(CameraData camera){
             if(SystemInfo.graphicsDeviceType!=GraphicsDeviceType.Direct3D12){return "v0.1の専用描画はWindows DX12を対象とします。";}
@@ -186,7 +187,19 @@ namespace VirtualizedGeometry{
                 public VirtualGeometryGpuPage Page;
                 public VirtualGeometrySelectionState Selection;
             }
+            private sealed class ClusterCullPassData{
+                public ComputeShader Shader;public int ResetKernel;public int CullKernel;
+                public VirtualGeometryClusterCameraState State;public int CandidateCount;
+                public BufferHandle Candidates;public BufferHandle Bounds;public BufferHandle TemplateRanges;public BufferHandle TemplateIndices;
+                public BufferHandle VisibleIndices;public BufferHandle Arguments;public BufferHandle Statistics;
+                public int SlotVertexCount;public int SlotClusterCount;
+                public TextureHandle Hzb;public Vector4 ScreenSize;public Vector4 HzbSize;public Matrix4x4 ViewProjection;public Vector4[] FrustumPlanes;
+                public int FrustumEnabled;public int OcclusionEnabled;public int ReversedZ;public float TextureYSign;
+                public Matrix4x4 ObjectToWorld;public Vector3 CameraPosition;public float MaximumScale;public float NearPlane;
+            }
             private sealed class DrawData{
+                // 同じbufferを複数の項目で使うとき、passに1回だけ宣言するための所有者(ビルド済みはpage、実行時生成は供給元×cameraの状態)。
+                public object Owner;
                 public VirtualGeometryGpuPage Page;public VirtualGeometrySelectionState Selection;
                 public Material Material;public int Pass;
                 public BufferHandle Vertices;
@@ -224,6 +237,7 @@ namespace VirtualizedGeometry{
             private readonly List<FeedbackPassData> feedbackItems=new List<FeedbackPassData>();private int feedbackCount;
             // 同じpageのbufferは複数instanceが共有するため、passごとに1回だけ宣言する。BufferHandleはIEquatableを持たず、HashSetのキーにするとbox化で遅いので参照で数える。
             private readonly HashSet<VirtualGeometryGpuPage> declaredPages=new HashSet<VirtualGeometryGpuPage>();
+            private readonly HashSet<object> declaredOwners=new HashSet<object>();
             private readonly HashSet<VirtualGeometrySelectionState> declaredSelections=new HashSet<VirtualGeometrySelectionState>();
             private readonly Dictionary<int,PerObjectLighting> lightingByLayer=new Dictionary<int,PerObjectLighting>();
             private readonly Vector4[] planeVectors=new Vector4[6];
@@ -365,6 +379,102 @@ namespace VirtualizedGeometry{
             private static float Pack(uint low,uint high){return System.BitConverter.Int32BitsToSingle((int)((low&0xFFFF)|((high&0xFFFF)<<16)));}
             public void Setup(Camera camera){this.camera=camera;}
 
+            // 実行時生成clusterの供給元ごとに、候補slotのcull passを出し、描画項目を足す。供給元はcameraあたり数個なのでpassはまとめない。
+            private void RecordClusterSources(RenderGraph graph,TextureHandle hzb,Vector4 screenSize,Vector4 hzbSize,Matrix4x4 viewProjection,Plane[] planes,
+                float projectionScale,float nearPlane,int reversedZ,float textureYSign,Vector3 cameraPosition,UniversalLightData lightData){
+                IReadOnlyList<VirtualGeometryClusterSource> sources=VirtualGeometryClusterSourceRegistry.Sources;
+                if(sources.Count==0){return;}
+                ComputeShader shader=VirtualGeometryClusterShaders.Cull;
+                if(shader==null||!hzb.IsValid()){return;}
+                var view=new VirtualGeometryClusterView(this.camera,cameraPosition,planes,projectionScale,nearPlane,this.camera.orthographic);
+                for(int sourceIndex=0;sourceIndex<sources.Count;sourceIndex++){
+                    VirtualGeometryClusterSource source=sources[sourceIndex];
+                    if(source==null||!source.isActiveAndEnabled||(this.camera.cullingMask&(1<<source.gameObject.layer))==0||!source.CanDraw(this.camera)){continue;}
+                    if(!VirtualGeometryMaterials.TryResolve(source.Material,out Material drawMaterial,out int drawPass,out string _)){continue;}
+                    VirtualGeometryClusterPool pool=source.Pool;
+                    VirtualGeometryClusterCameraState state=source.GetCameraState(this.camera);
+                    int candidates=source.CollectCandidates(in view,state);
+                    if(candidates==0){continue;}
+                    Matrix4x4 objectToWorld=source.transform.localToWorldMatrix;
+                    BufferHandle vertices=graph.ImportBuffer(pool.Vertices);
+                    BufferHandle visible=graph.ImportBuffer(state.VisibleIndices);
+                    BufferHandle arguments=graph.ImportBuffer(state.Arguments);
+                    using(IComputeRenderGraphBuilder builder=graph.AddComputePass<ClusterCullPassData>("Virtual Geometry Cluster Cull",out ClusterCullPassData data,VirtualGeometryDiagnostics.Select)){
+                        data.Shader=shader;data.ResetKernel=VirtualGeometryClusterShaders.ResetKernel;data.CullKernel=VirtualGeometryClusterShaders.CullKernel;
+                        data.State=state;data.CandidateCount=candidates;
+                        data.Candidates=graph.ImportBuffer(state.Candidates);data.Bounds=graph.ImportBuffer(pool.ClusterBounds);
+                        data.TemplateRanges=graph.ImportBuffer(pool.TemplateRanges);data.TemplateIndices=graph.ImportBuffer(pool.TemplateIndices);
+                        data.VisibleIndices=visible;data.Arguments=arguments;data.Statistics=graph.ImportBuffer(state.Statistics);
+                        data.SlotVertexCount=pool.Layout.SlotVertexCount;data.SlotClusterCount=pool.Layout.SlotClusterCount;
+                        data.Hzb=hzb;data.ScreenSize=screenSize;data.HzbSize=hzbSize;data.ViewProjection=viewProjection;data.FrustumPlanes=this.planeVectors;
+                        data.FrustumEnabled=0;if(source.EnableFrustumCulling){data.FrustumEnabled=1;}
+                        data.OcclusionEnabled=0;if(source.EnableOcclusionCulling){data.OcclusionEnabled=1;}
+                        data.ReversedZ=reversedZ;data.TextureYSign=textureYSign;
+                        data.ObjectToWorld=objectToWorld;data.CameraPosition=cameraPosition;data.MaximumScale=MaximumScale(objectToWorld);data.NearPlane=nearPlane;
+                        builder.UseTexture(hzb,AccessFlags.Read);
+                        builder.UseBuffer(data.Candidates,AccessFlags.ReadWrite);builder.UseBuffer(data.Bounds,AccessFlags.Read);
+                        builder.UseBuffer(data.TemplateRanges,AccessFlags.Read);builder.UseBuffer(data.TemplateIndices,AccessFlags.Read);
+                        builder.UseBuffer(data.VisibleIndices,AccessFlags.Write);builder.UseBuffer(data.Arguments,AccessFlags.ReadWrite);builder.UseBuffer(data.Statistics,AccessFlags.ReadWrite);
+                        builder.SetRenderFunc(static(ClusterCullPassData input,ComputeGraphContext context)=>ExecuteClusterCull(input,context));
+                    }
+                    PerObjectLighting lighting;
+                    int layer=source.gameObject.layer;
+                    if(!this.lightingByLayer.TryGetValue(layer,out lighting)){
+                        lighting=CollectLights(lightData,layer);this.lightingByLayer.Add(layer,lighting);
+                    }
+                    DrawData draw=this.AcquireDraw();
+                    draw.Owner=state;draw.Page=null;draw.Selection=null;
+                    draw.Material=drawMaterial;draw.Pass=drawPass;draw.Lighting=lighting;draw.DebugMode=0;draw.TargetError=0;draw.Loading=0;
+                    draw.Debug=graph.ImportBuffer(pool.DebugDummy);
+                    draw.Vertices=vertices;draw.Indices=visible;draw.Arguments=arguments;
+                    draw.ObjectToWorld=objectToWorld;draw.InvertCulling=objectToWorld.determinant<0;draw.ArgumentsOffset=0;
+                }
+            }
+
+            private static void ExecuteClusterCull(ClusterCullPassData input,ComputeGraphContext context){
+                ComputeShader shader=input.Shader;
+                ComputeCommandBuffer cmd=context.cmd;
+                cmd.SetBufferData((GraphicsBuffer)input.Candidates,input.State.CandidateData,0,0,input.CandidateCount);
+                cmd.SetComputeBufferParam(shader,input.ResetKernel,VirtualGeometryClusterShaders.ArgumentsId,input.Arguments);
+                cmd.SetComputeBufferParam(shader,input.ResetKernel,VirtualGeometryClusterShaders.StatisticsId,input.Statistics);
+                cmd.DispatchCompute(shader,input.ResetKernel,1,1,1);
+                cmd.SetComputeIntParam(shader,VirtualGeometryClusterShaders.SlotVertexCountId,input.SlotVertexCount);
+                cmd.SetComputeIntParam(shader,VirtualGeometryClusterShaders.SlotClusterCountId,input.SlotClusterCount);
+                cmd.SetComputeIntParam(shader,VirtualGeometryClusterShaders.CandidateCountId,input.CandidateCount);
+                cmd.SetComputeMatrixParam(shader,VirtualGeometryClusterShaders.ObjectToWorldId,input.ObjectToWorld);
+                cmd.SetComputeFloatParam(shader,VirtualGeometryClusterShaders.MaximumScaleId,input.MaximumScale);
+                cmd.SetComputeIntParam(shader,VirtualGeometryClusterShaders.FrustumEnabledId,input.FrustumEnabled);
+                cmd.SetComputeIntParam(shader,VirtualGeometryClusterShaders.OcclusionEnabledId,input.OcclusionEnabled);
+                cmd.SetComputeVectorParam(shader,ScreenSizeId,input.ScreenSize);
+                cmd.SetComputeVectorParam(shader,HzbSizeId,input.HzbSize);
+                cmd.SetComputeMatrixParam(shader,ViewProjectionId,input.ViewProjection);
+                cmd.SetComputeVectorArrayParam(shader,FrustumPlanesId,input.FrustumPlanes);
+                cmd.SetComputeIntParam(shader,ReversedZId,input.ReversedZ);
+                cmd.SetComputeFloatParam(shader,DepthBiasId,0.00001f);
+                cmd.SetComputeFloatParam(shader,TextureYSignId,input.TextureYSign);
+                cmd.SetComputeVectorParam(shader,CameraPositionId,input.CameraPosition);
+                cmd.SetComputeFloatParam(shader,NearPlaneId,input.NearPlane);
+                int kernel=input.CullKernel;
+                cmd.SetComputeTextureParam(shader,kernel,HzbId,input.Hzb);
+                cmd.SetComputeBufferParam(shader,kernel,VirtualGeometryClusterShaders.CandidateSlotsId,input.Candidates);
+                cmd.SetComputeBufferParam(shader,kernel,VirtualGeometryClusterShaders.ClusterBoundsId,input.Bounds);
+                cmd.SetComputeBufferParam(shader,kernel,VirtualGeometryClusterShaders.TemplateRangesId,input.TemplateRanges);
+                cmd.SetComputeBufferParam(shader,kernel,VirtualGeometryClusterShaders.TemplateIndicesId,input.TemplateIndices);
+                cmd.SetComputeBufferParam(shader,kernel,VirtualGeometryClusterShaders.VisibleIndicesId,input.VisibleIndices);
+                cmd.SetComputeBufferParam(shader,kernel,VirtualGeometryClusterShaders.ArgumentsId,input.Arguments);
+                cmd.SetComputeBufferParam(shader,kernel,VirtualGeometryClusterShaders.StatisticsId,input.Statistics);
+                int groups=input.CandidateCount*input.SlotClusterCount;
+                int groupsX=Mathf.Min(groups,65535);int groupsY=(groups+65534)/65535;
+                cmd.DispatchCompute(shader,kernel,groupsX,groupsY,1);
+            }
+
+            private static float MaximumScale(Matrix4x4 matrix){
+                float x=new Vector3(matrix.m00,matrix.m10,matrix.m20).magnitude;
+                float y=new Vector3(matrix.m01,matrix.m11,matrix.m21).magnitude;
+                float z=new Vector3(matrix.m02,matrix.m12,matrix.m22).magnitude;
+                return Mathf.Max(x,Mathf.Max(y,z));
+            }
+
             public override void RecordRenderGraph(RenderGraph graph,ContextContainer frameData){
                 using(RecordMarker.Auto()){this.Record(graph,frameData);}
             }
@@ -485,7 +595,7 @@ namespace VirtualizedGeometry{
                             Material drawMaterial=this.material;int drawPass=0;
                             if(debugMode==0&&!instance.TryResolveDrawMaterial(materialSlot,out drawMaterial,out drawPass)){continue;}
                             DrawData data=this.AcquireDraw();
-                            data.Page=page;data.Selection=selection;
+                            data.Owner=page;data.Page=page;data.Selection=selection;
                             data.Material=drawMaterial;data.Pass=drawPass;data.Lighting=lighting;data.DebugMode=debugMode;data.TargetError=instance.LodErrorThresholdPixels;
                             data.Loading=0;
                             if(instance.StreamingStatistics!=null){data.Loading=instance.StreamingStatistics.Queued+instance.StreamingStatistics.Loading+instance.StreamingStatistics.Uploading;}
@@ -506,6 +616,7 @@ namespace VirtualizedGeometry{
                         feedback.Page=page;feedback.Selection=selection;
                     }
                 }
+                this.RecordClusterSources(graph,hzb,screenSize,hzbSize,viewProjection,planes,projectionScale,nearPlane,reversedZ,textureYSign,cameraPosition,lightData);
                 // 手順2: 集めた項目をcameraにつき1 passずつにまとめて出す。順序は 選択 → 描画 → feedback(描画は選択の結果を、feedbackは選択のrequest bufferを読む)。
                 VirtualGeometryDiagnostics.LastSelectItems=this.selectCount;VirtualGeometryDiagnostics.LastDrawItems=this.drawCount;VirtualGeometryDiagnostics.LastFeedbackItems=this.feedbackCount;
                 int batchSize=PassBatchSize;
@@ -534,14 +645,14 @@ namespace VirtualizedGeometry{
                 bool drewVirtual=this.drawCount>0;
                 for(int start=0;start<this.drawCount;start+=batchSize){
                     int end=Mathf.Min(this.drawCount,start+batchSize);
-                    this.declaredPages.Clear();this.declaredSelections.Clear();
+                    this.declaredOwners.Clear();this.declaredSelections.Clear();
                     using(IRasterRenderGraphBuilder builder=graph.AddRasterRenderPass<DrawBatch>("Virtual Geometry Draw",out DrawBatch batch,VirtualGeometryDiagnostics.Draw)){
                         batch.Items=this.drawItems;batch.Start=start;batch.End=end;
                         // 利用者shaderは影map・SSAO・light cookie等のglobal textureを読むため、すべてのglobal textureの利用を宣言する。
                         builder.UseAllGlobalTextures(true);
                         for(int i=start;i<end;i++){
                             DrawData item=this.drawItems[i];
-                            if(this.declaredPages.Add(item.Page)){
+                            if(this.declaredOwners.Add(item.Owner)){
                                 builder.UseBuffer(item.Vertices,AccessFlags.Read);
                                 if(item.Selection==null){
                                     builder.UseBuffer(item.Indices,AccessFlags.Read);builder.UseBuffer(item.Arguments,AccessFlags.Read);builder.UseBuffer(item.Debug,AccessFlags.Read);

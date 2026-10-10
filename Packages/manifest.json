@@ -1,6 +1,7 @@
 {
   "dependencies": {
     "com.virtualgeometry.core": "file:com.virtualgeometry.core",
+    "com.omni.rendering": "file:D:/Unity/6.6/OmniDist/wiring-fix2/Omni-0.1.0.tgz",
     "com.unity.ai.navigation": "2.0.12",
     "com.unity.collab-proxy": "2.12.4",
     "com.unity.ide.rider": "3.0.38",

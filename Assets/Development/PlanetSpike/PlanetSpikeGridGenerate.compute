@@ -1,0 +1,68 @@
+#pragma kernel Generate
+#pragma target 5.0
+
+// P3a の試験用の頂点生成。slot の grid と skirt の頂点を、VirtualGeometryGridLayout の配置で書く。
+// grid の u は +X、v は +Z(外向き法線 cross(v,u) = +Y)。
+
+struct VGPackedVertex
+{
+    float3 position;
+    float3 normal;
+    float2 uv;
+};
+
+RWStructuredBuffer<VGPackedVertex> _Vertices;
+int _CellQuads;
+int _SlotVertexCount;
+int _GridVertexCount;
+int _Slot;
+float2 _CellOrigin;
+float _CellSize;
+float _SkirtDepth;
+
+float Height(float2 p)
+{
+    return 1.5*sin(p.x*0.3)*cos(p.y*0.25);
+}
+
+float3 Normal(float2 p)
+{
+    float dx=1.5*0.3*cos(p.x*0.3)*cos(p.y*0.25);
+    float dz=-1.5*0.25*sin(p.x*0.3)*sin(p.y*0.25);
+    return normalize(float3(-dx,1,-dz));
+}
+
+[numthreads(64,1,1)]
+void Generate(uint3 id:SV_DispatchThreadID)
+{
+    int index=(int)id.x;
+    if(index >= _SlotVertexCount) { return; }
+    int side=_CellQuads+1;
+    int x;
+    int y;
+    float depth=0;
+    if(index < _GridVertexCount)
+    {
+        x=index%side;
+        y=index/side;
+    }
+    else
+    {
+        int skirt=index-_GridVertexCount;
+        int edge=skirt/side;
+        int t=skirt%side;
+        x=t;y=t;
+        if(edge == 0) { y=0; }
+        if(edge == 1) { x=_CellQuads; }
+        if(edge == 2) { y=_CellQuads; }
+        if(edge == 3) { x=0; }
+        depth=_SkirtDepth;
+    }
+    float2 uv=float2(x,y)/(float)_CellQuads;
+    float2 p=_CellOrigin+uv*_CellSize;
+    VGPackedVertex vertex;
+    vertex.position=float3(p.x,Height(p)-depth,p.y);
+    vertex.normal=Normal(p);
+    vertex.uv=uv;
+    _Vertices[_Slot*_SlotVertexCount+index]=vertex;
+}

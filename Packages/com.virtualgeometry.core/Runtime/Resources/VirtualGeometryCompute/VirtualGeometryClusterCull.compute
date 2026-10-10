@@ -1,0 +1,122 @@
+#pragma kernel ComputeBounds
+#pragma kernel ResetArguments
+#pragma kernel CullClusters
+#pragma target 5.0
+
+// 実行時に生成したclusterの共通処理。供給元(VirtualGeometryClusterSource)がslotの頂点を書いた後、
+// ComputeBoundsがclusterのboundsを作る。camera毎にResetArguments → CullClustersの順で、
+// 候補slotの全clusterをFrustum・HZBでcullし、可視clusterのindexを詰めてindirect argsを書く。
+
+struct VGPackedVertex
+{
+    float3 position;
+    float3 normal;
+    float2 uv;
+};
+
+// slot内の頂点数とcluster数。全slotが同じ配置を使う。
+uint _VGSlotVertexCount;
+uint _VGSlotClusterCount;
+
+StructuredBuffer<VGPackedVertex> _VGPoolVertices;
+// clusterごとの(先頭, 個数)。index値はslot内の頂点番号。
+StructuredBuffer<uint2> _VGClusterTemplateRanges;
+StructuredBuffer<uint> _VGClusterTemplateIndices;
+RWStructuredBuffer<float4> _VGClusterBounds;
+
+// ComputeBounds: boundsを作るslotの一覧。
+StructuredBuffer<uint> _VGBoundsSlots;
+uint _VGBoundsSlotCount;
+
+// CullClusters: このcameraで描く候補slotの一覧。
+StructuredBuffer<uint> _VGCandidateSlots;
+uint _VGCandidateCount;
+float4x4 _VGObjectToWorld;
+float _VGMaximumScale;
+int _VGFrustumEnabled;
+int _VGOcclusionEnabled;
+RWStructuredBuffer<uint> _VGVisibleIndices;
+RWByteAddressBuffer _VGArguments;
+RWStructuredBuffer<uint> _VGCullingStatistics;
+
+#include "Packages/com.virtualgeometry.core/Shaders/VirtualGeometryCullingCommon.hlsl"
+
+[numthreads(64,1,1)]
+void ComputeBounds(uint3 id:SV_DispatchThreadID)
+{
+    uint work=id.x;
+    if(work >= _VGBoundsSlotCount*_VGSlotClusterCount) { return; }
+    uint slot=_VGBoundsSlots[work/_VGSlotClusterCount];
+    uint cluster=work%_VGSlotClusterCount;
+    uint2 range=_VGClusterTemplateRanges[cluster];
+    uint vertexBase=slot*_VGSlotVertexCount;
+    float3 low=_VGPoolVertices[vertexBase+_VGClusterTemplateIndices[range.x]].position;
+    float3 high=low;
+    for(uint i=1;i<range.y;i++)
+    {
+        float3 p=_VGPoolVertices[vertexBase+_VGClusterTemplateIndices[range.x+i]].position;
+        low=min(low,p);high=max(high,p);
+    }
+    float3 center=(low+high)*0.5;
+    // AABBを包む球。半径は半対角線を正規化した形で求め、巨大な座標で2乗が溢れないようにする。
+    float3 extent=(high-low)*0.5;
+    float scale=max(max(extent.x,extent.y),max(extent.z,1e-30));
+    float radius=scale*length(extent/scale);
+    _VGClusterBounds[slot*_VGSlotClusterCount+cluster]=float4(center,radius);
+}
+
+[numthreads(1,1,1)]
+void ResetArguments(uint3 id:SV_DispatchThreadID)
+{
+    _VGArguments.Store4(0,uint4(0,1,0,0));
+    for(uint i=0;i<4;i++) { _VGCullingStatistics[i]=0; }
+}
+
+#define VG_CULL_LANES 64u
+groupshared uint gsOutput;
+groupshared uint gsVisible;
+
+// 1 groupが1 clusterを受け持つ。lane 0がcullして出力位置を確保し、全laneでindexを書く。
+// 候補slot数×slot内cluster数のindexを入れられる容量を呼び出し側が確保するので、出力が容量を超えることはない。
+[numthreads(VG_CULL_LANES,1,1)]
+void CullClusters(uint3 groupId:SV_GroupID,uint lane:SV_GroupIndex)
+{
+    uint work=groupId.x+groupId.y*65535u;
+    if(work >= _VGCandidateCount*_VGSlotClusterCount) { return; }
+    uint slot=_VGCandidateSlots[work/_VGSlotClusterCount];
+    uint cluster=work%_VGSlotClusterCount;
+    uint2 range=_VGClusterTemplateRanges[cluster];
+    if(lane == 0)
+    {
+        float4 bounds=_VGClusterBounds[slot*_VGSlotClusterCount+cluster];
+        float3 center=mul(_VGObjectToWorld,float4(bounds.xyz,1)).xyz;
+        float radius=bounds.w*_VGMaximumScale;
+        uint visible=1;
+        InterlockedAdd(_VGCullingStatistics[0],1);
+        if(_VGFrustumEnabled != 0 && OutsideFrustum(center,radius))
+        {
+            InterlockedAdd(_VGCullingStatistics[1],1);
+            visible=0;
+        }
+        else if(_VGOcclusionEnabled != 0 && Occluded(center,radius))
+        {
+            InterlockedAdd(_VGCullingStatistics[2],1);
+            visible=0;
+        }
+        uint output=0;
+        if(visible != 0)
+        {
+            InterlockedAdd(_VGCullingStatistics[3],1);
+            _VGArguments.InterlockedAdd(0,range.y,output);
+        }
+        gsVisible=visible;
+        gsOutput=output;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if(gsVisible == 0) { return; }
+    uint vertexBase=slot*_VGSlotVertexCount;
+    for(uint i=lane;i<range.y;i+=VG_CULL_LANES)
+    {
+        _VGVisibleIndices[gsOutput+i]=vertexBase+_VGClusterTemplateIndices[range.x+i];
+    }
+}
