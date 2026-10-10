@@ -316,7 +316,18 @@ namespace VirtualizedGeometry{
             Graphics.ExecuteCommandBuffer(commands);
             // 同じqueueで後に描くので、この後のcameraの描画では生成済みとして扱える。
             for(int i=0;i<count;i++){this.ready[this.generating[i]]=true;}
+            this.OnSlotsGenerated(this.generating);
         }
+
+        /// <summary>
+        /// slot の頂点と cluster の bounds を生成する GPU 処理を予約した直後に呼ぶ。GPU の処理はまだ終わっていない
+        /// (この後の描画と readback は同じ queue で後に並ぶので、生成後の値を読む)。既定では何もしない。
+        /// </summary>
+        protected virtual void OnSlotsGenerated(IReadOnlyList<int> slots){
+        }
+
+        /// <summary>cluster の bounds(float4: 中心 xyz、半径 w。slot ごとに SlotClusterCount 個)。readback に使う。</summary>
+        protected GraphicsBuffer ClusterBoundsBuffer{get{if(this.pool==null){return null;}return this.pool.ClusterBounds;}}
 
         internal VirtualGeometryClusterPool Pool=>this.pool;
 

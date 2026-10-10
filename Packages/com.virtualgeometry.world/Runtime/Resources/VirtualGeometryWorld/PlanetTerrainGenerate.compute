@@ -1,0 +1,144 @@
+#pragma kernel Generate
+#pragma target 5.0
+
+// 惑星の Cell 1つ分の頂点を、VirtualGeometryGridLayout の配置で pool の slot へ書く。
+// 面の表と等角写像は CubeSphere.cs と同じ。位置は惑星のローカル座標(中心が原点、float)。
+// 格子点は整数の通し番号 g = cell·N + i から面の座標 g/(N·2^L) を作るので、同じ面で隣り合う Cell の境界の頂点は
+// 同じ入力から同じ値になる。面の境界をまたぐ頂点は別の式から作るので ulp の差が残りうる(skirt が隠す)。
+// 通し番号は float で正確に表せる 2^24 以下に限る(PlanetTerrainSource.GpuMaximumLevel)。
+
+struct VGPackedVertex
+{
+    float3 position;
+    float3 normal;
+    float2 uv;
+};
+
+RWStructuredBuffer<VGPackedVertex> _Vertices;
+int _CellQuads;
+int _SlotVertexCount;
+int _GridVertexCount;
+int _Slot;
+int _Face;
+int _Level;
+uint _CellX;
+uint _CellY;
+float _Radius;
+float _HeightAmplitude;
+float _SkirtDepth;
+float _BaseWavelength;
+int _Octaves;
+
+static const float3 FaceNormal[6]={float3(1,0,0),float3(-1,0,0),float3(0,1,0),float3(0,-1,0),float3(0,0,1),float3(0,0,-1)};
+static const float3 FaceU[6]={float3(0,0,1),float3(0,0,-1),float3(1,0,0),float3(1,0,0),float3(-1,0,0),float3(1,0,0)};
+static const float3 FaceV[6]={float3(0,1,0),float3(0,1,0),float3(0,0,1),float3(0,0,-1),float3(0,1,0),float3(0,1,0)};
+
+uint3 Pcg3d(uint3 v)
+{
+    v=v*1664525u+1013904223u;
+    v.x+=v.y*v.z;v.y+=v.z*v.x;v.z+=v.x*v.y;
+    v^=v>>16u;
+    v.x+=v.y*v.z;v.y+=v.z*v.x;v.z+=v.x*v.y;
+    return v;
+}
+
+float3 Gradient(int3 cell,uint octave)
+{
+    uint3 hash=Pcg3d(asuint(cell)+uint3(octave*0x9e3779b9u,octave*0x85ebca6bu,octave*0xc2b2ae35u));
+    return normalize(float3(hash&0xffffu)/32767.5-1.0+1e-6);
+}
+
+// 3D の gradient noise(値はおよそ −1〜1)。
+float GradientNoise(float3 p,uint octave)
+{
+    int3 i=(int3)floor(p);
+    float3 f=p-(float3)i;
+    float3 w=f*f*f*(f*(f*6.0-15.0)+10.0);
+    float n000=dot(Gradient(i+int3(0,0,0),octave),f-float3(0,0,0));
+    float n100=dot(Gradient(i+int3(1,0,0),octave),f-float3(1,0,0));
+    float n010=dot(Gradient(i+int3(0,1,0),octave),f-float3(0,1,0));
+    float n110=dot(Gradient(i+int3(1,1,0),octave),f-float3(1,1,0));
+    float n001=dot(Gradient(i+int3(0,0,1),octave),f-float3(0,0,1));
+    float n101=dot(Gradient(i+int3(1,0,1),octave),f-float3(1,0,1));
+    float n011=dot(Gradient(i+int3(0,1,1),octave),f-float3(0,1,1));
+    float n111=dot(Gradient(i+int3(1,1,1),octave),f-float3(1,1,1));
+    float x00=lerp(n000,n100,w.x);float x10=lerp(n010,n110,w.x);
+    float x01=lerp(n001,n101,w.x);float x11=lerp(n011,n111,w.x);
+    return lerp(lerp(x00,x10,w.y),lerp(x01,x11,w.y),w.z)*1.5;
+}
+
+// 高さ(m)。fBm を ±_HeightAmplitude に収める(bounds の Hmax を保証するため clamp する)。
+float Height(float3 direction)
+{
+    float3 p=direction*_Radius;
+    float sum=0;
+    float amplitude=0.5;
+    float wavelength=_BaseWavelength;
+    for(int octave=0;octave<_Octaves;octave++)
+    {
+        sum+=amplitude*GradientNoise(p/wavelength,(uint)octave);
+        amplitude*=0.5;
+        wavelength*=0.5;
+    }
+    return clamp(sum,-1.0,1.0)*_HeightAmplitude;
+}
+
+float3 Direction(float s,float t)
+{
+    float x=tan((2.0*s-1.0)*0.78539816339744830962);
+    float y=tan((2.0*t-1.0)*0.78539816339744830962);
+    return normalize(FaceNormal[_Face]+x*FaceU[_Face]+y*FaceV[_Face]);
+}
+
+// 通し番号 (gu, gv) の地表の点。gu、gv は面の外(−1 や total+1)でもよく、そのときは隣の面の方向へ自然に続く。
+float3 Surface(float gu,float gv,float total,out float3 direction)
+{
+    direction=Direction(gu/total,gv/total);
+    return direction*(_Radius+Height(direction));
+}
+
+[numthreads(64,1,1)]
+void Generate(uint3 id:SV_DispatchThreadID)
+{
+    int index=(int)id.x;
+    if(index >= _SlotVertexCount) { return; }
+    int side=_CellQuads+1;
+    int i;
+    int j;
+    bool skirt=false;
+    if(index < _GridVertexCount)
+    {
+        i=index%side;
+        j=index/side;
+    }
+    else
+    {
+        int local=index-_GridVertexCount;
+        int edge=local/side;
+        int t=local%side;
+        i=t;j=t;
+        if(edge == 0) { j=0; }
+        if(edge == 1) { i=_CellQuads; }
+        if(edge == 2) { j=_CellQuads; }
+        if(edge == 3) { i=0; }
+        skirt=true;
+    }
+    float total=(float)_CellQuads*exp2((float)_Level);
+    float gu=(float)(_CellX*(uint)_CellQuads+(uint)i);
+    float gv=(float)(_CellY*(uint)_CellQuads+(uint)j);
+    float3 direction;
+    float3 position=Surface(gu,gv,total,direction);
+    float3 unused;
+    float3 du=Surface(gu+1.0,gv,total,unused)-Surface(gu-1.0,gv,total,unused);
+    float3 dv=Surface(gu,gv+1.0,total,unused)-Surface(gu,gv-1.0,total,unused);
+    float3 normal=normalize(cross(dv,du));
+    if(skirt)
+    {
+        position-=direction*_SkirtDepth;
+    }
+    VGPackedVertex vertex;
+    vertex.position=position;
+    vertex.normal=normal;
+    vertex.uv=float2(gu,gv)/total;
+    _Vertices[_Slot*_SlotVertexCount+index]=vertex;
+}

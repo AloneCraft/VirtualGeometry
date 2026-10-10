@@ -261,6 +261,14 @@
         "com.unity.modules.physics": "1.0.0"
       }
     },
+    "com.virtualgeometry.world": {
+      "version": "file:com.virtualgeometry.world",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {
+        "com.virtualgeometry.core": "0.1.0"
+      }
+    },
     "com.unity.modules.ai": {
       "version": "1.0.0",
       "depth": 1,

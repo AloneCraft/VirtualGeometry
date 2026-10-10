@@ -335,3 +335,36 @@ VG core の回帰(EditMode と M0〜M5)は、**Omni を入れないプロジェ�
 2026-10-10 の確認:Omni なし・P3a の変更あり(コミット前)で、EditMode 51/51 と M0〜M5 の 11 本が合格した。
 M3 の cull の統計(Frustum 棄却、HZB 棄却、可視 cluster、画像の差分)は、変更前の記録と全シナリオで一致した。
 Player のビルドと実行(`M5PlayerBuildValidation`)は、この変更では実行していない。
+
+
+## 10. 惑星の Cell の選択と生成(P3)
+
+実装は `Packages/com.virtualgeometry.world`(`PlanetCellKey`、`CubeSphere`、`PlanetCellSelector`、`PlanetTerrainSource`、`PlanetTerrainGenerate.compute`)。
+
+cube-sphere の面の軸は、外向き法線が cross(v,u) になる向きに置く。
+
+面の座標から方向へは等角写像(tan)で写す。
+
+同じ階層の隣の Cell は、面の境界をまたぐ場合も整数で求める(浮動小数の誤差を持ち込まない)。
+
+Cell の bounds は、生成済みなら GPU が求めた cluster の bounds を非同期で読み戻したものを使い、無ければ解析的な bounds を使う。
+
+解析的な bounds は惑星全体の高さの幅を含むため大きく、小さな Cell の選択には使えない。
+
+2026-10-10 の確認:解析的な bounds だけでは、地上 10m で Cell が 947 個選ばれて pool(2048)が枯渇した。
+実際の bounds に変えると 79 個になり、退避も枯渇も無くなった。
+
+GPU は面の通し番号を float で扱うため、階層は 18 までに限る(`PlanetTerrainSource.GpuMaximumLevel`)。
+
+それより細かい階層は、Cell の局所原点(P4)で扱う。
+
+### 検証(`VirtualGeometry.World.Editor.P3bPlanetValidation`)
+
+穴は「内側の球(半径 R−Hmax から、描いている最も粗い階層の弦の沈み込みを引いたもの)に、縁から 1 画素分より深く入る光線の画素が背景色であること」と定める。
+
+縁では地形の輪郭と内側の球の輪郭が画素未満しか離れないため、許容量なしでは描画が正しくても穴と数える
+(2026-10-10 に、許容量なしで 32 画素を数え、1 画素分の許容量で 0 になった)。
+
+2026-10-10 の結果(半径 10km、Hmax 300m、目標 2px、640×480 と 320×240):固定の 4 視点で穴と継ぎ目の候補が 0、
+目標を 1/4 にした描画との輪郭の差が 1px の帯の外で 0、宇宙から地上までの 121 frame で穴 0、
+生成予算 1 での瞬間移動の 60 frame で穴 0、使用 slot は最大 1626/2048。

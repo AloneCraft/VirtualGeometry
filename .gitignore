@@ -32,3 +32,5 @@ TestResults/
 # 検証が毎回作るpipelineとRenderer
 /[Aa]ssets/Development/PlanetSpike/P3a/
 /[Aa]ssets/Development/PlanetSpike/P3a.meta
+/[Aa]ssets/Development/PlanetWorld/
+/[Aa]ssets/Development/PlanetWorld.meta

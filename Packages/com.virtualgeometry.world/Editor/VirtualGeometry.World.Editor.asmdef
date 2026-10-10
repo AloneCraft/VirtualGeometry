@@ -1,0 +1,6 @@
+{
+  "name": "VirtualGeometry.World.Editor",
+  "rootNamespace": "VirtualGeometry.World.Editor",
+  "references": ["VirtualGeometry.World", "VirtualizedGeometry.Runtime", "VirtualizedGeometry.Editor", "Unity.RenderPipelines.Core.Runtime", "Unity.RenderPipelines.Universal.Runtime"],
+  "includePlatforms": ["Editor"]
+}

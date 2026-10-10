@@ -1,0 +1,5 @@
+{
+  "name": "VirtualGeometry.World",
+  "rootNamespace": "VirtualGeometry.World",
+  "references": ["VirtualizedGeometry.Runtime"]
+}
