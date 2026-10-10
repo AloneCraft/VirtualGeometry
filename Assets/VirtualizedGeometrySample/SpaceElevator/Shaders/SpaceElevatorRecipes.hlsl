@@ -1,5 +1,5 @@
 // SpaceElevator/Procedural の質感レシピ。Blender の生成スクリプト(se_common.py の panel_pattern / mat_panel / mat_steel、
-// se_ground_anchor.py の mat_wet_ground / mat_terrain / mat_water)を骨格に、参照画像「地上が、宇宙へのはじまり。」へ寄せる要素
+// se_ground_anchor.py の mat_wet_ground)を骨格に、参照画像「地上が、宇宙へのはじまり。」へ寄せる要素
 // (雨だれ汚れ・縦リブ・コンクリートの粒・暖色と寒色のムラ・濡れた路面)を足したもの。
 // 座標はすべて Blender のオブジェクト座標(m、Z上)。footprint は 1 画素に当たる長さ(m)で、細かい模様を遠景で弱めるのに使う。
 #ifndef SPACE_ELEVATOR_RECIPES_INCLUDED
@@ -180,47 +180,6 @@ SESurface SEWetGroundRecipe(float3 pB, float3 nB, float footprint)
     s.bumpStrength = _Bump * (1.0 - wet * 0.8);
     s.wetness = lerp(0.35, 1.0, wet);
     s.occlusion = 1.0 - seam * 0.4;
-    return s;
-}
-
-// 山岳地形(Blender の mat_terrain)。高さと斜面で草地・岩・雪を塗り分ける。nB は表裏をそろえた法線(下向きの面も上を向く)。
-SESurface SETerrainRecipe(float3 pB, float3 nB, float footprint)
-{
-    SESurface s = SEDefaultSurface();
-    float z = pB.z;
-    float nz = nB.z;
-    float n1 = SEFbm(pB * 0.0012, 8.0, 0.6, footprint * 0.0012);
-    float n2 = SEFbm(pB * 0.02, 6.0, 0.7, footprint * 0.02);
-    half3 plain = lerp(_PlainColorA.rgb, _PlainColorB.rgb, n1);
-    plain = lerp(plain, _MossColor.rgb, SEMapRange(n2, 0.3, 0.7, 0.0, 0.5));
-    half3 rock = lerp(_RockColorA.rgb, _RockColorB.rgb, n2);
-    float rockiness = saturate(SEMapRange(nz, 0.96, 0.82, 0.0, 1.0) + SEMapRange(z, 40.0, 350.0, 0.0, 0.7));
-    half3 color = lerp(plain, rock, rockiness);
-    float snowline = z + (n1 - 0.5) * 900.0;
-    float snow = SEMapRange(snowline, _SnowLine, _SnowLine + 350.0, 0.0, 1.0) * SEMapRange(nz, 0.55, 0.78, 0.0, 1.0);
-    color = lerp(color, _SnowColor.rgb, snow);
-    float detail = SERidged(pB * 0.03, 10.0, 0.65, footprint * 0.03);
-    s.albedo = color;
-    s.metallic = 0;
-    s.roughness = lerp(0.9, 0.6, snow);
-    s.specularLevel = _SpecularLevel;
-    s.height = detail * 30.0;
-    s.bumpStrength = _Bump;
-    return s;
-}
-
-// 湖面(Blender の mat_water)。細かいさざ波の凹凸と強い平面反射。
-SESurface SEWaterRecipe(float3 pB, float3 nB, float footprint)
-{
-    SESurface s = SEDefaultSurface();
-    float ripple = SEFbm(pB * float3(1.0, 3.0, 1.0) * 0.05, 4.0, 0.5, footprint * 0.05);
-    s.albedo = _BaseColor.rgb;
-    s.metallic = 0;
-    s.roughness = _Roughness;
-    s.specularLevel = _SpecularLevel;
-    s.height = ripple * 0.5;
-    s.bumpStrength = _Bump;
-    s.wetness = 1.0;
     return s;
 }
 

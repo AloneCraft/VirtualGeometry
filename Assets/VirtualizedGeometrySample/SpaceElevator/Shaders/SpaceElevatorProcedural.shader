@@ -1,13 +1,12 @@
 // space_elevator.fbx 用の手続き質感(UV 不要、Blender のオブジェクト座標で計算)。参照画像「地上が、宇宙へのはじまり。」に寄せた
-// パネル・鋼材・濡れた広場・山岳地形・湖面のレシピを _Recipe で切り替える。
+// パネル・鋼材・濡れた広場のレシピを _Recipe で切り替える。
 // VG で描くため、同じフォルダの SpaceElevatorProcedural.vgshader が VirtualGeometry/SpaceElevator/Procedural を生成し、Material はそちらを使う
 // (SpaceElevatorMaterialBuilder が SpaceElevator/Materials/SE_GA_*.mat を作る。使用 scene: SpaceElevator.unity、Import.unity)。
 Shader "SpaceElevator/Procedural"
 {
     Properties
     {
-        [KeywordEnum(Panel, Steel, WetGround, Terrain, Water)] _Recipe("Recipe", Float) = 0
-        [Enum(UnityEngine.Rendering.CullMode)] _Cull("Cull", Float) = 2
+        [KeywordEnum(Panel, Steel, WetGround)] _Recipe("Recipe", Float) = 0
         _PatternScale("Pattern Scale (Unity mesh unit to m)", Float) = 100
 
         [Header(Surface)]
@@ -54,21 +53,6 @@ Shader "SpaceElevator/Procedural"
         _PlanarStrength("Planar Reflection", Range(0, 1)) = 1
         _PlanarDistortion("Reflection Distortion", Range(0, 0.5)) = 0.05
 
-        [Header(Terrain)]
-        [HDR] _PlainColorA("Plain Color A", Color) = (0.13, 0.12, 0.085, 1)
-        [HDR] _PlainColorB("Plain Color B", Color) = (0.25, 0.21, 0.15, 1)
-        [HDR] _MossColor("Moss Color", Color) = (0.09, 0.1, 0.06, 1)
-        [HDR] _RockColorA("Rock Color A", Color) = (0.16, 0.155, 0.15, 1)
-        [HDR] _RockColorB("Rock Color B", Color) = (0.34, 0.32, 0.3, 1)
-        [HDR] _SnowColor("Snow Color", Color) = (0.86, 0.88, 0.92, 1)
-        _SnowLine("Snow Line (m)", Float) = 1250
-
-        [Header(Haze)]
-        [Toggle(_HAZE)] _Haze("Distance Haze", Float) = 0
-        [HDR] _HazeColor("Haze Color", Color) = (0.1719, 0.2125, 0.2688, 1)
-        _HazeDistance("Haze Distance (m)", Float) = 38000
-        _HazeMax("Haze Max", Range(0, 1)) = 0.85
-
         [HideInInspector] _BaseMap("Base Map", 2D) = "white" {}
         [HideInInspector] _Cutoff("Alpha Cutoff", Range(0, 1)) = 0.5
     }
@@ -85,15 +69,14 @@ Shader "SpaceElevator/Procedural"
         {
             Name "ForwardLit"
             Tags { "LightMode" = "UniversalForward" }
-            Cull [_Cull]
+            Cull Back
             ZWrite On
 
             HLSLPROGRAM
             #pragma target 4.5
             #pragma vertex SpaceElevatorVertex
             #pragma fragment SpaceElevatorFragment
-            #pragma shader_feature_local_fragment _RECIPE_PANEL _RECIPE_STEEL _RECIPE_WETGROUND _RECIPE_TERRAIN _RECIPE_WATER
-            #pragma shader_feature_local_fragment _ _HAZE
+            #pragma shader_feature_local_fragment _RECIPE_PANEL _RECIPE_STEEL _RECIPE_WETGROUND
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
             #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
             #pragma multi_compile_fragment _ _ADDITIONAL_LIGHT_SHADOWS
@@ -108,7 +91,7 @@ Shader "SpaceElevator/Procedural"
         {
             Name "ShadowCaster"
             Tags { "LightMode" = "ShadowCaster" }
-            Cull [_Cull]
+            Cull Back
             ZWrite On
             ZTest LEqual
             ColorMask 0
@@ -126,7 +109,7 @@ Shader "SpaceElevator/Procedural"
         {
             Name "DepthOnly"
             Tags { "LightMode" = "DepthOnly" }
-            Cull [_Cull]
+            Cull Back
             ZWrite On
             ColorMask R
 
@@ -142,7 +125,7 @@ Shader "SpaceElevator/Procedural"
         {
             Name "DepthNormals"
             Tags { "LightMode" = "DepthNormals" }
-            Cull [_Cull]
+            Cull Back
             ZWrite On
 
             HLSLPROGRAM

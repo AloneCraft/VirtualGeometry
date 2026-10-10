@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
-using Unity.Collections;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -14,9 +13,8 @@ using Object=UnityEngine.Object;
 namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
     /// <summary>
     /// space_elevator.fbx の質感調整の検証。batchmode(-force-d3d12)で実行し、結果を TestResults/SpaceElevator へ書く。sceneは保存しない。
-    /// RunBefore: 修正前の記録。Import.unity の FBX 由来カメラで撮影し、元 Mesh の bounds・面の向き、FBX 由来の太陽・カメラを座標規約と照合する。
     /// Run: 修正後の確認。SpaceElevator.unity を参照画像と同じ構図で撮り、参照画像と横並びにする。あわせて
-    ///   (1) 半透明の雲以外の全部品が Main と平面反射の両カメラで VG 描画されること、(2) 平面反射が広場に効いていること、
+    ///   (1) 全部品が Main と平面反射の両カメラで VG 描画されること、(2) 平面反射が広場に効いていること、
     ///   (3) VG と元 Mesh の通常描画で手続き模様が一致すること(オブジェクト空間の一致)を確かめる。
     /// 参照画像は repo に入れず、-referenceImage &lt;path&gt; で渡す(既定は下の DefaultReference。無ければ横並びを省く)。
     /// </summary>
@@ -53,28 +51,6 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
         private static string resultFile;
         private static string previousRenderPipeline;
         private static Texture2D heroImage,noReflectionImage,virtualImage,referenceMeshImage;
-
-        // ---- 修正前 ---------------------------------------------------------------------------------------------------
-
-        /// <summary>修正前の記録(撮影と座標規約の照合)。</summary>
-        public static void RunBefore(){
-            Begin("BeforeResults.txt");
-            try{
-                Directory.CreateDirectory(Output+"/before");
-                ProbeMeshes();
-                EditorSceneManager.OpenScene(ImportScene,OpenSceneMode.Single);
-                GameObject root=FindModelRoot();
-                ProbeImportedObjects(root);
-                CollectRenderers();
-                foreach(Camera camera in root.GetComponentsInChildren<Camera>(true)){
-                    SpaceElevatorCapture.BlenderCamera source=SpaceElevatorCapture.Hero;
-                    if(camera.name==SpaceElevatorCapture.Aerial.Name){source=SpaceElevatorCapture.Aerial;}
-                    string file=Output+"/before/"+camera.name+".png";
-                    shots.Enqueue(new Shot{Name=camera.name,Camera=camera,Width=source.Width,Height=source.Height,After=image=>SpaceElevatorCapture.SavePng(image,file)});
-                }
-                EditorApplication.update+=Tick;
-            }catch(Exception error){Finish(error);}
-        }
 
         // ---- 修正後 ---------------------------------------------------------------------------------------------------
 
@@ -315,87 +291,11 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
             return copy;
         }
 
-        // ---- 修正前の照合 ----------------------------------------------------------------------------------------------
-
-        private static GameObject FindModelRoot(){
-            foreach(GameObject candidate in EditorSceneManager.GetActiveScene().GetRootGameObjects()){
-                if(PrefabUtility.GetCorrespondingObjectFromSource(candidate) is GameObject source&&AssetDatabase.GetAssetPath(source)==SpaceElevatorPatternSpace.ModelPath){return candidate;}
-            }
-            throw new InvalidOperationException("Import.unity に space_elevator.fbx の prefab instance がありません。");
-        }
-
-        // FBX の元 Mesh(サブアセット)の bounds と面の向きを記録する。面の向きは、三角形の巻き順から求めた法線の面積加重和を Blender 座標(Z上)で見る。
-        private static void ProbeMeshes(){
-            var lines=new List<string>();
-            foreach(Object asset in AssetDatabase.LoadAllAssetsAtPath(SpaceElevatorPatternSpace.ModelPath)){
-                if(!(asset is Mesh mesh)||mesh.name.Contains("(")){continue;}
-                Bounds blender=SpaceElevatorPatternSpace.BlenderBounds(mesh);
-                Vector3 windingSum=Vector3.zero;double signedVolume=0;int agree=0,triangles=0;
-                using(Mesh.MeshDataArray array=Mesh.AcquireReadOnlyMeshData(mesh)){
-                    Mesh.MeshData data=array[0];
-                    using(var positions=new NativeArray<Vector3>(data.vertexCount,Allocator.Temp))
-                    using(var normals=new NativeArray<Vector3>(data.vertexCount,Allocator.Temp)){
-                        data.GetVertices(positions);data.GetNormals(normals);
-                        for(int s=0;s<data.subMeshCount;s++){
-                            var indices=new NativeArray<int>(data.GetSubMesh(s).indexCount,Allocator.Temp);
-                            data.GetIndices(indices,s,true);
-                            for(int i=0;i+2<indices.Length;i+=3){
-                                Vector3 a=positions[indices[i]],b=positions[indices[i+1]],c=positions[indices[i+2]];
-                                Vector3 face=Vector3.Cross(b-a,c-a);
-                                Vector3 vertexNormal=normals[indices[i]]+normals[indices[i+1]]+normals[indices[i+2]];
-                                windingSum+=face;signedVolume+=Vector3.Dot(a,Vector3.Cross(b,c))/6.0;
-                                if(Vector3.Dot(face,vertexNormal)>0){agree++;}
-                                triangles++;
-                            }
-                            indices.Dispose();
-                        }
-                    }
-                }
-                Vector3 windingBlender=new Vector3(-windingSum.x,windingSum.y,windingSum.z).normalized;
-                double agreement=0;
-                if(triangles>0){agreement=(double)agree/triangles;}
-                lines.Add(string.Format(CultureInfo.InvariantCulture,"{0}: tris={1} unity min={2} max={3} blender min={4} max={5} windingNormal(blender)={6} normalAgree={7:P1} signedVolume={8:G4}",
-                    mesh.name,triangles,F(mesh.bounds.min),F(mesh.bounds.max),F(blender.min),F(blender.max),F(windingBlender),agreement,signedVolume));
-            }
-            lines.Sort(StringComparer.Ordinal);
-            results.Add("== Source meshes ("+lines.Count+")");results.AddRange(lines);
-        }
-
-        // FBX 由来の太陽とカメラを、prefab root 基準の Transform で記録し、Blender の設定から計算した値と並べる。
-        private static void ProbeImportedObjects(GameObject root){
-            results.Add("== Model root position="+F(root.transform.position)+" rotation="+F(root.transform.eulerAngles)+" scale="+F(root.transform.lossyScale));
-            foreach(Transform child in root.GetComponentsInChildren<Transform>(true)){
-                if(child.name=="SE_GA_AnchorTower"||child.name=="SE_GA_SiteOffice"){
-                    results.Add(child.name+": localPosition="+F(child.localPosition)+" localRotation="+F(child.localEulerAngles)+" localScale="+F(child.localScale));
-                }
-            }
-            foreach(Light light in root.GetComponentsInChildren<Light>(true)){
-                Vector3 forward=root.transform.InverseTransformDirection(light.transform.forward);
-                Vector3 expected=SpaceElevatorPatternSpace.BlenderToWorld(SpaceElevatorSceneBuilder.BlenderSunDirection).normalized;
-                results.Add("Light "+light.name+": type="+light.type+" intensity="+light.intensity.ToString("R",CultureInfo.InvariantCulture)+" color="+light.color+" forward(root)="+F(forward)+" expected="+F(expected)+" angle="+Vector3.Angle(forward,expected).ToString("F3",CultureInfo.InvariantCulture));
-            }
-            var probe=new GameObject("Converted camera probe").AddComponent<Camera>();
-            try{
-                foreach(Camera camera in root.GetComponentsInChildren<Camera>(true)){
-                    SpaceElevatorCapture.BlenderCamera source=SpaceElevatorCapture.Hero;
-                    if(camera.name==SpaceElevatorCapture.Aerial.Name){source=SpaceElevatorCapture.Aerial;}
-                    SpaceElevatorCapture.Apply(probe,source);
-                    Vector3 position=root.transform.InverseTransformPoint(camera.transform.position);
-                    Vector3 forward=root.transform.InverseTransformDirection(camera.transform.forward);
-                    results.Add("Camera "+camera.name+": position(root)="+F(position)+" expected="+F(probe.transform.position)+" forward(root)="+F(forward)+" expected="+F(probe.transform.forward)
-                        +" physical="+camera.usePhysicalProperties+" focal="+camera.focalLength.ToString("R",CultureInfo.InvariantCulture)+" sensor="+F(camera.sensorSize)+" lensShift="+F(camera.lensShift)
-                        +" gateFit="+camera.gateFit+" fov="+camera.fieldOfView.ToString("R",CultureInfo.InvariantCulture)+" near="+camera.nearClipPlane+" far="+camera.farClipPlane+" depth="+camera.depth+" enabled="+camera.enabled);
-                }
-            }finally{Object.DestroyImmediate(probe.gameObject);}
-        }
-
         private static string NameOf(Object value){
             if(value==null){return "null";}
             return value.name;
         }
 
-        private static string F(Vector3 v){return string.Format(CultureInfo.InvariantCulture,"({0:0.####},{1:0.####},{2:0.####})",v.x,v.y,v.z);}
-        private static string F(Vector2 v){return string.Format(CultureInfo.InvariantCulture,"({0:0.####},{1:0.####})",v.x,v.y);}
 
         private static void Finish(Exception error){
             EditorApplication.update-=Tick;Application.logMessageReceived-=Log;

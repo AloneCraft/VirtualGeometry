@@ -4,8 +4,8 @@ using UnityEngine.Rendering.Universal;
 
 namespace VirtualizedGeometry.Samples.SpaceElevator{
     /// <summary>
-    /// 濡れた広場・湖面に塔や灯りを映すための平面反射。Main Camera を広場の面(Unity の y=planeHeight)で鏡映した反射カメラを持ち、
-    /// その描画結果を global texture(_SpaceElevatorPlanarReflection)として、SpaceElevator/Procedural の WetGround / Water レシピへ渡す。
+    /// 濡れた広場に塔や灯りを映すための平面反射。Main Camera を広場の面(Unity の y=planeHeight)で鏡映した反射カメラを持ち、
+    /// その描画結果を global texture(_SpaceElevatorPlanarReflection)として、SpaceElevator/Procedural の WetGround レシピへ渡す。
     /// 使用 scene: SpaceElevator.unity の Main Camera(SpaceElevatorSceneBuilder が付ける)。
     /// 反射カメラは Unity の通常の camera 順序で Main Camera より先に描かれる(depth を小さくする)。入れ子の描画はしない。
     /// VG は Game 種別の Base camera なら反射カメラでも専用描画するため、鏡映で巻き順が逆になる間だけカリングを反転する。

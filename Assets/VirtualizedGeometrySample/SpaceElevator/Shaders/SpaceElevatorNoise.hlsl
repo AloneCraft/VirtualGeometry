@@ -1,4 +1,4 @@
-// SpaceElevator/Procedural と SpaceElevator/Clouds が使う、オブジェクト空間の手続きノイズ。
+// SpaceElevator/Procedural が使う、オブジェクト空間の手続きノイズ。
 // 改良 Perlin ノイズ(Ken Perlin 2002 の公開アルゴリズム: 5 次の補間と 12 方向の勾配)と、整数ハッシュ(PCG3D: Jarzynski & Olano 2020)の自前実装。
 // 遠景のちらつきを抑えるため、fbm は画素の大きさ(footprint、模様座標の単位/画素)より細かいオクターブを弱める。
 // VG の Virtual Geometry Shader 変換と衝突しないよう、名前は SE で始める(VG / _VG で始まる名前は使わない)。
@@ -97,29 +97,6 @@ float SEFbm(float3 p, float detail, float roughness, float footprint)
         total += amplitude * remainder;
     }
     return 0.5 + 0.5 * sum / max(total, 1e-5);
-}
-
-// 尾根状のノイズ(山の稜線・岩肌の凹凸用)。値域はおよそ [0,1]。
-float SERidged(float3 p, float detail, float roughness, float footprint)
-{
-    float sum = 0.0;
-    float amplitude = 1.0;
-    float total = 0.0;
-    float frequency = 1.0;
-    float weight = 1.0;
-    int count = (int)detail;
-    [loop] for (int i = 0; i <= count; i++)
-    {
-        float w = SEOctaveWeight(frequency, footprint);
-        float signal = 1.0 - abs(SEPerlin(p * frequency));
-        signal *= signal * weight;
-        weight = saturate(signal * 2.0);
-        sum += signal * amplitude * w;
-        total += amplitude;
-        amplitude *= roughness;
-        frequency *= 2.0;
-    }
-    return sum / max(total, 1e-5);
 }
 
 // Blender の Map Range(Linear・Clamp)。fromMin > fromMax の逆向き指定も同じ式で扱う。

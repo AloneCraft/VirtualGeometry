@@ -16,13 +16,6 @@ CBUFFER_START(UnityPerMaterial)
     half4 _SlabColorA;
     half4 _SlabColorB;
     half4 _StainColor;
-    half4 _PlainColorA;
-    half4 _PlainColorB;
-    half4 _MossColor;
-    half4 _RockColorA;
-    half4 _RockColorB;
-    half4 _SnowColor;
-    half4 _HazeColor;
     float4 _PanelSize;
     float _PatternScale;
     half _Cutoff;
@@ -48,9 +41,6 @@ CBUFFER_START(UnityPerMaterial)
     half _WetSoftness;
     half _DryRoughness;
     half _WetRoughness;
-    half _SnowLine;
-    half _HazeDistance;
-    half _HazeMax;
     half _PlanarStrength;
     half _PlanarDistortion;
 CBUFFER_END

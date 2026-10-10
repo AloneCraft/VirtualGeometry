@@ -66,10 +66,6 @@ SESurface SEEvaluateRecipe(float3 pB, float3 nB, float footprint)
     return SESteelRecipe(pB, nB, footprint);
 #elif defined(_RECIPE_WETGROUND)
     return SEWetGroundRecipe(pB, nB, footprint);
-#elif defined(_RECIPE_TERRAIN)
-    return SETerrainRecipe(pB, nB, footprint);
-#elif defined(_RECIPE_WATER)
-    return SEWaterRecipe(pB, nB, footprint);
 #else
     return SEPanelRecipe(pB, nB, footprint);
 #endif
@@ -90,19 +86,17 @@ half3 SEPlanarReflection(InputData inputData, float3 geometricNormalWS, half per
 }
 
 // URP の UniversalFragmentPBR と同じ組み立てで、環境反射の部分だけ平面反射に差し替える。
-half4 SpaceElevatorFragment(SpaceElevatorVaryings input, FRONT_FACE_TYPE frontFace : FRONT_FACE_SEMANTIC) : SV_Target
+half4 SpaceElevatorFragment(SpaceElevatorVaryings input) : SV_Target
 {
-    // 地形・湖・雲のように下向きの面を下から/上から見る Material は Cull Off で描き、裏面では法線を反転する(Blender は両面を描く)。
-    float faceSign = IS_FRONT_VFACE(frontFace, 1.0, -1.0);
     float3 positionOS = input.positionOS;
-    float3 normalOS = normalize(input.normalOS) * faceSign;
+    float3 normalOS = normalize(input.normalOS);
     float3 pB = float3(-positionOS.x, positionOS.y, positionOS.z) * _PatternScale;
     float3 nB = float3(-normalOS.x, normalOS.y, normalOS.z);
     float footprint = length(fwidth(pB)) * 0.7;
 
     SESurface recipe = SEEvaluateRecipe(pB, nB, footprint);
 
-    float3 geometricNormalWS = normalize(input.normalWS) * faceSign;
+    float3 geometricNormalWS = normalize(input.normalWS);
     float3 normalWS = SEBumpNormal(geometricNormalWS, input.positionWS, recipe.height, 1.0, recipe.bumpStrength);
 
     InputData inputData = (InputData)0;
@@ -167,14 +161,6 @@ half4 SpaceElevatorFragment(SpaceElevatorVaryings input, FRONT_FACE_TYPE frontFa
     #endif
 
     half4 color = CalculateFinalColor(lightingData, 1.0);
-
-    #if defined(_HAZE)
-    // 遠景の大気のかすみ(Blender の _haze: 視距離で 1-exp(-d/距離) を上限まで発光色と混ぜる)
-    float viewDistance = distance(input.positionWS, GetCameraPositionWS());
-    half haze = min(1.0 - exp(-viewDistance / max(_HazeDistance, 1.0)), _HazeMax);
-    color.rgb = lerp(color.rgb, _HazeColor.rgb, haze);
-    #endif
-
     color.rgb = MixFog(color.rgb, inputData.fogCoord);
     return color;
 }

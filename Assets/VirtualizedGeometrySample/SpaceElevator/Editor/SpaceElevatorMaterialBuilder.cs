@@ -12,7 +12,7 @@ using Object=UnityEngine.Object;
 
 namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
     /// <summary>
-    /// space_elevator.fbx の 33 マテリアルを、参照画像「地上が、宇宙へのはじまり。」へ寄せた外部 Material(SpaceElevator/Materials/SE_GA_*.mat)として作り、
+    /// space_elevator.fbx の 30 マテリアルを、参照画像「地上が、宇宙へのはじまり。」へ寄せた外部 Material(SpaceElevator/Materials/SE_GA_*.mat)として作り、
     /// FBX の埋め込みマテリアルをそれへ remap する。あわせて FBX のライト・カメラの取り込みを止める(照明は SpaceElevator.unity 側で持つ)。
     /// メニュー: Tools/Virtualized Geometry/Space Elevator/Build Materials。batchmode: -executeMethod ...SpaceElevatorMaterialBuilder.Run。
     /// レシピ表の初期値は Blender の生成スクリプト(se_ground_anchor.py:35-78、se_common.py:434-524)の引数で、参照画像に合わせて変えた値には理由を書く。
@@ -24,12 +24,11 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
         public const string MaterialFolder=Root+"/Materials";
         public const string ShaderFolder=Root+"/Shaders";
         public const string ProceduralShaderPath=ShaderFolder+"/SpaceElevatorProcedural.shader";
-        public const string CloudsShaderPath=ShaderFolder+"/SpaceElevatorClouds.shader";
         private const string LitShader="Universal Render Pipeline/Lit";
         private const string ComplexLitShader="Universal Render Pipeline/Complex Lit";
         private const float BlenderCoatRoughness=0.03f;
 
-        private enum Kind{Panel,Steel,WetGround,Terrain,Water,Clouds,Simple,Emission}
+        private enum Kind{Panel,Steel,WetGround,Simple,Emission}
 
         /// <summary>1 マテリアル分の作り方。値は線形(Blender と同じ)で持ち、書き込み時に shader の [HDR] 有無で変換する。</summary>
         private sealed class Recipe{
@@ -63,7 +62,6 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
         public static void Apply(){
             Directory.CreateDirectory(MaterialFolder);
             AssetDatabase.ImportAsset(ProceduralShaderPath);
-            AssetDatabase.ImportAsset(CloudsShaderPath);
             Shader procedural=EnsureVirtualShader();
             var materials=new Dictionary<string,Material>();
             AssetDatabase.StartAssetEditing();
@@ -78,12 +76,8 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
                         continue;
                     }
                     if(Compare(existing,desired).Count>0){
-                        existing.shader=desired.shader;
-                        existing.CopyPropertiesFromMaterial(desired);
-                        existing.shaderKeywords=desired.shaderKeywords;
-                        existing.renderQueue=desired.renderQueue;
-                        existing.globalIlluminationFlags=desired.globalIlluminationFlags;
-                        existing.doubleSidedGI=desired.doubleSidedGI;
+                        // CopyPropertiesFromMaterial は以前の shader にあった保存値(削除した property など)を残すため、直列化データごと置き換える。資産の GUID と参照は保つ。
+                        EditorUtility.CopySerialized(desired,existing);
                         EditorUtility.SetDirty(existing);
                     }
                     Object.DestroyImmediate(desired);
@@ -121,6 +115,7 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
                 var key=new AssetImporter.SourceAssetIdentifier(typeof(Material),pair.Key);
                 if(!map.TryGetValue(key,out Object mapped)||mapped!=pair.Value){result.Add(pair.Key+" が remap されていません。");}
             }
+            foreach(AssetImporter.SourceAssetIdentifier key in StaleMaterialRemaps(map,materials)){result.Add(key.name+" の remap がレシピ表にありません。");}
             return result;
         }
 
@@ -129,9 +124,9 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
             return Recipes().Select(recipe=>recipe.Name).ToList();
         }
 
-        /// <summary>半透明で VG の専用描画から外れる(仕様どおり Proxy で描かれる)マテリアル名。</summary>
-        public static IReadOnlyList<string> TransparentMaterialNames(){
-            return Recipes().Where(recipe=>recipe.Kind==Kind.Clouds).Select(recipe=>recipe.Name).ToList();
+        // レシピ表に無いマテリアルの remap(FBX から外した部品のマテリアルなど)。参照先が消えた remap を meta に残さない。
+        private static List<AssetImporter.SourceAssetIdentifier> StaleMaterialRemaps(Dictionary<AssetImporter.SourceAssetIdentifier,Object> map,Dictionary<string,Material> materials){
+            return map.Keys.Where(key=>key.type==typeof(Material)&&!materials.ContainsKey(key.name)).ToList();
         }
 
         // VirtualGeometry/SpaceElevator/Procedural を生成する .vgshader を1つだけ持つ(Create は毎回新しいパスを作るため、既存を探してから作る)。
@@ -180,6 +175,10 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
                 importer.AddRemap(key,pair.Value);
                 changed=true;
             }
+            foreach(AssetImporter.SourceAssetIdentifier key in StaleMaterialRemaps(map,materials)){
+                importer.RemoveRemap(key);
+                changed=true;
+            }
             // 再インポートは VG の再変換(約 24 s)を伴うため、差分があるときだけ1回行う。
             if(changed){importer.SaveAndReimport();}
         }
@@ -187,9 +186,6 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
         private static Material Build(Recipe recipe,Shader procedural){
             Shader shader;
             switch(recipe.Kind){
-                case Kind.Clouds:
-                    shader=AssetDatabase.LoadAssetAtPath<Shader>(CloudsShaderPath);
-                    break;
                 case Kind.Simple:
                 case Kind.Emission:
                     if(UsesCoat(recipe)){shader=Shader.Find(ComplexLitShader);}
@@ -216,9 +212,6 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
                 case Kind.Emission:
                     // URP の ShaderGUI と同じ規則で keyword(_SPECULAR_SETUP・_CLEARCOAT・_EMISSION・反射オフ)を決める。
                     BaseShaderGUI.SetMaterialKeywords(material,LitGUI.SetMaterialKeywords);
-                    break;
-                case Kind.Clouds:
-                    material.renderQueue=(int)RenderQueue.Transparent;
                     break;
                 default:
                     // KeywordEnum / Toggle の keyword を property の値から設定する(Inspector で開いたときと同じ結果)。
@@ -280,12 +273,27 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
             string want=string.Join(" ",desired.shaderKeywords.OrderBy(keyword=>keyword,StringComparer.Ordinal));
             if(have!=want){result.Add("keywords ["+have+"] → ["+want+"]");}
             if(existing.renderQueue!=desired.renderQueue){result.Add("renderQueue "+existing.renderQueue+" → "+desired.renderQueue);}
+            foreach(string stale in SavedPropertiesMissingFromShader(existing)){result.Add("古い保存値 "+stale+"(shader に無い)");}
+            return result;
+        }
+
+        // Material の保存値(m_SavedProperties)のうち、現在の shader に無い名前。shader の property を変えても、以前の値は .mat に残るため。
+        private static List<string> SavedPropertiesMissingFromShader(Material material){
+            var result=new List<string>();
+            var serialized=new SerializedObject(material);
+            SerializedProperty saved=serialized.FindProperty("m_SavedProperties");
+            foreach(string kind in new[]{"m_TexEnvs","m_Floats","m_Colors"}){
+                SerializedProperty list=saved.FindPropertyRelative(kind);
+                for(int i=0;i<list.arraySize;i++){
+                    string name=list.GetArrayElementAtIndex(i).FindPropertyRelative("first").stringValue;
+                    if(!material.HasProperty(name)){result.Add(name);}
+                }
+            }
             return result;
         }
 
         // ---- レシピ表 ----------------------------------------------------------------------------------------------
-        // 色は Blender と同じ線形値。Haze の発光色は Blender の HAZE_COL × HAZE_STRENGTH(se_ground_anchor.py:82-92)。
-        private static readonly Color Haze=new Color(0.55f*1.25f,0.68f*1.25f,0.86f*1.25f,1f);
+        // 色は Blender と同じ線形値。
         private static readonly Color Warm=new Color(1f,0.6f,0.28f,1f);
 
         private static List<Recipe> Recipes(){
@@ -322,25 +330,7 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
                 .Set("_SlabColorA",new Color(0.30f,0.295f,0.285f)).Set("_SlabColorB",new Color(0.38f,0.37f,0.355f)).Set("_StainColor",new Color(0.14f,0.14f,0.135f))
                 .Set("_LineWidth",0.06f).Set("_LineDark",0.7f).Set("_Bump",0.25f).Set("_SpecularLevel",0.6f).Set("_GrainStrength",0.15f)
                 .Set("_WetThreshold",0.40f).Set("_WetSoftness",0.08f).Set("_DryRoughness",0.14f).Set("_WetRoughness",0.015f)
-                .Set("_PlanarStrength",1f).Set("_PlanarDistortion",0.05f)
-                .Set("_Haze",1f).Set("_HazeColor",Haze).Set("_HazeDistance",38000f).Set("_HazeMax",0.85f));
-            // 山岳地形(mat_terrain)。面が下向きなので両面描画にして裏面の法線を反転する。
-            list.Add(Procedural("SE_GA_Terrain",Kind.Terrain,"se_ground_anchor.py:117").Set("_Cull",0f)
-                .Set("_PlainColorA",new Color(0.13f,0.12f,0.085f)).Set("_PlainColorB",new Color(0.25f,0.21f,0.15f)).Set("_MossColor",new Color(0.09f,0.1f,0.06f))
-                .Set("_RockColorA",new Color(0.16f,0.155f,0.15f)).Set("_RockColorB",new Color(0.34f,0.32f,0.3f)).Set("_SnowColor",new Color(0.86f,0.88f,0.92f)).Set("_SnowLine",1250f)
-                .Set("_Bump",0.6f).Set("_SpecularLevel",0.3f)
-                .Set("_Haze",1f).Set("_HazeColor",Haze).Set("_HazeDistance",38000f).Set("_HazeMax",0.85f));
-            // 湖面(mat_water)。面が下向きなので両面描画。
-            list.Add(Procedural("SE_GA_Lake",Kind.Water,"se_ground_anchor.py:143").Set("_Cull",0f)
-                .Set("_BaseColor",new Color(0.01f,0.03f,0.045f)).Set("_Roughness",0.03f).Set("_SpecularLevel",0.8f).Set("_Bump",0.05f)
-                .Set("_PlanarStrength",1f).Set("_PlanarDistortion",0.03f)
-                .Set("_Haze",1f).Set("_HazeColor",Haze).Set("_HazeDistance",38000f).Set("_HazeMax",0.85f));
-            // 雲(mat_clouds)。半透明なので CloudLayer だけ VG の Proxy で描かれる。
-            list.Add(new Recipe{Name="SE_GA_Clouds",Kind=Kind.Clouds,Source="se_ground_anchor.py:153"}
-                .Set("_LitColor",new Color(1f,0.98f,0.95f)).Set("_ShadeColor",new Color(0.72f,0.76f,0.85f)).Set("_Brightness",1.4f)
-                // 参照画像は積雲が多いため、Blender の雲量より厚くする
-                .Set("_Coverage",0.08f)
-                .Set("_HazeColor",Haze).Set("_HazeDistance",38000f).Set("_HazeMax",0.85f));
+                .Set("_PlanarStrength",1f).Set("_PlanarDistortion",0.05f));
             // 単純な Principled(mat_simple)。coat は Complex Lit の Clear Coat、GlassDark の Specular IOR Level 0.8 は specular workflow の F0 0.064。
             list.Add(Simple("SE_GA_GlassDark","se_ground_anchor.py:55",new Color(0.015f,0.02f,0.025f),0f,0.04f,0f).Set("_WorkflowMode",0f).Set("_SpecColor",new Color(0.064f,0.064f,0.064f)));
             list.Add(Simple("SE_GA_PaintYellow","se_ground_anchor.py:56",new Color(0.85f,0.55f,0.04f),0f,0.45f,0f));
@@ -373,10 +363,8 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
             switch(kind){
                 case Kind.Steel:keyword="Steel";break;
                 case Kind.WetGround:keyword="WetGround";break;
-                case Kind.Terrain:keyword="Terrain";break;
-                case Kind.Water:keyword="Water";break;
             }
-            recipe.Set("_Recipe",(float)Array.IndexOf(new[]{"Panel","Steel","WetGround","Terrain","Water"},keyword));
+            recipe.Set("_Recipe",(float)Array.IndexOf(new[]{"Panel","Steel","WetGround"},keyword));
             recipe.Set("_PatternScale",SpaceElevatorPatternSpace.MeshToBlenderScale);
             return recipe;
         }

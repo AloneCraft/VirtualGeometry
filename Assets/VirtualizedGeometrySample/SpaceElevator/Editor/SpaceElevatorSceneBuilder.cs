@@ -28,7 +28,7 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
         public const string LightingSettingsPath=RenderingFolder+"/SpaceElevatorLighting.lighting";
         private const string PostProcessDataPath="Packages/com.unity.render-pipelines.universal/Runtime/Data/PostProcessData.asset";
 
-        /// <summary>Blender の SE_GA_Sun の進行方向(se_ground_anchor.py:1059-1066)。修正前の記録で FBX 由来の太陽と照合する。</summary>
+        /// <summary>Blender の SE_GA_Sun の進行方向(se_ground_anchor.py:1059-1066)。</summary>
         public static readonly Vector3 BlenderSunDirection=new Vector3(0.75f,0.45f,-0.48f);
         /// <summary>
         /// 参照画像に合わせた太陽の進行方向(Blender 座標)。Blender(左手前から、仰角約 29°)より正面寄り・低め(仰角約 20°)にして、

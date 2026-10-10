@@ -17,11 +17,6 @@ ModelImporter:
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
-      name: SE_GA_Clouds
-    second: {fileID: 2100000, guid: e23d9efc819830742a98035350a8c5c2, type: 2}
-  - first:
-      type: UnityEngine:Material
-      assembly: UnityEngine.CoreModule
       name: SE_GA_Concrete
     second: {fileID: 2100000, guid: eb89149d5e54ee041bc822e698a002fc, type: 2}
   - first:
@@ -64,11 +59,6 @@ ModelImporter:
       assembly: UnityEngine.CoreModule
       name: SE_GA_HiVisOrange
     second: {fileID: 2100000, guid: 1fd29584febd71c49a9ebecdab44ca99, type: 2}
-  - first:
-      type: UnityEngine:Material
-      assembly: UnityEngine.CoreModule
-      name: SE_GA_Lake
-    second: {fileID: 2100000, guid: d4f8c08806721c740aac45031171be86, type: 2}
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
@@ -139,11 +129,6 @@ ModelImporter:
       assembly: UnityEngine.CoreModule
       name: SE_GA_Stencil
     second: {fileID: 2100000, guid: 59dea22f38dfd574584ecaebe4196bd6, type: 2}
-  - first:
-      type: UnityEngine:Material
-      assembly: UnityEngine.CoreModule
-      name: SE_GA_Terrain
-    second: {fileID: 2100000, guid: a0ee7244f50caf14eaa94debb37c665e, type: 2}
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule

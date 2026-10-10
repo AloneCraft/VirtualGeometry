@@ -27,7 +27,7 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor.Tests{
         [Test]
         public void Differences(){
             {
-                //資産がレシピ表と同期し、FBX の 33 マテリアルが remap され、ライト・カメラの取り込みが止まっている
+                //資産がレシピ表と同期し、FBX の 30 マテリアルだけが remap され、ライト・カメラの取り込みが止まっている
                 List<string> differences=SpaceElevatorMaterialBuilder.Differences();
                 Assert.That(differences,Is.Empty,string.Join("\n",differences));
             }
@@ -40,18 +40,13 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor.Tests{
                 try{Assert.That(material.FindPass(VirtualGeometryMaterials.PassName),Is.GreaterThanOrEqualTo(0));}
                 finally{Object.DestroyImmediate(material);}
             }
-            {
-                //雲の shader もエラー無くコンパイルされる
-                var clouds=AssetDatabase.LoadAssetAtPath<Shader>(SpaceElevatorMaterialBuilder.CloudsShaderPath);
-                Assert.That(ShaderUtil.ShaderHasError(clouds),Is.False,string.Join("\n",ShaderUtil.GetShaderMessages(clouds).Select(message=>message.message+" "+message.file+":"+message.line)));
-            }
         }
 
         [Test]
         public void MaterialNames(){
             {
                 //FBX の全 MeshRenderer の全 slot が SpaceElevator/Materials の外部 Material を指し(埋め込みの白いマテリアルが残らない)、
-                //レシピ表の 33 個がすべて使われている(レシピ表と FBX のマテリアルが過不足なく対応する)
+                //レシピ表の 30 個がすべて使われている(レシピ表と FBX のマテリアルが過不足なく対応する)
                 var model=AssetDatabase.LoadAssetAtPath<GameObject>(SpaceElevatorPatternSpace.ModelPath);
                 var used=new HashSet<string>();
                 foreach(MeshRenderer renderer in model.GetComponentsInChildren<MeshRenderer>(true)){
@@ -63,27 +58,14 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor.Tests{
                 }
                 string[] recipes=SpaceElevatorMaterialBuilder.MaterialNames().OrderBy(name=>name,System.StringComparer.Ordinal).ToArray();
                 Assert.That(used.OrderBy(name=>name,System.StringComparer.Ordinal).ToArray(),Is.EqualTo(recipes));
-                Assert.That(recipes.Length,Is.EqualTo(33));
+                Assert.That(recipes.Length,Is.EqualTo(30));
             }
-        }
-
-        [Test]
-        public void TransparentMaterialNames(){
             {
-                //不透明のマテリアルはすべて VG で描ける(VG 版 shader を直接使う、または同梱の URP 用 Virtual Geometry Shader で解決できる)
-                IReadOnlyList<string> transparent=SpaceElevatorMaterialBuilder.TransparentMaterialNames();
+                //マテリアルはすべて VG で描ける(VG 版 shader を直接使う、または同梱の URP 用 Virtual Geometry Shader で解決できる)。Proxy に落ちる部品が無い
                 foreach(string name in SpaceElevatorMaterialBuilder.MaterialNames()){
-                    if(transparent.Contains(name)){continue;}
                     Material material=Load(name);
                     Assert.That(VirtualGeometryMaterials.TryResolve(material,out _,out _,out string reason),Is.True,name+": "+reason);
                 }
-            }
-            {
-                //雲は半透明なので VG では描けず、その部品だけ仕様どおり Proxy になる
-                Assert.That(SpaceElevatorMaterialBuilder.TransparentMaterialNames(),Is.EqualTo(new[]{"SE_GA_Clouds"}));
-                Material clouds=Load("SE_GA_Clouds");
-                Assert.That(VirtualGeometryMaterials.TryResolve(clouds,out _,out _,out string reason),Is.False);
-                Assert.That(reason,Does.Contain("半透明"));
             }
         }
 
