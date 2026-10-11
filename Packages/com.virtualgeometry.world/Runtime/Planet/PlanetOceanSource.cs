@@ -208,6 +208,48 @@ namespace VirtualGeometry.World{
             block.SetVectorArray("_WavePhase",this.wavePhase);
         }
 
+        /// <summary>検証用。波の成分(倍精度の参照を別に書くための値)。</summary>
+        public readonly struct WaveInfo{
+            public readonly Vector3 Direction;
+            public readonly float Wavelength;
+            public readonly float Amplitude;
+            public readonly float AngularFrequency;
+            public readonly float Sharpness;
+
+            public WaveInfo(Vector3 direction,float wavelength,float amplitude,float angularFrequency,float sharpness){
+                this.Direction=direction;this.Wavelength=wavelength;this.Amplitude=amplitude;this.AngularFrequency=angularFrequency;this.Sharpness=sharpness;
+            }
+        }
+
+        /// <summary>検証用。波 index の成分。</summary>
+        public WaveInfo GetWave(int index){
+            Wave wave=this.waves[index];
+            return new WaveInfo(wave.Direction,wave.Wavelength,wave.Amplitude,wave.AngularFrequency,wave.Sharpness);
+        }
+
+        /// <summary>検証用。波 index の、Cell の原点での位相の端数(0〜1。shader へ渡す値と同じ)。</summary>
+        public bool TryWavePhaseFraction(in PlanetCellFrame frame,int index,out float fraction){
+            return frame.TryWavePhase(in this.waves[index].LogicalDirection,in this.waves[index].InverseWavelength,out fraction);
+        }
+
+        /// <summary>
+        /// 検証用。PlanetOcean.hlsl の uniform(_WaveCount、_WaveDirection、_WaveShape、_WavePhase)を、compute shader に書く(fragment の MaterialPropertyBlock と同じ値)。
+        /// </summary>
+        public bool BindWavesForDiagnostics(ComputeShader shader,in PlanetCellKey key){
+            if(this.Selector==null){return false;}
+            PlanetCellFrame frame=this.Selector.Frame(in key);
+            this.FillWaveArrays();
+            for(int i=0;i<this.waves.Length;i++){
+                if(!this.TryWavePhaseFraction(in frame,i,out float fraction)){return false;}
+                this.wavePhase[i]=new Vector4(fraction,0,0,0);
+            }
+            shader.SetFloat("_WaveCount",this.waves.Length);
+            shader.SetVectorArray("_WaveDirection",this.waveDirection);
+            shader.SetVectorArray("_WaveShape",this.waveShape);
+            shader.SetVectorArray("_WavePhase",this.wavePhase);
+            return true;
+        }
+
         /// <summary>
         /// 検証用。GPU の生成(PlanetOceanGenerate.compute)と同じ式で、Cell の格子の (i, j) の海面の点(Cell の原点からの相対位置)と水深を CPU で求める。
         /// bandLimited が false なら、帯域制限をせずに全成分を足す(帯域制限が効いているかを比べるため)。

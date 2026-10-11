@@ -1,0 +1,38 @@
+#pragma kernel Probe
+#pragma target 5.0
+
+// 海の fragment(RadialOcean.shader)が使う式を、点ごとに評価して読み戻す検証用の compute(PlanetOcean.hlsl をそのまま使う)。
+// 入力は、Cell の原点からの相対位置(変位した位置)・Cell の原点の向きと半径・quad の弧長・画素の大きさ・不動点反復の回数。
+// 出力は、札(OceanLabel)、画素ごとの傾き(OceanShortWaves の gradient)、傾きの分散(variance)。
+// 波の配列(_WaveDirection、_WaveShape、_WavePhase、_WaveCount)は PlanetOceanSource.BindWavesForDiagnostics が書く。
+
+#include "PlanetOcean.hlsl"
+
+int _ProbeCount;
+// xyz: Cell の原点からの相対位置、w: quad の弧長
+StructuredBuffer<float4> _ProbePosition;
+// xyz: Cell の原点の外向きの単位方向、w: 惑星の半径
+StructuredBuffer<float4> _ProbeOrigin;
+// x: 画素の大きさ(m)、y: 不動点反復の回数
+StructuredBuffer<float4> _ProbeParameters;
+// xyz: 札、w: 傾きの分散
+RWStructuredBuffer<float4> _ProbeLabel;
+// xyz: 傾き(高さの勾配)
+RWStructuredBuffer<float4> _ProbeGradient;
+
+[numthreads(64,1,1)]
+void Probe(uint3 id:SV_DispatchThreadID)
+{
+    int index=(int)id.x;
+    if(index>=_ProbeCount) { return; }
+    float4 positionAndQuad=_ProbePosition[index];
+    float4 originAndRadius=_ProbeOrigin[index];
+    float4 parameters=_ProbeParameters[index];
+    float3 label=OceanLabel(positionAndQuad.xyz,originAndRadius.xyz,originAndRadius.w,positionAndQuad.w,(int)parameters.y);
+    float3 up=normalize(originAndRadius.xyz*originAndRadius.w+label);
+    float3 gradient;
+    float variance;
+    OceanShortWaves(label,up,positionAndQuad.w,parameters.x,gradient,variance);
+    _ProbeLabel[index]=float4(label,variance);
+    _ProbeGradient[index]=float4(gradient,0);
+}
