@@ -201,7 +201,7 @@ namespace VirtualGeometry.Omni.Editor{
             return result;
         }
 
-        private static void Configure(PlanetTerrainSource source,float radius,float height,float wavelength,int octaves,int maximumLevel,int pool,int budget,bool moonShape){
+        internal static void Configure(PlanetTerrainSource source,float radius,float height,float wavelength,int octaves,int maximumLevel,int pool,int budget,bool moonShape){
             var serialized=new SerializedObject(source);
             serialized.FindProperty("radius").floatValue=radius;
             serialized.FindProperty("heightAmplitude").floatValue=height;

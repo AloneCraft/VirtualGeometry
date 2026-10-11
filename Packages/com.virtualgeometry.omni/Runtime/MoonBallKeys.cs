@@ -6,7 +6,7 @@ namespace VirtualGeometry.Omni{
     public enum MoonBallKey{
         Up,Down,Left,Right,PageUp,PageDown,
         Shift,Ctrl,
-        Space,Digit1,Digit2,Digit3,Reset,
+        Space,Digit1,Digit2,Digit3,Digit4,Reset,
     }
 
     /// <summary>
@@ -58,6 +58,7 @@ namespace VirtualGeometry.Omni{
                 case MoonBallKey.Digit1:return keyboard.digit1Key;
                 case MoonBallKey.Digit2:return keyboard.digit2Key;
                 case MoonBallKey.Digit3:return keyboard.digit3Key;
+                case MoonBallKey.Digit4:return keyboard.digit4Key;
                 case MoonBallKey.Reset:return keyboard.rKey;
             }
             return null;

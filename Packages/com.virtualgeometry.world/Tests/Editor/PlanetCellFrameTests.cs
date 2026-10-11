@@ -69,6 +69,29 @@ namespace VirtualGeometry.World.Tests{
                 Assert.That(length,Is.LessThan(expected*1.5));
             }
             {
+                //半径 10^19 m の深い階層(L64、64 ビット目まで使う番号)で、隣り合う Cell の原点の間隔が一定(1e-6 m 以内)。
+                //Omni の Scalar.TryDivide の桁を 1 つ落とす不具合(推定商のクランプ)が、番号の下位桁が繰り上がる所の中心の正接を 2^-64 ほどずらし、
+                //x=12646113105388128352 の Cell が 0.5m ずれていた(PlanetCellFrame.TryTangent は BigInteger で割る)。
+                Assert.That(LogicalScalar.TryFromFloat(1e19f,out LogicalScalar huge),Is.True);
+                foreach(ulong start in new[]{12646113105388128256UL,9223372036854775700UL,18446744073709551000UL}){
+                    double minimum=double.MaxValue;double maximum=double.MinValue;
+                    LogicalVector3 previous=default;
+                    for(int k=0;k<200;k++){
+                        var key=new PlanetCellKey(2,64,new PlanetCellCoordinate(start+(ulong)k,0),new PlanetCellCoordinate(11541499068720415387UL,0));
+                        Assert.That(PlanetCellFrame.TryCreate(in key,in huge,out PlanetCellFrame frame),Is.True);
+                        if(k>0){
+                            Assert.That(LogicalVector3.TrySubtract(frame.Origin,previous,out LogicalVector3 difference),Is.True);
+                            Assert.That(LogicalVector3.TryLength(in difference,out LogicalScalar length),Is.True);
+                            Assert.That(length.TryToDouble(out double spacing),Is.True);
+                            minimum=System.Math.Min(minimum,spacing);maximum=System.Math.Max(maximum,spacing);
+                        }
+                        previous=frame.Origin;
+                    }
+                    Assert.That(maximum-minimum,Is.LessThan(1e-6),"start "+start+": 間隔が "+minimum+" から "+maximum+" まで揺れています。");
+                    Assert.That(minimum,Is.GreaterThan(0.1));
+                }
+            }
+            {
                 //表せない深さは失敗する
                 PlanetCellKey key=PlanetCellKey.Root(0);
                 for(int depth=0;depth<=PlanetCellFrame.MaximumLevel;depth++){key=key.Child(1);}

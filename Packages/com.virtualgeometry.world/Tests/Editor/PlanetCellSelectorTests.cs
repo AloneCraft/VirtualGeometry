@@ -161,6 +161,40 @@ namespace VirtualGeometry.World.Tests{
         }
 
         [Test]
+        public void SelectHugePlanet(){
+            // 半径 10^20 m の惑星(float の二乗が 3.4e38 を超える大きさ)の地表の目の高さで、粗い Cell の bounds が有限で、地平線の向こうの Cell が選ばれない。
+            // カメラの高さは、惑星の半径(float の 1e20f は 1e20 とは違う値)の Logical に 1.7m を足して作る(double の 1e20+1.7 を使うと、地下 2e12 m になる)。
+            const float huge=1e20f;
+            var selector=new PlanetCellSelector(huge,0f,64,80,2){TargetPixels=2,Hysteresis=0.1f};
+            for(int face=0;face<CubeSphere.FaceCount;face++){
+                PlanetCellKey key=PlanetCellKey.Root(face);
+                for(int level=0;level<PlanetCellSelector.FrameBoundsLevel;level++){
+                    selector.Bounds(in key,out Vector3 offset,out float radius);
+                    Assert.That(float.IsInfinity(radius)||float.IsNaN(radius),Is.False,"bounds の半径が有限ではありません: "+key);
+                    Assert.That(radius,Is.GreaterThan(0f),key.ToString());
+                    key=key.Child(0);
+                }
+            }
+            Assert.That(LogicalScalar.TryFromFloat(huge,out LogicalScalar radiusLogical),Is.True);
+            Assert.That(LogicalScalar.TryFromDouble(1.7,out LogicalScalar height),Is.True);
+            Assert.That(LogicalScalar.TryAdd(in radiusLogical,in height,out LogicalScalar eye),Is.True);
+            var camera=new LogicalVector3(LogicalScalar.Zero,eye,LogicalScalar.Zero);
+            var view=new PlanetSelectionView(in camera,in radiusLogical,Matrix4x4.identity,new Vector3(0,huge,0),1,null,500,0.1f,false,true);
+            var residency=new Residency();
+            var output=new List<PlanetCellKey>();var refined=new HashSet<PlanetCellKey>();
+            selector.Select(in view,residency,null,output,refined);
+            Assert.That(output.Count,Is.GreaterThan(0));
+            Assert.That(output.Count,Is.LessThan(12000),"選ばれた Cell が多すぎます(地平線の向こうが culling されていません)。");
+            int coarse=0;int finest=0;
+            foreach(PlanetCellKey key in output){
+                if(key.Level<10){coarse++;}
+                finest=Mathf.Max(finest,key.Level);
+            }
+            Assert.That(coarse,Is.EqualTo(0),"粗い階層(< 10)の Cell が選ばれています。");
+            Assert.That(finest,Is.GreaterThanOrEqualTo(25),"カメラの足元の Cell が細かくなっていません。");
+        }
+
+        [Test]
         public void IsCulled(){
             {
                 //地表の近くから見ると、真下の Cell は残り、反対側の面は地平線の向こうで落ちる

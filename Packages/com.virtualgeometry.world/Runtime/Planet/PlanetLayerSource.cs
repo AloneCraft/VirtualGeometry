@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using UnityEngine;
 using UnityEngine.Rendering;
 using VirtualizedGeometry;
@@ -72,6 +73,16 @@ namespace VirtualGeometry.World{
         /// <summary>slot が足りず、退避できる Cell も無かったために生成できなかった要求の累計。</summary>
         public int StarvedRequests{get;private set;}
         public int Evictions{get;private set;}
+        /// <summary>直近の draw の選択で、Cell の選択(<see cref="PlanetCellSelector.Select"/>)、要求の割り当て、draw の準備にかかった CPU 時間(ミリ秒、診断用)。</summary>
+        public float LastSelectMilliseconds{get;private set;}
+        public float LastFlushMilliseconds{get;private set;}
+        public float LastPrepareMilliseconds{get;private set;}
+        /// <summary>draw の準備のうち、配置(<see cref="IPlanetPlacement.Describe"/>)と、Cell ごとの値(<see cref="WriteCellProperties"/>)の分(ミリ秒、診断用)。</summary>
+        public float LastDescribeMilliseconds{get;private set;}
+        public float LastPropertiesMilliseconds{get;private set;}
+        /// <summary>直近の draw の選択で、選んだ Cell のうち、slot が使えなかった数と、配置が描けなかった数(診断用。どちらも 0 が正常)。</summary>
+        public int LastNotReadyCells{get;private set;}
+        public int LastDescribeFailedCells{get;private set;}
 
         /// <summary>選択の設定を変える。有効なまま変えた場合は無効化して作り直す。</summary>
         protected void ConfigureSelection(int maximumLevel,float targetPixels){
@@ -124,28 +135,46 @@ namespace VirtualGeometry.World{
             if(!this.history.TryGetValue(view.Camera,out HashSet<PlanetCellKey> previous)){
                 previous=new HashSet<PlanetCellKey>();this.history.Add(view.Camera,previous);
             }
+            long selectStart=Stopwatch.GetTimestamp();
             this.selector.Select(in selectionView,this,previous,this.output,this.refinedScratch);
+            long selectEnd=Stopwatch.GetTimestamp();
             // 今回の細分化を次の frame の履歴にする(2つの集合を入れ替えて使い回す)。
             this.history[view.Camera]=this.refinedScratch;this.refinedScratch=previous;
             this.FlushRequests();
+            long flushEnd=Stopwatch.GetTimestamp();
             List<MaterialPropertyBlock> blocks=null;
             if((current.UsesProperties||this.UsesCellProperties)&&!this.drawProperties.TryGetValue(view.Camera,out blocks)){
                 blocks=new List<MaterialPropertyBlock>();this.drawProperties.Add(view.Camera,blocks);
             }
             int used=0;
+            long describeTicks=0;long propertyTicks=0;
+            int notReady=0;int describeFailed=0;
             for(int i=0;i<this.output.Count;i++){
-                if(!this.slotByKey.TryGetValue(this.output[i],out int slot)||!this.IsReady(slot)){continue;}
+                if(!this.slotByKey.TryGetValue(this.output[i],out int slot)||!this.IsReady(slot)){notReady++;continue;}
                 MaterialPropertyBlock block=null;
                 if(blocks!=null){
                     if(used==blocks.Count){blocks.Add(new MaterialPropertyBlock());}
                     block=blocks[used++];
                 }
-                if(!current.Describe(in frame,in this.cellFrames[slot],out Matrix4x4 objectToWorld,out Matrix4x4 objectToCull,block)){continue;}
+                long describeStart=Stopwatch.GetTimestamp();
+                bool described=current.Describe(in frame,in this.cellFrames[slot],out Matrix4x4 objectToWorld,out Matrix4x4 objectToCull,block);
+                long describeEnd=Stopwatch.GetTimestamp();
+                describeTicks+=describeEnd-describeStart;
+                if(!described){describeFailed++;continue;}
                 if(block!=null){this.WriteCellProperties(block,slot,in this.cellFrames[slot]);}
+                propertyTicks+=Stopwatch.GetTimestamp()-describeEnd;
                 draws.Begin(objectToWorld,objectToCull,block);
                 draws.Add(slot);
                 this.OnCellDrawn(slot,in this.cellFrames[slot]);
             }
+            long prepareEnd=Stopwatch.GetTimestamp();
+            double toMilliseconds=1000.0/Stopwatch.Frequency;
+            this.LastSelectMilliseconds=(float)((selectEnd-selectStart)*toMilliseconds);
+            this.LastFlushMilliseconds=(float)((flushEnd-selectEnd)*toMilliseconds);
+            this.LastPrepareMilliseconds=(float)((prepareEnd-flushEnd)*toMilliseconds);
+            this.LastNotReadyCells=notReady;this.LastDescribeFailedCells=describeFailed;
+            this.LastDescribeMilliseconds=(float)(describeTicks*toMilliseconds);
+            this.LastPropertiesMilliseconds=(float)(propertyTicks*toMilliseconds);
         }
 
         /// <summary>

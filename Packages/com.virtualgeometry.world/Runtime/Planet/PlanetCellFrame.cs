@@ -137,7 +137,44 @@ namespace VirtualGeometry.World{
                 sine=nextSine;cosine=nextCosine;
             }
             if(!LogicalScalar.TryMultiply(in angle,in sine,out LogicalScalar scaledSine)){return false;}
-            return LogicalScalar.TryDivide(in scaledSine,in cosine,out tangent);
+            return TryDivideExact(in scaledSine,in cosine,out tangent);
+        }
+
+        // 商は BigInteger で求める。Omni の Scalar.TryDivide(固定長整数カーネルの Divide)は、被除数の上位 2 語が除数の上位語の 2^32 倍以上になる(推定商がクランプされる)とき、
+        // クランプ後の剰余が 2^32 以上のまま補正ループの比較(estimateRemainder << 32)が溢れて、商の桁を 1 つ小さくしてしまう(結果が最大で 2^-64 ほど小さくなる)。
+        // 深い階層の Cell の中心の面の座標でこの条件になり、半径 10^19 m では隣の Cell の位置が 0.5m ずれる。値は丸め(最近接偶数)まで Scalar.TryDivide と同じ。
+        private static bool TryDivideExact(in LogicalScalar numerator,in LogicalScalar denominator,out LogicalScalar quotient){
+            quotient=default;
+            BigInteger divisor=ToBigInteger(in denominator);
+            if(divisor.IsZero){return false;}
+            BigInteger scaled=ToBigInteger(in numerator)<<LogicalScalar.FractionalBits;
+            BigInteger floor=BigInteger.DivRem(scaled,divisor,out BigInteger remainder);
+            // DivRem は 0 方向への切り捨てなので、符号を合わせてから最近接偶数へ丸める。
+            BigInteger twice=BigInteger.Abs(remainder)*2;
+            BigInteger magnitude=BigInteger.Abs(divisor);
+            int comparison=twice.CompareTo(magnitude);
+            bool negative=(scaled.Sign<0)!=(divisor.Sign<0);
+            if(comparison>0||(comparison==0&&!floor.IsEven)){
+                if(negative){floor-=BigInteger.One;}else{floor+=BigInteger.One;}
+            }
+            return TryFromBigInteger(floor,out quotient);
+        }
+
+        private static BigInteger ToBigInteger(in LogicalScalar value){
+            LogicalIntRaw raw=value.Raw;
+            BigInteger result=((BigInteger)raw.Limb2<<128)|((BigInteger)raw.Limb1<<64)|raw.Limb0;
+            if((raw.Limb2&0x8000000000000000UL)!=0UL){result-=BigInteger.One<<192;}
+            return result;
+        }
+
+        private static bool TryFromBigInteger(BigInteger raw,out LogicalScalar value){
+            value=default;
+            BigInteger limit=BigInteger.One<<191;
+            if(raw>=limit||raw< -limit){return false;}
+            if(raw.Sign<0){raw+=BigInteger.One<<192;}
+            BigInteger mask=(BigInteger.One<<64)-1;
+            value=new LogicalScalar(new LogicalIntRaw((ulong)(raw&mask),(ulong)((raw>>64)&mask),(ulong)((raw>>128)&mask)));
+            return true;
         }
 
         // 1 − square·value/divisor
