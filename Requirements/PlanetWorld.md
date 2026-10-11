@@ -437,6 +437,26 @@ camera が破棄されても Dictionary のキーが残り、source が無効に
 - Unity の object は 1 往復あたり 3 個増える(GameObject、Transform、`RadialSceneBatchDriver`)。増えるのは Omni の `Omni Scene BRG Driver`(`HideAndDontSave` の GameObject)だけで、VG の object は増えない。
   Omni の `RadialSceneBatchRendererService.Shutdown` が `s_Driver` を null にするだけで GameObject を破棄していないように見える(推測、未確認)。Omni への報告は未送信（宛先のセッションが見つからなかった）
 
+### 確認(観察 camera と View Scale、`MoonBallValidation.RunObserver` と `RunViewScale`、2026-10-12)
+
+月とボールの scene(半径は月、目標 2px、640×480、単色の分類)。
+
+**観察 camera(eye が warp 中心にない camera)**: `RadialWarpSource.Observer(主 camera の RadialCamera)` で登録した 2 台目の camera を、主 camera から up 方向へ ε だけ離して描く。`ViewSnapshot` は全ての ε で `IsEyeAtWarpCenter=false`、`CanUseConeCulling=false`(fail-open の経路を通る)。主 camera は `true`/`true`。
+
+- ε = 10^-6 m、10^-4 m(同じ向き): 主 camera の画像と、ボールの輪郭を含めて 1 画素の帯の外で一致(不一致 0、どの種類でもない画素 0)
+- ε = 1 m(同じ向き): 月の画素の下(画面の下側)に背景 0 画素。ボールは視野の外(0 画素)
+- ε = 1 m、10^2 m、10^4 m(真下を向く): 背景 0 画素(画面全体が月とボール)
+- 判定にピンホールの幾何(`CountHoles`)は使えない。warp 中心から離れた eye では、対数圧縮で月の形が変わり(同じ向きで 1 m 上がるだけでボールは視野を外れ、地平線の位置も変わる)、同じ向きのまま 10^4 m 離れると月が 1 画素も描かれなかった(最初の測定)。そのため位相(月の下は月)で判定している。
+  観察 camera の見た目が幾何として正しいか(Omni の写像の設計どおりか)は、この検証では確かめていない
+
+**View Scale M**: `RadialCamera.SetViewScale(M)` は論理 Near Clip を Camera の Near ÷ M にする。論理 Near の平面より手前は描かれない。
+接触の視点(ボールの面まで約 0.18 m)で論理 Near が約 0.03 m になるよう、Camera の Near を `clamp(0.03·M, 0.01, 0.3)` にして振った(デモの既定は M = 10、Near 0.3)。
+
+- M = 1、10、10^3、10^6: ボール(隙間 0 と 1 mm)が、Logical の位置から光線で求めた解析の球と、1 画素の帯の外で一致(不一致 0、どの種類でもない画素 0、最下の行も一致)
+- 全ての M(10^-3、0.1、1、10、10^3、10^6): 月全体の視点(高さ 2.5R)で、穴 0、月の輪郭が解析の円と 1 画素の帯の外で一致(0 画素)
+- M = 10^-3、0.1: 接触の視点は比較していない(Camera の Near の下限 0.01 で、論理 Near が 10 m、0.1 m。ボールの面までの距離の半分を超える)
+- Camera の Near を 0.3 のままにして M だけを振ると、M ≤ 1 で論理 Near(M = 1 で 0.3 m、0.1 で 3 m、10^-3 で 300 m)がボールの面(約 0.18 m)より遠くなり、ボールが描かれない(`SetViewScale` の仕様どおりで、実装の欠陥ではない)。初回の検証が M ≤ 1 で失敗したのは、この検証側の設定のため
+
 ### 検証(`VirtualGeometry.Omni.Editor.P2OmniPlanetValidation`)
 
 半径 10km、Hmax 300m、目標 2px、640×480。camera は `Logical.Transform` と `RadialCamera`(`SetIdentityViewScale`、M=1)。
@@ -456,7 +476,8 @@ Logical の camera が安全域(±10km)の外にあると、Unity の camera は
 未実施:
 
 - 半径 600km は §12 で、穴 0、頂点の精度、Hmax の球から 1.7m〜10km の 3 視点で Standard との輪郭の差 0 を確認した。地面に近い視点での Standard との比較は、基準自体が float の量子化を含むので行っていない
-- M≠1 の View Scale、eye が warp 中心に無い場合(fail-open の経路)
+- eye が warp 中心に無い camera の、見た目の幾何としての正しさ(下の「確認(観察 camera と View Scale)」は位相と、主 camera との連続性だけを見ている)
+- M = 10^-3 と 0.1 の接触の視点(論理 Near が 10 m、0.1 m で、ボールの面までの距離の半分を超えるので比較していない)
 - z-fighting と深度の分解能の測定は §21 で行った
 - Play/Stop の往復と、camera の GPU buffer のリークは下の「確認(camera の状態の解放と Play/Stop の往復)」で行った
 - Scene View での表示

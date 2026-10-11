@@ -52,6 +52,8 @@ $table = @(
     @("PlayStopLeak", "PlayStopLeakValidation.Run", "PlayStopLeak", @("on")),
     @("Amplification", "AmplificationValidation.Run", "Amplification", @("on")),
     @("ColorLayer", "ColorLayerValidation.Run", "ColorLayer", @("on")),
+    @("ObserverCamera", "MoonBallValidation.RunObserver", "ObserverCamera", @("on")),
+    @("ViewScale", "MoonBallValidation.RunViewScale", "ViewScale", @("on")),
     @("RealMoon", "RealMoonValidation.Run", "RealMoon", @("on", "off")),
     @("SyntheticRelief", "RealMoonValidation.RunSynthetic", "SyntheticRelief", @("on", "off")),
     @("RealMoonPolar", "RealMoonValidation.RunPolar", "RealMoonPolar", @("on")),

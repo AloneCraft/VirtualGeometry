@@ -10,7 +10,9 @@ using UnityEngine;
 using VirtualGeometry.World;
 using VirtualizedGeometry;
 using VirtualizedGeometry.Editor;
+using ViewSnapshot=Omni.Rendering.Radial.ViewSnapshot;
 using LogicalPosition3=Omni.Logical.Position3;
+using LogicalQuaternion=Omni.Logical.Quaternion;
 using LogicalScalar=Omni.Logical.Scalar;
 using LogicalVector3=Omni.Logical.Vector3;
 
@@ -31,10 +33,15 @@ namespace VirtualGeometry.Omni.Editor{
         private const int ConvergeLimit=900;
         private static readonly Color32 Background=new Color32(255,0,255,255);
 
-        private enum Mode{Default,Raster,Relief}
+        private enum Mode{Default,Raster,Relief,Observer,ViewScale}
 
         private static MoonBallSettings settings;
         private static Mode mode;
+        // 観察 camera(eye が warp 中心にない camera)。Observer の検証だけ。
+        private static Camera observerCamera;
+        private static global::Omni.Logical.Transform observerLogical;
+        private static ViewSnapshot observerSnapshot;
+        private static bool observerSnapshotValid;
         private static bool realData;
         private static PlanetRasterLayer rasterGlobal;
         private static string results;
@@ -75,6 +82,21 @@ namespace VirtualGeometry.Omni.Editor{
         /// <summary>合成の高起伏(−7,300 m〜+9,000 m、勾配は最大約 0.3)の月に、ボールを 4 地点で接して置く(データが無くても走る)。結果は TestResults/Planet/SyntheticMoonBall。</summary>
         public static void RunSyntheticMoon(){
             settings=MoonBallSettings.Raster;results="TestResults/Planet/SyntheticMoonBall";mode=Mode.Raster;realData=false;
+            Start();
+        }
+
+        /// <summary>
+        /// eye が warp 中心にない camera(観察 camera。Omni の <c>RadialWarpSource.Observer</c>)で描く(fail-open の経路)。結果は TestResults/Planet/ObserverCamera。
+        /// 観察 camera を主 camera のごく近く(10^-6、10^-4 m)に置くと主 camera の画像と一致し、遠く(1 m〜10 km)に置いても月に穴が無い。
+        /// </summary>
+        public static void RunObserver(){
+            settings=MoonBallSettings.Moon;results="TestResults/Planet/ObserverCamera";mode=Mode.Observer;
+            Start();
+        }
+
+        /// <summary>View Scale M を 10^-3〜10^6 に振って、接触の視点でボールが解析の球と一致し、月全体の輪郭が解析の円と一致することを確かめる。結果は TestResults/Planet/ViewScale。</summary>
+        public static void RunViewScale(){
+            settings=MoonBallSettings.Moon;results="TestResults/Planet/ViewScale";mode=Mode.ViewScale;
             Start();
         }
 
@@ -138,6 +160,27 @@ namespace VirtualGeometry.Omni.Editor{
             // 検証の間は Update を回さない(操作の入力を読まない)。
             demo.enabled=false;
             SetFlat(true);
+            if(mode==Mode.Observer){CreateObserver();}
+        }
+
+        // 観察 camera: 主 camera の RadialCamera(warp 中心)を借りて、別の位置から描く。
+        private static void CreateObserver(){
+            var observerObject=new GameObject("Observer Camera");
+            observerCamera=observerObject.AddComponent<Camera>();
+            observerCamera.fieldOfView=camera.fieldOfView;observerCamera.nearClipPlane=camera.nearClipPlane;observerCamera.farClipPlane=camera.farClipPlane;
+            observerCamera.clearFlags=CameraClearFlags.SolidColor;observerCamera.backgroundColor=camera.backgroundColor;
+            observerCamera.allowHDR=false;observerCamera.allowMSAA=false;
+            observerLogical=observerObject.AddComponent<global::Omni.Logical.Transform>();
+            global::Omni.RadialCamera driver=objects.CameraObject.GetComponent<global::Omni.RadialCamera>();
+            global::Omni.RadialWarpSource source=global::Omni.RadialWarpSource.Observer(driver);
+            global::Omni.RadialGlobalWarpSourceRegistry.Register(observerCamera,in source,null);
+            // 描画の終わりに、観察 camera の ViewSnapshot を覚える(その frame にしか無い)。
+            UnityEngine.Rendering.RenderPipelineManager.endCameraRendering+=OnEndCameraRendering;
+        }
+
+        private static void OnEndCameraRendering(UnityEngine.Rendering.ScriptableRenderContext context,Camera rendered){
+            if(rendered!=observerCamera){return;}
+            observerSnapshotValid=global::Omni.RadialViewRegistry.TryGetCurrent(rendered.GetEntityId(),out observerSnapshot);
         }
 
         private static void SetFlat(bool flat){
@@ -153,6 +196,8 @@ namespace VirtualGeometry.Omni.Editor{
         private static IEnumerator Steps(){
             if(mode==Mode.Raster){return StepsRaster();}
             if(mode==Mode.Relief){return StepsRelief();}
+            if(mode==Mode.Observer){return StepsObserver();}
+            if(mode==Mode.ViewScale){return StepsViewScale();}
             return StepsDefault();
         }
 
@@ -370,6 +415,189 @@ namespace VirtualGeometry.Omni.Editor{
             if(!(worst<=RigidTolerance)){failures.Add(name+": ボールを "+k+" mm 上げたとき、頂点の動きが "+worst*1e6+"um ずれています(許す差 "+RigidTolerance*1e6+"um)。");}
         }
 
+        // 観察 camera(eye が warp 中心にない camera)の検証。観察 camera は主 camera の RadialCamera(warp 中心)を借りて、主 camera から up 方向へ ε だけ離れた位置から描く。
+        // - ε = 10^-6、10^-4 m(主 camera とほぼ同じ位置、同じ向き): 主 camera の画像と、ボールの輪郭が 1 画素の帯の外で一致する(連続性)
+        // - ε = 1 m 同じ向き: 月の画素の下に背景が出ない。ε = 1、10^2、10^4 m 真下: 画面全体が月(背景 0)。
+        //   warp 中心から離れた eye は、対数圧縮で月の形が変わるので、ピンホールの幾何(CountHoles)は使えず、位相(月の下は月)で判定する。
+        // 全ての ε で、観察 camera の ViewSnapshot が eye が warp 中心にない・錐台が使えない状態(fail-open の経路)であることを確かめる。
+        private static IEnumerator StepsObserver(){
+            int waited=0;
+            while(moon.Selector==null||ball.Selector==null){
+                if(waited++>100){throw new InvalidOperationException("月またはボールが有効になりません。");}
+                yield return null;
+            }
+            if(!demo.Initialize()){throw new InvalidOperationException("Initialize: "+demo.Failure);}
+            demo.ShowContactView();
+            SetFlat(true);
+            foreach(object step in Converge("Owner",Width,ImageHeight)){yield return step;}
+            Texture2D ownerImage=Capture();
+            Save("Owner",ownerImage);
+            CompareBall("Owner",ownerImage);
+            bool ownerSnapshot=global::Omni.RadialViewRegistry.TryGetCurrent(camera.GetEntityId(),out ViewSnapshot owner);
+            string ownerText="owner snapshot: found="+ownerSnapshot;
+            if(ownerSnapshot){ownerText+=" radialActive="+owner.IsRadialActive+" eyeAtWarpCenter="+owner.IsEyeAtWarpCenter+" canUseConeCulling="+owner.CanUseConeCulling;}
+            report.Add(ownerText);
+            // (ε、真下を向くか)。ε が小さいときは主 camera と同じ向き。大きいときは、同じ向きだと月が視野に入らない(warp 中心から ε 離れると、対数圧縮で月は遠い面になる)ので、真下を向く。
+            // ε = 1 m は、同じ向きの画像(月の画素の下に背景が出ない)と真下の画像の両方を見る。
+            var cases=new List<KeyValuePair<double,bool>>{
+                new KeyValuePair<double,bool>(1e-6,false),new KeyValuePair<double,bool>(1e-4,false),
+                new KeyValuePair<double,bool>(1.0,false),new KeyValuePair<double,bool>(1.0,true),
+                new KeyValuePair<double,bool>(1e2,true),new KeyValuePair<double,bool>(1e4,true),
+            };
+            foreach(KeyValuePair<double,bool> item in cases){
+                double epsilon=item.Key;bool lookDown=item.Value;
+                string label=epsilon.ToString("G3",CultureInfo.InvariantCulture);
+                if(lookDown){label+="_down";}
+                PlaceObserver(epsilon,lookDown);
+                foreach(object step in ConvergeObserver("Observer"+label,Width,ImageHeight)){yield return step;}
+                observerSnapshotValid=false;
+                Texture2D image=M0Validation.Capture(observerCamera,Width,ImageHeight);
+                string name="Observer "+label+"m";
+                Save("Observer_"+label,image);
+                string snapshotText="snapshot: found="+observerSnapshotValid;
+                bool coneCulling=true;
+                bool eyeAtWarpCenter=true;
+                if(observerSnapshotValid){
+                    coneCulling=observerSnapshot.CanUseConeCulling;eyeAtWarpCenter=observerSnapshot.IsEyeAtWarpCenter;
+                    snapshotText+=" radialActive="+observerSnapshot.IsRadialActive+" eyeAtWarpCenter="+eyeAtWarpCenter+" failOpen="+observerSnapshot.IsFailOpen+" canUseConeCulling="+coneCulling;
+                }
+                if(epsilon<=1e-4){
+                    // 主 camera の画像との一致(ボールの輪郭、1 画素の帯の外)。
+                    Color32[] a=ownerImage.GetPixels32();Color32[] b=image.GetPixels32();
+                    var mask=new bool[a.Length];
+                    for(int i=0;i<a.Length;i++){mask[i]=Classify(a[i])==1;}
+                    bool[] band=Band(mask,image.width,image.height);
+                    int mismatch=0;int anomaly=0;
+                    for(int i=0;i<a.Length;i++){
+                        int cb=Classify(b[i]);
+                        if(cb==3){anomaly++;}
+                        if((Classify(a[i])!=cb)&&!band[i]){mismatch++;}
+                    }
+                    report.Add(name+": mismatchWithOwnerOutside1px="+mismatch+" anomalyPixels="+anomaly+" "+snapshotText);
+                    if(mismatch!=0){failures.Add(name+": 主 camera の画像と 1 画素の帯の外で "+mismatch+" 画素違います。");}
+                    if(anomaly!=0){failures.Add(name+": 背景・ボール・月のどれでもない画素が "+anomaly+" ありました。");}
+                }else{
+                    // 穴の判定: warp 中心から離れた観察 camera は、対数圧縮で月の形が変わるので、ピンホールの幾何(CountHoles)は使えない。
+                    // 真下を向く: 画面全体が月(とボール)。同じ向き: 月の画素の下(画面の下側)に背景が出ない(地平線より下は、必ず月)。
+                    Color32[] pixels=image.GetPixels32();
+                    int width=image.width;int height=image.height;
+                    int background=0;int anomaly=0;int belowMoon=0;
+                    for(int x=0;x<width;x++){
+                        bool seenSurface=false;
+                        for(int y=height-1;y>=0;y--){
+                            int c=Classify(pixels[y*width+x]);
+                            if(c==0){
+                                background++;
+                                if(seenSurface){belowMoon++;}
+                            }else{
+                                seenSurface=true;
+                                if(c==3){anomaly++;}
+                            }
+                        }
+                    }
+                    int moonPixels=CountClass(image,2);
+                    report.Add(name+": background="+background+" belowMoon="+belowMoon+" anomaly="+anomaly+" moonPixels="+moonPixels+" ballPixels="+CountClass(image,1)+" "+snapshotText);
+                    if(moonPixels==0){failures.Add(name+": 月が描かれていません。");}
+                    if(anomaly!=0){failures.Add(name+": 背景・ボール・月のどれでもない画素が "+anomaly+" ありました。");}
+                    if(lookDown){
+                        if(background!=0){failures.Add(name+": 真下を向いているのに、背景の画素が "+background+" あります(月に穴)。");}
+                    }else{
+                        if(belowMoon!=0){failures.Add(name+": 月の画素の下に背景の画素が "+belowMoon+" あります(月に穴)。");}
+                    }
+                    if(!observerSnapshotValid||coneCulling||eyeAtWarpCenter){failures.Add(name+": 観察 camera の ViewSnapshot が、eye が warp 中心にない・錐台が使えない状態になっていません(fail-open の経路を通っていません。見つかった "+observerSnapshotValid+"、warp 中心 "+eyeAtWarpCenter+"、錐台 "+coneCulling+")。");}
+                }
+                UnityEngine.Object.DestroyImmediate(image);
+            }
+            UnityEngine.Object.DestroyImmediate(ownerImage);
+            report.Add("pool: moon used="+moon.UsedSlots+"/"+moon.PoolCapacity+" ball used="+ball.UsedSlots+"/"+ball.PoolCapacity+" lastError="+(moon.LastError??"(none)")+"/"+(ball.LastError??"(none)"));
+            if(moon.LastError!=null||ball.LastError!=null){failures.Add("設定エラー: "+moon.LastError+" "+ball.LastError);}
+        }
+
+        // 観察 camera を、主 camera の位置から up 方向へ epsilon(m)離れた所に置く(Logical のまま)。向きは主 camera と同じ。lookDown なら真下(−up)を向き、画面の上は主 camera の前方。
+        private static void PlaceObserver(double epsilon,bool lookDown){
+            if(!LogicalScalar.TryFromDouble(epsilon,out LogicalScalar distance)||!LogicalVector3.TryFromFloat3(demo.Up,out LogicalVector3 up)||!LogicalVector3.TryScale(in up,in distance,out LogicalVector3 offset)||
+                !LogicalVector3.TryAdd(cameraLogical.LocalPosition,in offset,out LogicalVector3 position)){
+                throw new InvalidOperationException("観察 camera の位置を Logical にできません。");
+            }
+            observerLogical.LocalPosition=position;
+            observerLogical.LocalRotation=cameraLogical.LocalRotation;
+            if(lookDown){
+                Vector3 ownerForward=camera.transform.rotation*Vector3.forward;
+                Quaternion down=Quaternion.LookRotation(-demo.Up,ownerForward);
+                if(!LogicalQuaternion.TryFromFloat4(down.x,down.y,down.z,down.w,out LogicalQuaternion logicalDown)){
+                    throw new InvalidOperationException("観察 camera の向きを Logical にできません。");
+                }
+                observerLogical.LocalRotation=logicalDown;
+            }
+            observerLogical.SyncUnityTransform();
+        }
+
+        private static IEnumerable<object> ConvergeObserver(string name,int width,int height){
+            int stable=0;int previous=-1;int frames=0;
+            while(frames<ConvergeLimit){
+                Destroy(M0Validation.Capture(observerCamera,width,height));
+                int signature=moon.LastSelected.Count*31+ball.LastSelected.Count;
+                foreach(PlanetCellKey key in moon.LastSelected){signature^=key.GetHashCode();}
+                foreach(PlanetCellKey key in ball.LastSelected){signature^=key.GetHashCode()*17;}
+                if(moon.PendingGeneration==0&&ball.PendingGeneration==0&&signature==previous){stable++;}else{stable=0;}
+                previous=signature;
+                frames++;
+                if(stable>=2){break;}
+                yield return null;
+            }
+            if(frames>=ConvergeLimit){failures.Add(name+": "+ConvergeLimit+" frame で選択が収束しませんでした。");}
+        }
+
+        // View Scale M を振る。接触の視点でボールが解析の球と一致し(隙間 0、1 mm)、月全体の視点(高さ 2.5R)で輪郭が解析の円と一致し、穴が無い。
+        private static IEnumerator StepsViewScale(){
+            int waited=0;
+            while(moon.Selector==null||ball.Selector==null){
+                if(waited++>100){throw new InvalidOperationException("月またはボールが有効になりません。");}
+                yield return null;
+            }
+            if(!demo.Initialize()){throw new InvalidOperationException("Initialize: "+demo.Failure);}
+            global::Omni.RadialCamera radial=objects.CameraObject.GetComponent<global::Omni.RadialCamera>();
+            SetFlat(true);
+            foreach(float scale in new[]{1e-3f,0.1f,1f,10f,1e3f,1e6f}){
+                // View Scale M = Camera の Near ÷ 論理 Near Clip(SetViewScale は論理 Near を Camera の Near ÷ M にする)。論理 Near Clip の平面より手前は描かれない。
+                // 接触の視点は、ボールまで約 0.18 m なので、論理 Near が 0.03 m 前後になるように Camera の Near を 0.03·M にする(Unity の下限 0.01、デモの既定 0.3 の間)。
+                // M が小さいと(M = 10^-3 で論理 Near は 10 m)ボールは Near の内側に入るので、接触の比較は、論理 Near がボールの面までの距離の半分より近いときだけ行う。月全体の視点(2.5R)は全ての M で行う。
+                camera.nearClipPlane=Mathf.Clamp(0.03f*scale,0.01f,0.3f);
+                radial.SetViewScale(scale);
+                double logicalNear=camera.nearClipPlane/(double)scale;
+                string name="M="+scale.ToString("G3",CultureInfo.InvariantCulture);
+                demo.ShowContactView();
+                demo.SetOffset(0,0,0);
+                bool contactVisible=BallCenterFromCamera(out Vector3 ballCenter)&&logicalNear<0.5*(ballCenter.magnitude-ball.Radius);
+                report.Add(name+": cameraNear="+camera.nearClipPlane.ToString("G3",CultureInfo.InvariantCulture)+" logicalNear="+logicalNear.ToString("G3",CultureInfo.InvariantCulture)+"m contactChecked="+contactVisible);
+                foreach(int gap in new[]{0,10}){
+                    if(!contactVisible){break;}
+                    demo.SetOffset(0,gap,0);
+                    foreach(object step in Converge(name+" Gap"+gap,Width,ImageHeight)){yield return step;}
+                    Texture2D image=Capture();
+                    if(gap==0){Save("Contact_"+name,image);}
+                    CompareBall(name+" Gap"+gap/10+"mm",image);
+                    UnityEngine.Object.DestroyImmediate(image);
+                }
+                demo.SetOffset(0,0,0);
+                double altitude=moon.Radius*2.5;
+                demo.PlaceCamera(altitude,demo.ContactHorizontal());
+                foreach(object step in Converge(name+" Whole",Width,ImageHeight)){yield return step;}
+                Texture2D whole=Capture();
+                Save("Whole_"+name,whole);
+                int holes=CountHoles(whole,altitude);
+                int outside=CompareMoonDisc(whole,altitude);
+                report.Add(name+": whole moon holes="+holes+" moonDiscOutside1px="+outside+" moonPixels="+CountClass(whole,2));
+                if(holes!=0){failures.Add(name+": 月全体で穴が "+holes+" 画素ありました。");}
+                if(outside!=0){failures.Add(name+": 月の輪郭が解析的な円と 1 画素の帯の外で "+outside+" 画素違いました。");}
+                UnityEngine.Object.DestroyImmediate(whole);
+            }
+            camera.nearClipPlane=0.3f;
+            radial.SetViewScale(10f);
+            report.Add("pool: moon used="+moon.UsedSlots+"/"+moon.PoolCapacity+" ball used="+ball.UsedSlots+"/"+ball.PoolCapacity+" lastError="+(moon.LastError??"(none)")+"/"+(ball.LastError??"(none)"));
+            if(moon.LastError!=null||ball.LastError!=null){failures.Add("設定エラー: "+moon.LastError+" "+ball.LastError);}
+        }
+
         // 起伏のあるボール(振幅 20 mm)で、Cell の原点を持ち上げた場合(H ≠ 0。RadialBall の _PlanetCellUp.w = R + H の経路)と、持ち上げない場合を比べる。
         // 同じ視点・同じ位置で、単色と見た目の画像が 1 画素の帯の外で一致し、読み戻した頂点の位置(接点からの相対)が一致する。
         private static IEnumerator StepsRelief(){
@@ -522,11 +750,12 @@ namespace VirtualGeometry.Omni.Editor{
         }
 
         // 画素ごとの光線(camera の向き、画角)。
-        private static Vector3 Ray(int x,int y,int width,int height){
-            float tangent=Mathf.Tan(camera.fieldOfView*0.5f*Mathf.Deg2Rad);
+        private static Vector3 Ray(int x,int y,int width,int height,Camera view=null){
+            if(view==null){view=camera;}
+            float tangent=Mathf.Tan(view.fieldOfView*0.5f*Mathf.Deg2Rad);
             float aspect=(float)width/height;
             Vector3 local=new Vector3(((x+0.5f)/width*2-1)*tangent*aspect,((y+0.5f)/height*2-1)*tangent,1);
-            return (camera.transform.rotation*local).normalized;
+            return (view.transform.rotation*local).normalized;
         }
 
         // 描かれたボールの画素と、Logical の位置から光線で求めた球の画素を比べる。解析の球の輪郭から 1 画素の帯の外で違う画素を数える。
@@ -593,18 +822,19 @@ namespace VirtualGeometry.Omni.Editor{
 
         // 背景の画素のうち、月の地平線より下を向く光線(真下からの角度が、地平線の角度より 2 画素以上小さい)の数。
         // 地平線の角度(真下から)= asin((R−Hmax)/(R+altitude))(内側の球の接線)。惑星の中心の位置は使わない(半径が大きいと float で潰れるため)。
-        private static int CountHoles(Texture2D image,double altitude){
+        private static int CountHoles(Texture2D image,double altitude,Camera view=null){
+            if(view==null){view=camera;}
             Color32[] pixels=image.GetPixels32();
             int width=image.width;int height=image.height;
             double radius=moon.Radius;
             double ratio=(radius-(moon.HeightAmplitude+moon.RasterMaximumHeight))/(radius+altitude);
             double dip=Math.Asin(Math.Max(-1.0,Math.Min(1.0,ratio)));
-            double pixelAngle=camera.fieldOfView*Mathf.Deg2Rad/height;
+            double pixelAngle=view.fieldOfView*Mathf.Deg2Rad/height;
             int holes=0;
             for(int y=0;y<height;y++){
                 for(int x=0;x<width;x++){
                     if(Classify(pixels[y*width+x])!=0){continue;}
-                    if(NadirAngle(Ray(x,y,width,height))<dip-2*pixelAngle){holes++;}
+                    if(NadirAngle(Ray(x,y,width,height,view))<dip-2*pixelAngle){holes++;}
                 }
             }
             return holes;
@@ -829,6 +1059,10 @@ namespace VirtualGeometry.Omni.Editor{
 
         private static void Finish(Exception error){
             EditorApplication.update-=Tick;Application.logMessageReceived-=Record;
+            if(observerCamera!=null){
+                UnityEngine.Rendering.RenderPipelineManager.endCameraRendering-=OnEndCameraRendering;
+                global::Omni.RadialGlobalWarpSourceRegistry.Unregister(observerCamera);
+            }
             if(error!=null){failures.Add(error.ToString());}
             foreach(string message in errors){failures.Add("Unity logged error: "+message);}
             report.Add("UTC="+DateTime.UtcNow.ToString("O",CultureInfo.InvariantCulture)+" Unity="+Application.unityVersion+" GPU="+SystemInfo.graphicsDeviceName+" API="+SystemInfo.graphicsDeviceType);
