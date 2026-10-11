@@ -46,11 +46,27 @@ namespace VirtualGeometry.Omni{
             Application.targetFrameRate=-1;
             // 背景を目立つ色にして、地面があるはずの所に背景が出ていないか(穴)を見る。
             this.view.backgroundColor=new Color(1,0,1,1);
-            this.StartCoroutine(this.Steps());
+            this.StartCoroutine(this.Guarded(this.Steps()));
         }
 
         private void OnDestroy(){
             Application.logMessageReceived-=this.Record;
+        }
+
+        // コルーチン内の例外を、不合格として報告して終了する(例外でコルーチンが打ち切られても、Player が終わらないままにならない)。
+        private IEnumerator Guarded(IEnumerator inner){
+            while(true){
+                object current;
+                try{
+                    if(!inner.MoveNext()){break;}
+                    current=inner.Current;
+                }catch(Exception error){
+                    this.failures.Add("例外: "+error);
+                    this.Finish();
+                    yield break;
+                }
+                yield return current;
+            }
         }
 
         private static string ReadArgument(string name){
@@ -112,16 +128,30 @@ namespace VirtualGeometry.Omni{
                 // 時間
                 var cpuSamples=new List<float>();var mainSamples=new List<float>();var renderSamples=new List<float>();var gpuSamples=new List<float>();
                 var frameTimes=new List<float>();
+                var gpuRaw=new List<float>();
                 var timings=new FrameTiming[1];
                 int drawn=0;int skipped=0;
+                ulong lastStamp=0;
                 for(int frame=0;frame<MeasureFrames;frame++){
                     yield return null;
                     frameTimes.Add(Time.unscaledDeltaTime*1000f);
                     FrameTimingManager.CaptureFrameTimings();
-                    if(FrameTimingManager.GetLatestTimings(1,timings)>0){
+                    // GetLatestTimings は、結果が進んでいないと同じ frame を返す。frame の開始の時刻で重複を除く。
+                    uint available=FrameTimingManager.GetLatestTimings(1,timings);
+                    // 重複を除かない標本(GPU の値の読み方で平均が変わらないかを見るため)。
+                    if(available>0){gpuRaw.Add((float)timings[0].gpuFrameTime);}
+                    if(available>0&&timings[0].frameStartTimestamp!=lastStamp){
+                        lastStamp=timings[0].frameStartTimestamp;
                         cpuSamples.Add((float)timings[0].cpuFrameTime);mainSamples.Add((float)timings[0].cpuMainThreadFrameTime);
                         renderSamples.Add((float)timings[0].cpuRenderThreadFrameTime);gpuSamples.Add((float)timings[0].gpuFrameTime);
                     }
+                }
+                // 時間が測れていること(標本が少ない、または GPU の時間が使える環境で 0 のままなら不合格)。
+                if(cpuSamples.Count<MeasureFrames/4){this.failures.Add(name+": FrameTimingManager の標本が "+cpuSamples.Count+" しかありません(期待 "+MeasureFrames/4+" 以上)。");}
+                if(SystemInfo.supportsGpuRecorder){
+                    int positive=0;
+                    for(int i=0;i<gpuSamples.Count;i++){if(gpuSamples[i]>0f){positive++;}}
+                    if(positive<MeasureFrames/4){this.failures.Add(name+": GPU の frame 時間が正の標本が "+positive+" しかありません(GPU の時間を測れていません)。");}
                 }
                 PlanetTerrainSource[] sources=this.demo.Bodies;
                 var counts=new List<string>();
@@ -161,7 +191,7 @@ namespace VirtualGeometry.Omni{
                 if(belowSurface!=0){this.failures.Add(name+": 水平より下を向く光線の画素に、背景が "+belowSurface+" あります(穴)。");}
                 if(background>=width*height){this.failures.Add(name+": 全画素が背景です。");}
                 this.report.Add(name+": convergedFrames="+frames+" cells(selected)="+string.Join("/",counts)+" drawn="+drawn+" skipped="+skipped+" pixels="+width+"x"+height+" background="+background+" belowSurface="+belowSurface);
-                this.report.Add(name+": frameInterval(ms) "+Describe(frameTimes)+" | cpuFrame "+Describe(cpuSamples)+" | cpuMain "+Describe(mainSamples)+" | cpuRender "+Describe(renderSamples)+" | gpu "+Describe(gpuSamples));
+                this.report.Add(name+": frameInterval(ms) "+Describe(frameTimes)+" | cpuFrame "+Describe(cpuSamples)+" | cpuMain "+Describe(mainSamples)+" | cpuRender "+Describe(renderSamples)+" | gpu "+Describe(gpuSamples)+" | gpuRaw "+Describe(gpuRaw));
             }
             this.Finish();
         }
@@ -204,10 +234,16 @@ namespace VirtualGeometry.Omni{
             if(this.ignored.Count>0){this.report.Add("ignored known Omni diagnostics: "+this.ignored.Count+" x "+this.ignored[0]);}
             this.report.Add("UTC="+DateTime.UtcNow.ToString("O",CultureInfo.InvariantCulture));
             if(this.failures.Count==0){this.report.Add("PASSED");}else{this.report.Add("FAILED");this.report.AddRange(this.failures);}
-            Directory.CreateDirectory(this.results);
-            File.WriteAllLines(Path.Combine(this.results,"PlayerReport.txt"),this.report);
             int code=1;
             if(this.failures.Count==0){code=0;}
+            try{
+                Directory.CreateDirectory(this.results);
+                File.WriteAllLines(Path.Combine(this.results,"PlayerReport.txt"),this.report);
+            }catch(Exception error){
+                // 報告を書けなくても、終了コードを不合格にして終わる(Player が終わらないままにならない)。
+                Debug.LogError("PlayerReport.txt を書けません: "+error);
+                code=1;
+            }
             Application.Quit(code);
         }
     }

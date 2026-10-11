@@ -69,7 +69,7 @@ namespace VirtualGeometry.World{
         public float TargetPixels{get=>this.targetPixels;set{this.targetPixels=value;if(this.selector!=null){this.selector.TargetPixels=value;}}}
         public int MaximumLevel=>this.maximumLevel;
         public PlanetCellSelector Selector=>this.selector;
-        /// <summary>直近の選択で描いた Cell。</summary>
+        /// <summary>直近の選択で選んだ Cell(<see cref="SkipDraw"/> で描かずに飛ばした Cell と、まだ描けない Cell を含む。描いた数は <see cref="LastDrawnCells"/>)。</summary>
         public IReadOnlyList<PlanetCellKey> LastSelected=>this.output;
         public int UsedSlots=>this.slotByKey.Count;
         /// <summary>slot が足りず、退避できる Cell も無かったために生成できなかった要求の累計。</summary>

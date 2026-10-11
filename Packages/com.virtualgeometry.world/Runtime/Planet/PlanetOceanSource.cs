@@ -11,7 +11,7 @@ namespace VirtualGeometry.World{
     /// 帯域制限: 波長が 2·quadLength より短い成分は変位に入れない(頂点の間隔で表せない帯域。P5b で法線と粗さへ移す)。
     /// 波の入る階層の Cell は、描く frame ごとに作り直す(粗い Cell は静止した球面)。
     /// 水深(海面からの地形の深さ)は地形の高さの Field から求め、UV の x に入れる(P5b の shader で使う)。
-    /// 海岸線は地形との深度の交わりで決まる。
+    /// 海岸線は、fragment が補間した水深(UV の x)の clip で決まる(RadialOcean.shader。深度の交わりには頼らない)。
     /// </summary>
     [ExecuteAlways]
     public sealed class PlanetOceanSource:PlanetLayerSource{
@@ -30,7 +30,9 @@ namespace VirtualGeometry.World{
         /// <summary>false なら <see cref="WaveTime"/> を進めない(検証で時刻を固定する)。</summary>
         [SerializeField] private bool advanceTime=true;
         /// <summary>
-        /// true なら、全頂点が陸(水深 < 0)の Cell は描かない。fragment の clip(depth) が全画素を捨てるので、画像は変わらない(厳密)。
+        /// true なら、全頂点が陸(水深 &lt; 0)の Cell は描かない。fragment の clip(depth) が全画素を捨てるので、画像は変わらない(厳密)。
+        /// 前提: (1) 材質が uv.x &lt; 0 の画素を clip する(RadialOcean.shader。材質の shader が RadialOcean でないときは、この設定を無視して描く)、
+        /// (2) 地形の高さの Field(SetRasters、Configure、増幅の設定)を有効なまま変えたら <see cref="Refresh"/> で海を作り直す(水深は Cell を割り当てたときだけ縮約する)。
         /// 水深は生成時に GPU で縮約して読み戻す(数 frame 後に届くまでは描く)。
         /// </summary>
         [SerializeField] private bool skipLandCells=true;
@@ -79,6 +81,14 @@ namespace VirtualGeometry.World{
         public bool AdvanceTime{get=>this.advanceTime;set=>this.advanceTime=value;}
         /// <summary>全頂点が陸の Cell を描かない(<see cref="PlanetLayerSource.LastSkippedCells"/> が数)。画像は変わらない。</summary>
         public bool SkipLandCells{get=>this.skipLandCells;set=>this.skipLandCells=value;}
+
+        /// <summary>
+        /// 海を作り直す(Cell の頂点と、水深の縮約の結果を捨てて、生成し直す)。地形の高さの Field(<see cref="PlanetTerrainSource.SetRasters"/>、Configure、増幅の設定)を
+        /// 有効なまま変えたら呼ぶ。海は地形の変更を購読しないので、呼ばないと、陸だけと判定済みの Cell が古い水深のまま描かれない。
+        /// </summary>
+        public void Refresh(){
+            this.Rebuild();
+        }
         protected override float SelectionAmplitude=>this.amplitude;
         protected override string GeneratorResource=>"VirtualGeometryWorld/PlanetOceanGenerate";
 
@@ -215,7 +225,21 @@ namespace VirtualGeometry.World{
         }
 
         protected override bool SkipDraw(int slot){
-            return this.skipLandCells&&this.landState!=null&&this.landState[slot]==LandOnly&&this.landVersion[slot]==this.SlotVersion(slot);
+            return this.skipLandCells&&this.MaterialClipsLand()&&this.landState!=null&&this.landState[slot]==LandOnly&&this.landVersion[slot]==this.SlotVersion(slot);
+        }
+
+        // 飛ばしても画像が変わらないのは、材質が uv.x < 0 の画素を clip する(RadialOcean.shader)ときだけ。材質を取り替えたときだけ、shader の名前を調べ直す。
+        private Material clipMaterial;
+        private bool clipMaterialResult;
+
+        private bool MaterialClipsLand(){
+            Material current=this.Material;
+            if(current==null){return false;}
+            if(!ReferenceEquals(current,this.clipMaterial)){
+                this.clipMaterial=current;
+                this.clipMaterialResult=current.shader!=null&&current.shader.name.EndsWith("RadialOcean",StringComparison.Ordinal);
+            }
+            return this.clipMaterialResult;
         }
 
         /// <summary>検証用。Cell が生成済みで、水深の縮約の結果が届いているとき true。landOnly は、全頂点が陸(描かない Cell)か。</summary>
@@ -231,7 +255,7 @@ namespace VirtualGeometry.World{
             depth=0;
             if(this.Selector==null){return false;}
             PlanetCellFrame frame=this.Selector.Frame(in key);
-            Vector3 sphere=PlanetCellGeometry.SpherePoint(in frame,CellQuads,i,j,this.Radius,out Vector3 direction);
+            Vector3 sphere=PlanetCellGeometry.SpherePoint(in frame,CellQuads,i,j,this.Radius,out Vector3 _);
             if(!this.terrain.TryHeight(in frame,sphere,this.Selector.QuadArc(key.Level),out float height)){return false;}
             depth=-height;
             return true;

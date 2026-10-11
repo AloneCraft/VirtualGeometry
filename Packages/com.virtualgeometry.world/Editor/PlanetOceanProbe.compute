@@ -6,7 +6,7 @@
 // 出力は、札(OceanLabel)、画素ごとの傾き(OceanShortWaves の gradient)、傾きの分散(variance)。
 // 波の配列(_WaveDirection、_WaveShape、_WavePhase、_WaveCount)は PlanetOceanSource.BindWavesForDiagnostics が書く。
 
-#include "PlanetOcean.hlsl"
+#include "Packages/com.virtualgeometry.world/Runtime/Resources/VirtualGeometryWorld/PlanetOcean.hlsl"
 
 int _ProbeCount;
 // xyz: Cell の原点からの相対位置、w: quad の弧長

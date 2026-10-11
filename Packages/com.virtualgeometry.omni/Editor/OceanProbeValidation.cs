@@ -27,7 +27,7 @@ namespace VirtualGeometry.Omni.Editor{
         private const string Results="TestResults/Planet/OceanProbe";
         private const string ShaderPath="Packages/com.virtualgeometry.omni/Shaders/RadialGlobalLit.vgshader";
         private const string OceanShaderPath="Packages/com.virtualgeometry.omni/Shaders/RadialOcean.vgshader";
-        private const string ProbePath="Packages/com.virtualgeometry.world/Runtime/Resources/VirtualGeometryWorld/PlanetOceanProbe.compute";
+        private const string ProbePath="Packages/com.virtualgeometry.world/Editor/PlanetOceanProbe.compute";
         private const float Radius=600000;
         private const float Height=3000;
         // 比べる反復回数。既定は RadialOcean.shader の OCEAN_LABEL_ITERATIONS(shader の文字列から読む)。
@@ -258,7 +258,7 @@ namespace VirtualGeometry.Omni.Editor{
                                 for(int iterations=1;iterations<=6;iterations++){
                                     double3 label=LabelIterate(waves,position,iterations);
                                     iterationLabelError[iterations]=Math.Max(iterationLabelError[iterations],math.length(label-labelExact));
-                                    double3 gradient=Formula(waves,label,footprint,out double v);
+                                    double3 gradient=Formula(waves,label,footprint,out double unusedGradientVariance);
                                     iterationGradientError[iterations]=Math.Max(iterationGradientError[iterations],math.length(gradient-gradientTrue));
                                 }
                             }
@@ -268,7 +268,7 @@ namespace VirtualGeometry.Omni.Editor{
                     yield return null;
                 }
             }
-            report.Add("probes="+totalProbes+" fixedPointConverged: worst |L201−L200|="+worstConvergence.ToString("G3",CultureInfo.InvariantCulture)+"m unconverged="+unconverged);
+            report.Add("probes="+totalProbes+" fixedPointConverged: worst |L"+(ConvergedIterations+1)+"−L"+ConvergedIterations+"|="+worstConvergence.ToString("G3",CultureInfo.InvariantCulture)+"m unconverged="+unconverged);
             if(unconverged!=0){failures.Add("不動点反復が収束しない点が "+unconverged+" あります(反復の縮小率が 1 に近い)。");}
             // 集計
             double implementationLabel=0;double implementationGradient=0;double implementationVariance=0;
@@ -279,7 +279,7 @@ namespace VirtualGeometry.Omni.Editor{
                 string rms=(Math.Sqrt(s.TotalSquare/s.Count)).ToString("G3",CultureInfo.InvariantCulture);
                 string signal=(Math.Sqrt(s.SignalSquare/s.Count)).ToString("G3",CultureInfo.InvariantCulture);
                 report.Add(pair.Key+": n="+s.Count+" impl label="+s.ImplementationLabel.ToString("G3",CultureInfo.InvariantCulture)+"m gradient="+s.ImplementationGradient.ToString("G3",CultureInfo.InvariantCulture)+
-                    " variance(rel)="+s.ImplementationVariance.ToString("G3",CultureInfo.InvariantCulture)+" | iteration3 label="+s.LabelIteration.ToString("G3",CultureInfo.InvariantCulture)+"m gradient="+s.GradientIteration.ToString("G3",CultureInfo.InvariantCulture)+
+                    " variance(rel)="+s.ImplementationVariance.ToString("G3",CultureInfo.InvariantCulture)+" | iteration"+shaderIterations+" label="+s.LabelIteration.ToString("G3",CultureInfo.InvariantCulture)+"m gradient="+s.GradientIteration.ToString("G3",CultureInfo.InvariantCulture)+
                     " | firstOrder gradient="+s.GradientFirstOrder.ToString("G3",CultureInfo.InvariantCulture)+" | total max="+s.TotalMaximum.ToString("G3",CultureInfo.InvariantCulture)+" mean="+(s.TotalSum/s.Count).ToString("G3",CultureInfo.InvariantCulture)+" rms="+rms+
                     " (signal rms="+signal+") resolvedLabelPhase="+s.ResolvedLabelPhase.ToString("G3",CultureInfo.InvariantCulture)+"rad");
                 implementationLabel=Math.Max(implementationLabel,s.ImplementationLabel);implementationGradient=Math.Max(implementationGradient,s.ImplementationGradient);
@@ -289,8 +289,15 @@ namespace VirtualGeometry.Omni.Editor{
                 totalMaximum=Math.Max(totalMaximum,s.TotalMaximum);totalSum+=s.TotalSum;totalSquare+=s.TotalSquare;signalSquare+=s.SignalSquare;totalCount+=s.Count;
                 if(s.TotalSum/s.Count>TotalGradientMeanTolerance){failures.Add(pair.Key+": 傾きの平均の誤差が "+(s.TotalSum/s.Count).ToString("G3",CultureInfo.InvariantCulture)+" で、許容 "+TotalGradientMeanTolerance+" を超えました。");}
             }
+            // 傾きと位相の信号が無い組(帯域制限で落とす波が無い、または解像される波が無い。signal rms が丸めの大きさ)は、札の実装の一致だけが意味を持つ。数を報告し、信号のある点が少ないと不合格にする。
+            int signalLessGroups=0;long signalLessPoints=0;
+            foreach(KeyValuePair<string,Statistics> pair in statistics){
+                if(Math.Sqrt(pair.Value.SignalSquare/pair.Value.Count)<1e-6){signalLessGroups++;signalLessPoints+=pair.Value.Count;}
+            }
+            report.Add("signal-less groups: "+signalLessGroups+" of "+statistics.Count+" ("+signalLessPoints+" of "+totalCount+" points). 傾きと位相の精度は残りの点の値");
+            if(signalLessPoints*2>totalCount){failures.Add("傾きの信号が無い点が全体の半分を超えています("+signalLessPoints+" / "+totalCount+")。点の取り方が崩れて、傾きの精度の検査が空になっています。");}
             report.Add("overall: impl label="+implementationLabel.ToString("G3",CultureInfo.InvariantCulture)+"m gradient="+implementationGradient.ToString("G3",CultureInfo.InvariantCulture)+" variance(rel)="+implementationVariance.ToString("G3",CultureInfo.InvariantCulture)+
-                " | iteration3 label="+labelIteration.ToString("G3",CultureInfo.InvariantCulture)+"m gradient="+gradientIteration.ToString("G3",CultureInfo.InvariantCulture)+" | firstOrder gradient="+gradientFirstOrder.ToString("G3",CultureInfo.InvariantCulture)+
+                " | iteration"+shaderIterations+" label="+labelIteration.ToString("G3",CultureInfo.InvariantCulture)+"m gradient="+gradientIteration.ToString("G3",CultureInfo.InvariantCulture)+" | firstOrder gradient="+gradientFirstOrder.ToString("G3",CultureInfo.InvariantCulture)+
                 " | total max="+totalMaximum.ToString("G3",CultureInfo.InvariantCulture)+" mean="+(totalSum/totalCount).ToString("G3",CultureInfo.InvariantCulture)+" rms="+Math.Sqrt(totalSquare/totalCount).ToString("G3",CultureInfo.InvariantCulture)+
                 " (signal rms="+Math.Sqrt(signalSquare/totalCount).ToString("G3",CultureInfo.InvariantCulture)+") resolvedLabelPhase="+resolvedPhase.ToString("G3",CultureInfo.InvariantCulture)+"rad");
             for(int iterations=1;iterations<=6;iterations++){

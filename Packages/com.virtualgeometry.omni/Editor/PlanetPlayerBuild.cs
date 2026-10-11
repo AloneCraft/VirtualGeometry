@@ -46,6 +46,8 @@ namespace VirtualGeometry.Omni.Editor{
             Dictionary<string,byte[]> snapshots=null;
             try{
                 Directory.CreateDirectory(results);
+                // 前回の実行の画像が残らないようにする(今回の実行が途中で失敗しても、古い画像が今回のものに見えない)。
+                foreach(string stale in Directory.GetFiles(results,"PlayerView_*.png")){File.Delete(stale);}
                 snapshots=Snapshot();
                 string variant="Release";
                 if(development){variant="Development";}
@@ -151,7 +153,7 @@ namespace VirtualGeometry.Omni.Editor{
                         }
                     }
                 }
-                // ビルドの警告・エラーのメッセージを記録する。
+                // ビルドの警告のメッセージを記録する(エラーは、失敗したときに上の分岐で failures へ入る)。
                 foreach(BuildStep step in build.steps){
                     foreach(BuildStepMessage message in step.messages){
                         if(message.type==LogType.Warning){report.Add("build warning: "+message.content);}

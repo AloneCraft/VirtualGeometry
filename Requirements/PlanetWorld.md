@@ -435,27 +435,29 @@ camera が破棄されても Dictionary のキーが残り、source が無効に
 - `PlayStopLeakValidation`(`TestResults/Planet/PlayStopLeak`): 月とボールの scene を Play → 150 frame 描画 → Stop を 10 往復。条件 A(domain reload と scene reload を止める)、B(domain reload だけ止める)で、
   停止後の GPU の memory は 866 MiB のまま(増加 0 MiB)、描画中の最大も 1,354 MiB のまま。既定の domain reload ありは、static の状態ごと検証の状態が消えるので、この枠組みでは測れない
 - Unity の object は 1 往復あたり 3 個増える(GameObject、Transform、`RadialSceneBatchDriver`)。増えるのは Omni の `Omni Scene BRG Driver`(`HideAndDontSave` の GameObject)だけで、VG の object は増えない。
-  Omni の `RadialSceneBatchRendererService.Shutdown` が `s_Driver` を null にするだけで GameObject を破棄していないように見える(推測、未確認)。Omni への報告は未送信（宛先のセッションが見つからなかった）
+  Omni の `RadialSceneBatchRendererService.Shutdown` が `s_Driver` を null にするだけで GameObject を破棄していないように見える(推測、未確認)
 
 ### 確認(観察 camera と View Scale、`MoonBallValidation.RunObserver` と `RunViewScale`、2026-10-12)
 
 月とボールの scene(半径は月、目標 2px、640×480、単色の分類)。
 
-**観察 camera(eye が warp 中心にない camera)**: `RadialWarpSource.Observer(主 camera の RadialCamera)` で登録した 2 台目の camera を、主 camera から up 方向へ ε だけ離して描く。`ViewSnapshot` は全ての ε で `IsEyeAtWarpCenter=false`、`CanUseConeCulling=false`(fail-open の経路を通る)。主 camera は `true`/`true`。
+**観察 camera(eye が warp 中心にない camera)**: `RadialWarpSource.Observer(主 camera の RadialCamera)` で登録した 2 台目の camera を、主 camera から up 方向へ ε だけ離して描く。`ViewSnapshot` は全ての ε(検証が全ケースで判定する)で `IsEyeAtWarpCenter=false`、`CanUseConeCulling=false`(Omni の錐台が使えず、`OmniPlanetPlacement` が全面を通す fail-open の経路を通る。`ViewSnapshot.IsFailOpen` は全ケースで false で、これとは別の概念)。主 camera は `true`/`true`。
 
 - ε = 10^-6 m、10^-4 m(同じ向き): 主 camera の画像と、ボールの輪郭を含めて 1 画素の帯の外で一致(不一致 0、どの種類でもない画素 0)
 - ε = 1 m(同じ向き): 月の画素の下(画面の下側)に背景 0 画素。ボールは視野の外(0 画素)
 - ε = 1 m、10^2 m、10^4 m(真下を向く): 背景 0 画素(画面全体が月とボール)
-- 判定にピンホールの幾何(`CountHoles`)は使えない。warp 中心から離れた eye では、対数圧縮で月の形が変わり(同じ向きで 1 m 上がるだけでボールは視野を外れ、地平線の位置も変わる)、同じ向きのまま 10^4 m 離れると月が 1 画素も描かれなかった(最初の測定)。そのため位相(月の下は月)で判定している。
+- 判定にピンホールの幾何(`CountHoles`)は使えない。warp 中心から離れた eye では、Omni の観察 camera の設計(対象だけを対数圧縮する)で月の形が変わる(同じ向きで 1 m 上がるだけでボールは視野を外れ、地平線の位置も変わる)。そのため位相(月の下は月、真下を向けば全面が月)で判定している。
   観察 camera の見た目が幾何として正しいか(Omni の写像の設計どおりか)は、この検証では確かめていない
 
 **View Scale M**: `RadialCamera.SetViewScale(M)` は論理 Near Clip を Camera の Near ÷ M にする。論理 Near の平面より手前は描かれない。
 接触の視点(ボールの面まで約 0.18 m)で論理 Near が約 0.03 m になるよう、Camera の Near を `clamp(0.03·M, 0.01, 0.3)` にして振った(デモの既定は M = 10、Near 0.3)。
 
+- 各 M で、`RadialCamera` の `EffectiveNearClip`(論理 Near。期待値は Camera の Near ÷ M)と `EffectiveLog2ViewScale`(期待値は log2 M)を読み戻して一致を確かめる(M が適用された確認。M = 10^-3、0.1 は接触の比較が無く、月全体の判定は M に依らないので、これが M の効きを見る唯一の確認)
+
 - M = 1、10、10^3、10^6: ボール(隙間 0 と 1 mm)が、Logical の位置から光線で求めた解析の球と、1 画素の帯の外で一致(不一致 0、どの種類でもない画素 0、最下の行も一致)
 - 全ての M(10^-3、0.1、1、10、10^3、10^6): 月全体の視点(高さ 2.5R)で、穴 0、月の輪郭が解析の円と 1 画素の帯の外で一致(0 画素)
 - M = 10^-3、0.1: 接触の視点は比較していない(Camera の Near の下限 0.01 で、論理 Near が 10 m、0.1 m。ボールの面までの距離の半分を超える)
-- Camera の Near を 0.3 のままにして M だけを振ると、M ≤ 1 で論理 Near(M = 1 で 0.3 m、0.1 で 3 m、10^-3 で 300 m)がボールの面(約 0.18 m)より遠くなり、ボールが描かれない(`SetViewScale` の仕様どおりで、実装の欠陥ではない)。初回の検証が M ≤ 1 で失敗したのは、この検証側の設定のため
+- Camera の Near を 0.3 のままにして M だけを振ると、M ≤ 1 で論理 Near(M = 1 で 0.3 m、0.1 で 3 m、10^-3 で 300 m)がボールの面(約 0.18 m)より遠くなり、ボールが描かれない(`SetViewScale` の仕様どおりで、実装の欠陥ではない)
 
 ### 確認(Scene View、`MoonBallValidation.RunSceneView`、2026-10-12)
 
@@ -463,15 +465,16 @@ camera が破棄されても Dictionary のキーが残り、source が無効に
 `RenderPipeline.SubmitRenderRequest`(`UniversalRenderPipeline.SingleCameraRequest`)で RenderTexture へ描く。月とボールの scene、640×480、camera の画角・near・far は主 camera に揃える。
 VG の `VirtualGeometryRenderFeature` は `CameraType.SceneView` を描き、`OmniPlanetPlacement` は `ExternalDrawPaths.Register(SceneViewContent)` を宣言している。
 
-- **Scene View 自身が warp 中心**(`ExploreFromSceneView=true`): 月全体(高さ 2.5R)で、月の画素 73,942(View Scale の検証の月全体の画素数と同じ)、穴 0、月の輪郭が解析の円と 1 画素の帯の外で一致(違い 0)。
+- **Scene View 自身が warp 中心**(`ExploreFromSceneView=true`): 月全体(高さ 2.5R)で、月の画素 73,942(主 camera が同じ視点で描いた画素数と同じ。検証は 0.5% 以内を要求する)、穴 0、月の輪郭が解析の円と 1 画素の帯の外で一致(違い 0)。
   `ViewSnapshot` は Radial 有効、eye は warp 中心、錐台が使える。接触の視点でも月(100,183 画素)とボール(161,171 画素)が描かれる
 - **実カメラ基準**(`ExploreFromSceneView=false`。eye が warp 中心でない = fail-open): 月全体で月 77,652 画素、接触の視点で月 99,931 画素・ボール 168,323 画素。
-  `ViewSnapshot` は Radial 有効、eye は warp 中心でなく、錐台は使えない。どちらもどの種類でもない画素 0、Unity のエラー 0
-- 最初の試行(Scene View の camera の Unity の transform を動かさない)は、月が 0 画素で不合格だった。非表示の Scene View は Repaint されないので、`LookAtDirect` や `OmniSceneViewVerification.TryMoveLogicalCameraForAutomation`(論理ピボットを動かす)では camera の transform が動かず、
-  eye が原点のままになる。そのため、検証は camera の transform を主 camera の位置・向きに直接置いている
+  `ViewSnapshot` は Radial 有効、eye は warp 中心でなく、錐台は使えない(検証が判定する)。どちらもどの種類でもない画素 0、Unity のエラー 0。
+  月全体の月の画素は主 camera の画像より約 5% 多い。この差の原因は未調査(Scene View の eye は float の transform で、基準の camera と eye が同じ位置でない)
+- 非表示の Scene View は Repaint されないので、`LookAtDirect` や `OmniSceneViewVerification.TryMoveLogicalCameraForAutomation`(論理ピボットを動かす)では camera の transform が動かず、eye が原点のままになる。
+  そのため、検証は camera の transform を主 camera の位置・向きに直接置いている(Omni の Scene View の目の経路そのものは通っていない)
 
 確かめていないこと: **接触の視点でのボールの位置の精度**(Scene View の eye は Unity の transform の float で、月の面(1.7×10^6 m)では刻みが 0.125 m、ボールの半径 0.11 m より粗い。
-この判定を外す前の試行では、接触の視点のボールは解析の球と 10,851 画素足りず・19,932 画素余分だった(現在の検証はボールが描かれることだけを見る)。この精度は Scene View では保証しない。mm の位置が要る確認は主 camera の Logical Transform で行う)、
+現在の検証は、接触の視点でボールが描かれることだけを見る。mm の位置が要る確認は主 camera の Logical Transform で行う)、
 開いた Editor の Repaint で動く仮想ビューポートの論理ピボット(Logical の目の位置)、Overlay、実際の入力。
 
 ### 検証(`VirtualGeometry.Omni.Editor.P2OmniPlanetValidation`)
@@ -490,14 +493,12 @@ Logical の camera が安全域(±10km)の外にあると、Unity の camera は
 - 遠方に置いたまま、宇宙(30km)から 1.7m までの 121 frame で穴 0
 - 惑星の有効・無効を 10 回繰り返した後も、エラー無しで描き直せる
 
-未実施:
+未実施(確認したことは上の各「確認」の節、深度の分解能は §21):
 
-- 半径 600km は §12 で、穴 0、頂点の精度、Hmax の球から 1.7m〜10km の 3 視点で Standard との輪郭の差 0 を確認した。地面に近い視点での Standard との比較は、基準自体が float の量子化を含むので行っていない
-- eye が warp 中心に無い camera の、見た目の幾何としての正しさ(下の「確認(観察 camera と View Scale)」は位相と、主 camera との連続性だけを見ている)
+- 半径 600km の、地面に近い視点での Standard との比較(§12 は穴 0、頂点の精度、Hmax の球から 1.7m〜10km の 3 視点で Standard との輪郭の差 0 を確認した。基準自体が float の量子化を含むので、地面に近い視点は比べていない)
+- eye が warp 中心に無い camera の、見た目が幾何として正しいか(上の「確認(観察 camera と View Scale)」は位相と、主 camera との連続性だけを見ている)
 - M = 10^-3 と 0.1 の接触の視点(論理 Near が 10 m、0.1 m で、ボールの面までの距離の半分を超えるので比較していない)
-- z-fighting と深度の分解能の測定は §21 で行った
-- Play/Stop の往復と、camera の GPU buffer のリークは下の「確認(camera の状態の解放と Play/Stop の往復)」で行った
-- 開いた Editor の実際の Scene View(Repaint、仮想ビューポートの論理ピボット、Overlay、マウスやキーの入力)。非表示の Scene View の camera の描画は下の「確認(Scene View)」で確かめた
+- 開いた Editor の実際の Scene View(Repaint、仮想ビューポートの論理ピボット、Overlay、マウスやキーの入力。非表示の Scene View の描画は上の「確認(Scene View)」)
 
 
 ## 12. Cell の精度の基盤(P4a)
@@ -578,7 +579,7 @@ cull 空間での位置は CameraCull + LocalToCull·(Cell − カメラ)。Omni
 - 帯域制限: 波長が 2·quadLength より短い octave は足さない(CPU の地表の評価は quadLength=0 で全部足す)。
   振幅÷波長が octave によらず一定なので、落とす帯域の振幅は quad の数 % にとどまる
 
-Override(地域の作り込み)と実データの基盤は、まだ実装していない(Field の差し替え口は未定義)。
+実データの格子と局所の Override は §18(`PlanetTerrainSource.SetRasters`)で実装した。Field の供給元の interface は意図して見送った(§18 の限界)。
 
 ### 降下カメラ(`PlanetDescentCamera`)
 
@@ -613,8 +614,6 @@ Override(地域の作り込み)と実データの基盤は、まだ実装して�
 未実施:
 
 - 人の操作(Input System の入力)による降下カメラの確認(検証は `Move` と `Teleport` を直接呼ぶ)
-- Override と実データの基盤
-- 10^20 m までの大きさ(P6)
 - 地上での pool の不足(1.7m では 2048 を使い切り、退避が続く)の調整
 
 
@@ -640,7 +639,7 @@ GPU の Cell の格子の部品(面の表、正接の差、Cell の中心から�
 - 選択の bounds には、波の変位の上界(Σ振幅·(1+尖り))を含める
 - 水深(海面からの地形の深さ)を UV の x に入れる(P5b の shader で使う)
 
-海岸線は地形と海の深度の交わりで決まる。
+海岸線は、fragment が補間した水深(UV の x)の `clip` で決まる(§15。深度の交わりには頼らない)。
 
 ### 確認(`VirtualGeometry.Omni.Editor.P5aOceanValidation`、半径 600km、Hmax 3000m)
 
@@ -665,19 +664,16 @@ GPU の Cell の格子の部品(面の表、正接の差、Cell の中心から�
 
 海の Cell は惑星全体を覆う四分木なので、陸の上の Cell も海の Cell として選ばれ、fragment の `clip(depth)` で全画素を捨てるだけになる。
 Cell の全頂点の水深(UV の x)が負なら、補間した水深も全画素で負なので、その Cell は描いても描かなくても画像が同じ(厳密)。そういう Cell は draw にしない。
+**前提**: (1) 材質が `uv.x < 0` の画素を `clip` する(`RadialOcean.shader`。`SkipLandCells` は材質の shader が `RadialOcean` のときだけ働く)、(2) 地形の高さの Field(`SetRasters`、`Configure`、増幅の設定)を有効なまま変えたら、`PlanetOceanSource.Refresh()` で海を作り直す(水深は Cell を割り当てたときだけ縮約するため)。
 
 - 生成の直後に、`ReduceDepth`(`PlanetOceanGenerate.compute`、1 group)が slot の全頂点のうち水深が 0 以上(または NaN)のものを数え、`AsyncGPUReadback` で数 frame 後に読み戻す。0 なら陸だけ。
   水深は時刻に依らないので、Cell を新しく割り当てたときだけ縮約する(作り直しでは求め直さない)。slot を別の Cell に使い直すと世代(`SlotVersion`)が変わり、古い結果は捨てる。結果が届くまで、または NaN があれば、描く(安全側)
 - `PlanetLayerSource.SkipDraw(slot)`(派生クラスが上書き。飛ばした Cell は `OnCellDrawn` も呼ばない)、`LastDrawnCells`・`LastSkippedCells`
 - 確認(`P5aOceanValidation.CheckSkipLand`。海岸の 4 視点、時刻は固定): 飛ばす設定と飛ばさない設定で、単色と見た目の画像が **全画素で一致**(違う画素 0)。
-  描いた Cell + 飛ばした Cell が、飛ばさない設定の Cell 数と一致。飛ばした Cell は draw の 19〜63%(447 → 360、341 → 280、201 → 140、140 → 52)
-- CPU の水深(全 65×65 格子点)との照合: 飛ばした 40 Cell は全格子点が陸、飛ばしていない 40 Cell は全格子点が陸ではない。その中に陸と海の格子点が混在する Cell(海岸を含む)が 9 あり、いずれも飛ばしていない
+  飛ばした Cell は draw の 18〜63%(447 → 360、341 → 280、201 → 140、140 → 52)。飛ばした Cell の数は、GPU の縮約が陸だけと判定した Cell の数(`TryGetLandOnlyForDiagnostics`)と一致する
+- CPU の水深(全 65×65 格子点)との照合: 飛ばした 40 Cell は全格子点が陸、飛ばしていない 40 Cell は、いずれも陸でない格子点を含む。その中に陸と海の格子点が混在する Cell(海岸を含む)が 9 あり、いずれも飛ばしていない
 - 負の対照(飛ばす条件を、結果が届いた全 Cell に広げた): draw が 0 になり、画像が 87,571〜304,109 画素変わって FAILED
-- 時間の節約は測っていない(CPU の提出が Cell 数に比例する §17 から、飛ばした Cell の数が目安。GPU の時間は §17 のとおり未測定)
-
-未実施・未解決(P5b で扱ったものは §15):
-
-- 深度の分解能の実測は §21 で行った
+- 時間の節約は測っていない(CPU の提出は Cell 数にほぼ比例する(§17)ので、CPU は飛ばした Cell の数が目安。GPU は §17 の Player の測定で Cell の数に比例しないので目安にならず、Player の測定対象(BodyStack)に海は無いので、海の GPU 時間は未測定)
 
 
 ## 15. 海の shader(P5b)
@@ -688,13 +684,13 @@ Radial のプロパティは Properties に宣言しないと MaterialPropertyBl
 
 ### fragment がすること
 
-1. **海岸線**: 頂点の UV.x(水深。地形の高さの符号を変えたもの)が 0 以下の画素は描かない。海岸線は地形の高さの Field の 0 の等高線で、深度の交わりに頼らない
+1. **海岸線**: 頂点の UV.x(水深。地形の高さの符号を変えたもの)が負の画素は描かない(`clip`)。海岸線は地形の高さの Field の 0 の等高線で、深度の交わりに頼らない
 2. **法線**: 帯域制限で頂点の変位から落とした波のうち、波長が画素の大きさ(`ddx/ddy` した位置の変化量)の 2 倍以上のものを、高さの勾配 A·k·cosθ·d_t として法線に足す
 3. **粗さ**: 画素より短い波の傾きの分散 ½(A·k)²|d_t|² を、粗さの 2 乗に足す。波長が画素の 1〜2 倍の間は、法線から粗さへなめらかに移す(`resolved` の重み)
 4. **色と泡**: 水深で浅瀬の色と深い所の色を混ぜ(exp(−水深·吸収))、水深の浅い所に泡を足す。泡の模様は 2 つの波の位相の積(位相は Cell の原点での端数を含むので Cell の境で途切れない。Cell の原点からの相対位置だけで作ると境で途切れた)
 
 波の位相の計算には、変位する前の点(波の「札」)が要る。fragment には変位後の位置しか届かないので、
-`position = sphere + offset(sphere)` を 3 回の不動点反復で解く(`OceanLabel`。反復ごとに誤差が kA 倍に縮む)。
+`position = sphere + offset(sphere)` を 3 回の不動点反復で解く(`OceanLabel`)。縮小は理論上の保証ではなく(各波の A·k·(1+尖り) の和は 1.38 で 1 を超える)、実測で誤差が反復ごとに約 1/4 に縮み、収束は点ごとに検査する(下の「確認(波の法線と不動点反復の精度)」)。
 波の式は PlanetOcean.hlsl に置き、頂点の生成(compute)と shader で共有する。
 
 Cell ごとの値(波の位相の端数、Cell の向きと quad の大きさ)は、Cell ごとの MaterialPropertyBlock で渡す(`PlanetLayerSource.WriteCellProperties`)。
@@ -718,13 +714,14 @@ Cell ごとの値(波の位相の端数、Cell の向きと quad の大きさ)�
 
 `PlanetOcean.hlsl` の `OceanLabel`(札を求める不動点反復)と `OceanShortWaves`(帯域制限で落とした波の傾きと分散)を、compute(`PlanetOceanProbe.compute`。shader と同じ include を使う)で点ごとに評価して読み戻し、倍精度の C# の参照と比べた。
 点は、Cell の格子の中の乱数の位置で、頂点の生成と同じ式の変位(帯域制限で残る波)を倍精度で足した、変位した海面の上の点(半径 600 km、風速 10 m/s、24 成分、階層 8・10・12・14・16、時刻 0・12.3・1000 秒、画素の大きさ 0.01・0.1・1・10 m、14,400 点)。
+階層 16(quad の弧長 0.22 m。2·quad が最短波長 0.5 m より短く、帯域制限で落とす波が無い)の 4 組と、階層 12・14 の画素 10 m(解像される波が無い)の計 6 組(4,320 点)は、傾きと位相の信号が無く、札の実装の一致だけが意味を持つ。傾きと位相の精度は、残る 14 組(10,080 点)の値。
 反復の回数は `RadialOcean.shader` の `OCEAN_LABEL_ITERATIONS`(3)を読む。
 
 - **実装の一致**: GPU の札は、同じ式(同じ反復回数)の倍精度の評価と最大 8.9×10^-5 m、傾きは最大 2.1×10^-4、分散は相対 2.6×10^-7 で一致(許容は 5×10^-4 m、10^-3、10^-3)
-- **不動点反復**: 札の誤差は反復ごとに約 1/4.7 に縮む(1 回 0.244 m、2 回 0.051 m、3 回 0.0109 m、6 回 0.00016 m。収束は 200 回で |L201−L200| = 2.3×10^-13 m)。
+- **不動点反復**: 札の誤差は反復ごとに約 1/4.1〜1/4.8 に縮む(1 回 0.244 m、2 回 0.051 m、3 回 0.0109 m、6 回 0.00016 m。収束は 200 回で |L201−L200| = 2.3×10^-13 m)。
   3 回の札の誤差が、解像される最短の波(波長 0.5〜1.8 m)の位相に与える誤差は最大 0.064 rad(許容 0.15)。傾きの誤差は 3 回で最大 0.014
 - **傾きの式の一次近似**(Gerstner の水平成分=尖りを、法線へ足すときは無視している): 正確な札で、帯域制限で落とした波の変位した面の法線(尖りを含む、中心差分)から求めた傾きと比べて最大 0.024
-- **合計**(GPU の傾き − 正確な傾き。傾きの差 ≈ 法線の角度の差 rad): 最大 0.023(約 1.3°)、平均 0.0017、rms 0.0029。傾き自体の rms は 0.07(誤差の平均は約 2.5%、最大は約 33%)。許容は最大 0.05、(階層・画素の大きさごとの)平均 0.008
+- **合計**(GPU の傾き − 正確な傾き。傾きの差 ≈ 法線の角度の差 rad): 最大 0.023(約 1.3°)、平均 0.0017、rms 0.0029。傾き自体の rms は 0.07(誤差の平均は約 2.5%、最大は約 33%。信号の無い 6 組を除くと平均は約 3.0%)。許容は最大 0.05、(階層・画素の大きさごとの)平均 0.008。平均の許容は、負の対照(反復 1 回)でも超えないので、判定として効いているのは最大と位相の許容
 - 反復を 2 回にしても合計の誤差は 3〜6 回と同じ 0.0224 で、傾きの式の一次近似が支配的になる。1 回だと最大 0.08 で不合格(負の対照: `-oceanProbeIterations 1` で、合計の最大が 0.08 > 0.05、位相の誤差が 2.76 rad > 0.15 で FAILED)。3 回は余裕をもって足りる
 
 この検証が見ないもの: 頂点の間の補間(三角形の chord)で、補間した位置が変位した面から離れる分(点は変位した面の上に取った)。波は水深に依らないので、外洋と海岸の区別はしない。画素ごとの法線と頂点の法線の合成(`OmniRadialObjectToLogicalNormal`)は shader の変換で、この検証の外。
@@ -885,26 +882,34 @@ Omni を入れたプロジェクトで Player をビルドするには、次が�
 - URP の共有 resource の Camera MotionVectors を Omni 版へ接続する(`OmniUniversalRendererResourceInstaller.TryInstall`。internal なのでリフレクションで呼ぶ)。**ビルドの間だけ接続し、終わったら元の参照へ戻す**(プロジェクトの URP の設定を変えたままにしない)
 - Graphics API を DX12 だけにし、`enableFrameTimingStats` を有効にする(これもビルドの間だけ)
 
-2026-10-12 の結果(Mono、RTX 4060 Ti、DX12、640×480、vsync なし、`maxQueuedFrames` 2、各視点の 120 frame の平均。ビルド 0 エラー、Development 166 MiB・非 Development 101 MiB):
+2026-10-12 の結果(Mono、RTX 4060 Ti、DX12、640×480、vsync なし、`maxQueuedFrames` 2、各視点の 120 frame の平均を、同じ変種の 2 回の実行で平均した。ビルド 0 エラー、Development 166 MiB・非 Development 101 MiB。
+保存した報告は `TestResults/Planet/PlanetPlayer/PlayerReport.v1.txt`・`v2`(Development)、`PlanetPlayerRelease/PlayerReport.v3.txt`・`v4`(非 Development)):
 
 | 視点 | 描いた Cell(巨大/月/球/ボール、合計) | CPU frame(Development / 非 Development) | CPU の render thread | GPU(Development / 非 Development) |
 |---|---|---|---|---|
-| 接点 3 | 991 / 642 / 69 / 64(1,766) | 34.0 / 37.4 ms | 9.9 / 10.9 ms | 17.9 / 18.9 ms |
-| 接点 2 | 952 / 734 / 50 / 6(1,742) | 34.2 / 32.4 ms | 10.0 / 9.4 ms | 17.2 / 18.2 ms |
-| 接点 1 | 1,605 / 759 / 0 / 0(2,364) | 47.4 / 45.3 ms | 13.2 / 12.6 ms | 4.3 / 5.4 ms |
-| 全体 | 1,019 / 51 / 6 / 6(1,082) | 21.1 / 19.6 ms | 6.3 / 5.9 ms | 11.3 / 11.4 ms |
+| 接点 3 | 991 / 642 / 69 / 64(1,766) | 33.2 / 31.2 ms | 9.9 / 9.3 ms | 11.1 / 11.3 ms |
+| 接点 2 | 952 / 734 / 50 / 6(1,742) | 31.5 / 30.7 ms | 9.5 / 9.2 ms | 11.0 / 11.0 ms |
+| 接点 1 | 1,605 / 759 / 0 / 0(2,364) | 41.5 / 39.5 ms | 12.1 / 11.3 ms | 5.0 / 4.4 ms |
+| 全体 | 1,019 / 51 / 6 / 6(1,082) | 19.5 / 18.1 ms | 6.0 / 5.4 ms | 7.0 / 6.9 ms |
+
+同じ変種の 2 回の間の差は、CPU frame で最大 3 ms(約 10%)、GPU で最大 0.6 ms(約 5%)。
 
 - 画素: 接点の 3 視点で、水平より 2 画素以上下を向く光線の画素に背景は 0(穴なし)。全体の視点も全画素が背景ではない。Player のエラーログは 0(下の Omni の診断 1 件を除く)
-- **CPU の frame 時間は、描いた Cell の数にほぼ比例する(1 Cell あたり約 19〜20 µs)。** 目安の CPU 2 ms を大きく超えるのは Editor と同じ。非 Development(Mono)でも Development とほとんど変わらないので、CPU の大半は管理コードではなく、Cell ごとの indirect draw と MaterialPropertyBlock の提出(エンジンの内部)と考えられる(仮説)。IL2CPP は試していない
-- **GPU の frame 時間は、Cell の数に比例しない。** 接点 3・2 は約 17〜19 ms(1 Cell あたり約 10 µs)、全体は約 11 ms、接点 1 は draw が最も多いのに約 4〜5 ms(1 Cell あたり約 2 µs)。原因は未調査
-  (仮説: 描いた Cell のうち、cull を生き残る cluster の数と画素の重なり。球とボールが写る視点で大きい)。frame の律速は CPU で、GPU は frame 時間の約 1/2(接点 3・2)〜1/10(接点 1)
+- **CPU の frame 時間は、描いた Cell の数にほぼ比例する(1 Cell あたり約 17〜19 µs)。** 目安の CPU 2 ms を大きく超えるのは Editor と同じ。
+  非 Development と Development の差は ±10% 以内で、変種どうしの差と同じ大きさ。内訳は、Editor の測定(上)から、Cell ごとの indirect draw と MaterialPropertyBlock の提出が大半と考えられる(仮説)。
+  どちらも Mono なので、管理コードとエンジン内部の区別にはならない(区別には IL2CPP との比較か Profiler の内訳が要る。未実施)
+- **GPU の frame 時間は、Cell の数に比例しない。** 接点 3・2 は約 11 ms(1 Cell あたり約 6 µs)、全体は約 7 ms(約 6 µs)、接点 1 は draw が最も多いのに約 4〜5 ms(約 2 µs)。原因は未調査
+  (仮説: 描いた Cell のうち、cull を生き残る cluster の数と画素の重なり。球とボールが写る視点で大きい)。frame の律速は CPU で、GPU は CPU frame の約 1/3(接点 3・2、全体)〜1/8(接点 1)
+- **GPU の時間は、測った時間帯で約 40% 違った。** 同じコード・同じ scene・同じ描く Cell 数の Player を、この表の 4 回の実行より前(同じ日の前半)に測ったときは、
+  GPU が接点 3・2 で 17〜20 ms、全体で約 11 ms(Development・非 Development 合わせて 7 回)だった。その報告は上書きされて残っていない。
+  原因は未調査(仮説: GPU の動作クロックや、同じ GPU を使う他の process の状態)。GPU の frame 時間は、この GPU では 11〜19 ms の幅で見る。CPU の frame 時間も、同じ比較で最大 10% 違った
 - Omni の診断が 1 件、Player で `LogError` として出る: `[Omni][Scene BRG] No active Scene BRG manifest entry is available.`
-  (`RadialSceneBatchRendererService.TryRebuild`。Renderer が 1 つも無い scene では、通常の Renderer を一括で描く経路に manifest が無いため。VG の描画とは無関係に見える)。smoke は件数を報告に書いて無視する。Omni への報告は未送信(宛先が未定)
+  (`RadialSceneBatchRendererService.TryRebuild`。Renderer が 1 つも無い scene では、通常の Renderer を一括で描く経路に manifest が無いため。VG の描画とは無関係に見える)。smoke は件数を報告に書いて無視する
 - **確かめていないこと**: IL2CPP の Player、実際のキーボード入力・HUD の目視(Player は自動の視点だけ)、Editor の画像と Player の画像の画素単位の一致(Player は見た目の材質、Editor の検証は単色)、Player の長時間の動作、他の GPU
 
 ### pool の大きさ(`RealMoonValidation.Run -poolCapacity N`、2026-10-12)
 
-月(半径 1,737.4 km、実データ、目標 2 px、高度 150 km → 0.17 m の 4 地点、選ぶ Cell は地面の近くで約 900〜1,400)で、cluster の pool(と描画 slot)の数 N を振った。
+月(半径 1,737.4 km、実データ、目標 2 px、高度 150 km → 0.17 m の 4 地点、選ぶ Cell は地面の近くで、`RealMoonBall` の 4 地点で 898・1,004・1,359・1,034 個。この `RealMoon` の月は描画 slot 1024 でも `LastError` 無しで合格したので 1,024 以下)で、cluster の pool(と描画 slot)の数 N を振った。
 slot が足りないと、細分化に必要な Cell を確保できず(`starved`)、粗い Cell のまま描く。
 
 | N | starved(要求 × frame) | 退避 | 地表 0.17 m の視点で最も近い Cell の quad | 結果 |
@@ -1034,7 +1039,9 @@ slot が足りないと、細分化に必要な Cell を確保できず(`starved
 - 既定の `Run`、`RunSouth` の GPU/CPU の照合は、粗い Cell のうち |z| > 0.966 の Cell を除外したまま(頂点ハッシュの基準を保つため)。極は `RunPolar`、`RunPolarSynthetic` が全 Cell で比べる
 - 頂点の位置の float の刻みは、Cell の原点の持ち上げ(§19)で解消した。残る限界は §19
 - 実データの帯域より上の増幅は、上の「実データの帯域より上の細部の増幅」で実装・検証した。実データの検証(RealMoon)は増幅 0 のまま(頂点ハッシュ 17 件が基準と一致)。増幅の振幅 A を実データの粗さから決める方法と、1 画素ごとの平均を厳密に 0 にすることは未実施
-- 「Field の供給元の interface」(格子以外の供給元)は作っていない。いまは全球 + 局所の 2 枚の格子だけ
+- 「Field の供給元の interface」(格子以外の供給元)は作っていない(意図して見送った)。いまは全球 + 局所の 2 枚の格子(`PlanetRasterLayer`)、色の格子、手続きの項、増幅だけ。
+  理由: 格子以外の供給元の実例が無く、interface の形(供給元ごとの HLSL の式と uniform、帯域と mip の扱い、Cell ごとの値)を実例なしに決めると作り直しになる。
+  3 つ目の供給元(例: 河川・道路などの局所の Override、別形式の格子)が要る時点で、`PlanetRasterLayer` の `TryCell`・`Sample`・`GetTexture` に当たる部分を interface に抜く。その時の確認は、全頂点ハッシュが前後で一致すること
 - 色(LROC のアルベド)は、下の「色(アルベド)の格子」で、高さと同じ「原点 + 差」の方式で実装・検証した。月のデモの scene(MoonAndBall、BodyStack など)には組み込んでいない(`PlanetTerrainSource.ColorLayer` を設定すれば使える)
 - 視点の高さの降下(高度 150 km → 0.17 m)で、pool(4096)の退避が 17,554 回起きた(`starved` 0、設定エラーなし)
 

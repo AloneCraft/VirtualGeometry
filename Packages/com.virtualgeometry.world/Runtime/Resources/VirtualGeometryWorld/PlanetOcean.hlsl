@@ -45,7 +45,7 @@ float3 OceanOffset(float3 sphere,float3 direction,float quadLength)
 }
 
 // 変位した位置 position(Cell の原点からの相対位置)から、札の位置を求める(position = sphere + offset(sphere) の不動点反復)。
-// originDirection は Cell の原点の外向きの単位方向、radius は惑星の半径。変位は波の振幅の和より小さく、反復ごとに kA(≪1)倍に縮む。
+// originDirection は Cell の原点の外向きの単位方向、radius は惑星の半径。変位は波の振幅の和より小さい。縮小は理論上の保証ではなく、実測で反復ごとに約 1/4 に縮む(Requirements/PlanetWorld.md §15)。
 float3 OceanLabel(float3 position,float3 originDirection,float radius,float quadLength,int iterations)
 {
     float3 sphere=position;

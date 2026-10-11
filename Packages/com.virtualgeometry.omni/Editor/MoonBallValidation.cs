@@ -526,8 +526,9 @@ namespace VirtualGeometry.Omni.Editor{
                     }else{
                         if(belowMoon!=0){failures.Add(name+": 月の画素の下に背景の画素が "+belowMoon+" あります(月に穴)。");}
                     }
-                    if(!observerSnapshotValid||coneCulling||eyeAtWarpCenter){failures.Add(name+": 観察 camera の ViewSnapshot が、eye が warp 中心にない・錐台が使えない状態になっていません(fail-open の経路を通っていません。見つかった "+observerSnapshotValid+"、warp 中心 "+eyeAtWarpCenter+"、錐台 "+coneCulling+")。");}
                 }
+                // 全ての ε で、観察 camera の ViewSnapshot は、eye が warp 中心にない・錐台が使えない状態(fail-open の経路)。
+                if(!observerSnapshotValid||coneCulling||eyeAtWarpCenter){failures.Add(name+": 観察 camera の ViewSnapshot が、eye が warp 中心にない・錐台が使えない状態になっていません(fail-open の経路を通っていません。見つかった "+observerSnapshotValid+"、warp 中心 "+eyeAtWarpCenter+"、錐台 "+coneCulling+")。");}
                 UnityEngine.Object.DestroyImmediate(image);
             }
             UnityEngine.Object.DestroyImmediate(ownerImage);
@@ -618,9 +619,18 @@ namespace VirtualGeometry.Omni.Editor{
                     if(anomaly!=0){failures.Add(name+": 背景・ボール・月のどれでもない画素が "+anomaly+" ありました。");}
                     if(!snapshotValid){failures.Add(name+": Scene View の camera の ViewSnapshot がありません。");}
                     else if(!snapshot.IsRadialActive){failures.Add(name+": Scene View の camera が Radial で描かれていません。");}
+                    if(snapshotValid){
+                        if(explore[c]){
+                            if(!snapshot.IsEyeAtWarpCenter||!snapshot.CanUseConeCulling){failures.Add(name+": Scene View 自身が中心なのに、ViewSnapshot の eye が warp 中心でない、または錐台が使えません(eye "+snapshot.IsEyeAtWarpCenter+"、錐台 "+snapshot.CanUseConeCulling+")。");}
+                        }else{
+                            if(snapshot.IsEyeAtWarpCenter||snapshot.CanUseConeCulling){failures.Add(name+": 実カメラ基準なのに、ViewSnapshot の eye が warp 中心、または錐台が使えます(fail-open の経路を通っていません。eye "+snapshot.IsEyeAtWarpCenter+"、錐台 "+snapshot.CanUseConeCulling+")。");}
+                        }
+                    }
                     if(explore[c]){
-                        if(snapshotValid&&!snapshot.IsEyeAtWarpCenter){failures.Add(name+": Scene View 自身が中心なのに、ViewSnapshot の eye が warp 中心になっていません。");}
                         if(p==0){
+                            // 主 camera が同じ視点で描いた月の画素数と、0.5% 以内で一致する。
+                            int ownerMoonPixels=CountClass(ownerImage,2);
+                            if(Math.Abs(moonPixels-ownerMoonPixels)>0.005*ownerMoonPixels){failures.Add(name+": 月の画素数が主 camera の画像と違います(Scene View "+moonPixels+"、主 camera "+ownerMoonPixels+")。");}
                             // 月全体の輪郭が解析の円と一致し、穴が無い。
                             int holes=CountHoles(image,altitude,sceneCamera);
                             int outside=CompareMoonDisc(image,altitude,sceneCamera);
@@ -721,6 +731,13 @@ namespace VirtualGeometry.Omni.Editor{
                 radial.SetViewScale(scale);
                 double logicalNear=camera.nearClipPlane/(double)scale;
                 string name="M="+scale.ToString("G3",CultureInfo.InvariantCulture);
+                // SetViewScale が実際に効いたか(論理 Near と log2 M)を読み戻す。M = 10^-3、0.1 は接触の比較が無く、月全体の判定も M に依らないので、これが M の効きを見る確認。
+                bool nearRead=radial.EffectiveNearClip.TryToFloat(out float readNear);
+                float readLog2=radial.EffectiveLog2ViewScale;
+                double expectedLog2=Math.Log(scale,2.0);
+                report.Add(name+": readback nearClip="+readNear.ToString("G4",CultureInfo.InvariantCulture)+" expected="+logicalNear.ToString("G4",CultureInfo.InvariantCulture)+" log2ViewScale="+readLog2.ToString("G4",CultureInfo.InvariantCulture)+" expected="+expectedLog2.ToString("G4",CultureInfo.InvariantCulture));
+                if(!nearRead||Math.Abs(readNear-logicalNear)>1e-3*logicalNear){failures.Add(name+": SetViewScale が論理 Near に反映されていません(読み戻し "+readNear+"、期待 "+logicalNear+")。");}
+                if(Math.Abs(readLog2-expectedLog2)>1e-3+1e-4*Math.Abs(expectedLog2)){failures.Add(name+": SetViewScale が log2 M に反映されていません(読み戻し "+readLog2+"、期待 "+expectedLog2+")。");}
                 demo.ShowContactView();
                 demo.SetOffset(0,0,0);
                 bool contactVisible=BallCenterFromCamera(out Vector3 ballCenter)&&logicalNear<0.5*(ballCenter.magnitude-ball.Radius);

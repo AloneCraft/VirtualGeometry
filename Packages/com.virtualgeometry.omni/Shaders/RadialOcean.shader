@@ -2,7 +2,7 @@
 // .vgshader(RadialOcean.vgshader)が、この forward pass を VG 用 pass(頂点入力を VG の buffer にしたもの)へ複製する。
 // 頂点は PlanetOceanGenerate.compute の出力: position は Cell の原点からの相対位置、uv.x は水深(m、地形の高さの符号を変えたもの)。
 // fragment がすること:
-//   1. 海岸線: 水深が 0 以下(陸)の画素は描かない。海岸線は地形の高さの Field の 0 の等高線(深度の交わりに頼らない)。
+//   1. 海岸線: 水深が負(陸)の画素は描かない。海岸線は地形の高さの Field の 0 の等高線(深度の交わりに頼らない)。
 //   2. 法線: 帯域制限で頂点の変位から落とした波のうち、波長が画素の大きさの 2 倍以上のものを、画素ごとの傾きとして足す。
 //   3. 粗さ: 画素より短い波は、傾きの分散を粗さに足す(波長が画素の 1〜2 倍の間は法線から粗さへなめらかに移す)。
 //   4. 色と泡: 水深で浅瀬の色と深い所の色を混ぜ、水深が浅い所に波模様の泡を足す。
@@ -164,7 +164,7 @@ Shader "Omni/RadialOcean"
                 UNITY_SETUP_INSTANCE_ID(input);
 
                 float depth = input.uv.x;
-                // 海岸線: 陸(水深 0 以下)は描かない。
+                // 海岸線: 陸(水深が負)は描かない。
                 clip(depth);
 
                 float3 position = input.positionOS.xyz / max(input.positionOS.w, 1.0e-30f);
