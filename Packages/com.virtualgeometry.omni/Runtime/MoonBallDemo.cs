@@ -82,7 +82,7 @@ namespace VirtualGeometry.Omni{
         public Vector3 Up=>this.up;
         public Vector3 AxisU=>this.u;
         public Vector3 AxisV=>this.v;
-        /// <summary>接点の高さ(月の半径 R からの高さ、CPU の高さの Field)。</summary>
+        /// <summary>接点の高さ(月の半径 R からの高さ、CPU の高さの Field。float にした表示・検証用の値で、接点の位置は Logical の高さで決める)。</summary>
         public float SurfaceHeight=>this.surfaceHeight;
         public long OffsetX=>this.offsetX;
         public long OffsetY=>this.offsetY;
@@ -135,11 +135,11 @@ namespace VirtualGeometry.Omni{
             this.u=TangentU(this.up);this.v=Vector3.Cross(this.up,this.u).normalized;
             if(!LogicalVector3.TryFromFloat3(this.u,out this.uL)||!LogicalVector3.TryFromFloat3(this.v,out this.vL)){return this.Fail("接平面の軸を Logical にできません。");}
             LogicalScalar radius=this.moon.Selector.LogicalRadius;
-            if(!LogicalVector3.TryScale(in this.upL,in radius,out LogicalVector3 onSphere)||!this.moon.TrySampleSurface(in onSphere,out this.surfaceHeight,out float _)){
+            // 接点の高さは Logical のまま使う(float にすると、|高さ| が数 km の地点で刻みが 0.5〜1 mm になる)。
+            if(!LogicalVector3.TryScale(in this.upL,in radius,out LogicalVector3 onSphere)||!this.moon.TrySampleSurface(in onSphere,out LogicalScalar height,out LogicalScalar _)||!height.TryToFloat(out this.surfaceHeight)){
                 return this.Fail("接点の地表の高さを求められません。");
             }
-            if(!LogicalScalar.TryFromFloat(this.surfaceHeight,out LogicalScalar height)||!LogicalScalar.TryAdd(in radius,in height,out LogicalScalar distance)||
-                !LogicalVector3.TryScale(in this.upL,in distance,out this.contact)){
+            if(!LogicalScalar.TryAdd(in radius,in height,out LogicalScalar distance)||!LogicalVector3.TryScale(in this.upL,in distance,out this.contact)){
                 return this.Fail("接点を Logical にできません。");
             }
             this.moon.SetReferencePoint(in this.contact);

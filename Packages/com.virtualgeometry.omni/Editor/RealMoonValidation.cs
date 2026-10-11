@@ -144,10 +144,10 @@ namespace VirtualGeometry.Omni.Editor{
             return unit;
         }
 
-        // 月面の点(半径 R の球面上、Logical)の地表の高さ(CPU)。
-        private static float SurfaceHeight(double3 direction){
+        // 月面の点(半径 R の球面上、Logical)の地表の高さ(CPU、Logical)。
+        private static LogicalScalar SurfaceHeight(double3 direction){
             LogicalVector3 unit=UnitLogical(direction);
-            if(!LogicalVector3.TryScale(in unit,moon.Selector.LogicalRadius,out LogicalVector3 onSphere)||!moon.TrySampleSurface(in onSphere,out float height,out float _)){
+            if(!LogicalVector3.TryScale(in unit,moon.Selector.LogicalRadius,out LogicalVector3 onSphere)||!moon.TrySampleSurface(in onSphere,out LogicalScalar height,out LogicalScalar _)){
                 throw new InvalidOperationException("地表の高さを求められません。");
             }
             return height;
@@ -156,9 +156,9 @@ namespace VirtualGeometry.Omni.Editor{
         // 経度・緯度の地表の上 altitude の高さに camera を置き、北向き(heading 0)から heading 度回し、水平から pitch 度下を向く。
         private static void PlaceCamera(double longitudeDegrees,double latitudeDegrees,double altitude,double headingDegrees,double pitchDegrees){
             double3 d=Direction(longitudeDegrees,latitudeDegrees);
-            float surface=SurfaceHeight(d);
+            LogicalScalar height=SurfaceHeight(d);
             LogicalVector3 unit=UnitLogical(d);
-            if(!LogicalScalar.TryFromFloat(surface,out LogicalScalar height)||!LogicalScalar.TryFromDouble(altitude,out LogicalScalar above)||
+            if(!LogicalScalar.TryFromDouble(altitude,out LogicalScalar above)||
                 !LogicalScalar.TryAdd(moon.Selector.LogicalRadius,in height,out LogicalScalar a)||!LogicalScalar.TryAdd(in a,in above,out LogicalScalar distance)||
                 !LogicalVector3.TryScale(in unit,in distance,out LogicalVector3 position)){
                 throw new InvalidOperationException("camera の位置を Logical にできません。");
@@ -269,7 +269,7 @@ namespace VirtualGeometry.Omni.Editor{
                 if(i%3==0){longitude=(random.NextDouble()*2-1)*0.3;latitude=(random.NextDouble()*2-1)*0.3;}
                 else{longitude=(random.NextDouble()*2-1)*180.0;latitude=Math.Asin(random.NextDouble()*2-1)*180.0/Math.PI;}
                 double3 d=Direction(longitude,latitude);
-                float height=SurfaceHeight(d);
+                if(!SurfaceHeight(d).TryToDouble(out double height)){continue;}
                 // 直接求める方向は、CPU の高さに渡した Logical の点と同じ(float から作った単位ベクトル)にする。
                 LogicalVector3 unit=UnitLogical(d);
                 if(!unit.X.TryToDouble(out double ux)||!unit.Y.TryToDouble(out double uy)||!unit.Z.TryToDouble(out double uz)){continue;}
@@ -282,8 +282,8 @@ namespace VirtualGeometry.Omni.Editor{
                 if(weight>0){worstRegional=Math.Max(worstRegional,error);regionalCount++;}
             }
             report.Add("CPU vs direct bilinear: samples="+count+" worstError="+worst.ToString("G3",CultureInfo.InvariantCulture)+"m (localOverride samples="+regionalCount+" worstError="+worstRegional.ToString("G3",CultureInfo.InvariantCulture)+"m)");
-            // 高さは float(約 1e4 m で刻み 1e-3 m)で返す。サンプル点の Cell 内の位置の float の差も含めて 5 mm 以内。
-            if(worst>5e-3){failures.Add("CPU の高さが、方向から直接求めた値と "+worst+"m 違います。");}
+            // 高さは Logical(実データは倍精度)で返す。比べる方向は同じ Logical の点なので、数値の丸めだけ(1 µm 以内)。
+            if(worst>1e-6){failures.Add("CPU の高さが、方向から直接求めた値と "+worst+"m 違います。");}
         }
 
         // 選んだ Cell のうち、camera から nearLimit(m)以内の Cell について、GPU が生成した頂点と CPU の式の頂点を比べる。
@@ -386,7 +386,26 @@ namespace VirtualGeometry.Omni.Editor{
                     slope=Math.Max(slope,Math.Abs(right-left)*0.5);
                 }
             }
+            // CPU の地表の高さ(TrySampleSurface。接点・降下カメラの地面)と、描いている頂点(持ち上げた Cell の原点 + 相対位置)の高さの差。
+            // 頂点の高さ = |原点 + 相対位置| − R を Logical で求める。物を 1 mm の精度で地面に置くには、この差が µm の桁でなければならない。
+            double worstSurface=0;int surfaceSamples=0;
+            for(int j=0;j<side;j+=8){
+                for(int i=0;i<side;i+=8){
+                    Vector3 position=vertices[j*side+i].Position;
+                    if(!LogicalVector3.TryFromFloat3(new float3(position.x,position.y,position.z),out LogicalVector3 relativePosition)||!LogicalVector3.TryAdd(frameOfNearest.Origin,relativePosition,out LogicalVector3 vertexPoint)||
+                        !LogicalVector3.TryLength(in vertexPoint,out LogicalScalar vertexDistance)||!LogicalScalar.TrySubtract(in vertexDistance,moon.Selector.LogicalRadius,out LogicalScalar vertexHeight)||
+                        !moon.TrySampleSurface(in vertexPoint,out LogicalScalar surfaceHeight,out LogicalScalar _)||!LogicalScalar.TrySubtract(in vertexHeight,in surfaceHeight,out LogicalScalar heightDifference)||
+                        !heightDifference.TryToDouble(out double surfaceError)){
+                        continue;
+                    }
+                    worstSurface=Math.Max(worstSurface,Math.Abs(surfaceError));surfaceSamples++;
+                }
+            }
             float quad=moon.Selector.QuadArc(nearest.Level);
+            report.Add("surface "+name+": CPU TrySampleSurface vs rendered vertex height: samples="+surfaceSamples+" worst="+(worstSurface*1e6).ToString("G3",CultureInfo.InvariantCulture)+"um");
+            // 原点を持ち上げた Cell は µm の桁(float の頂点の丸め + GPU の補間の丸め)。持ち上げない |高さ| < 1 km の Cell は float の刻み 61 µm の丸めで 50 µm ほど(0.1 mm までを許す)。
+            // 持ち上げが無いと、|高さ| 1.9〜7.3 km の地点で 0.16〜0.55 mm になる。
+            if(surfaceSamples==0||worstSurface>1e-4){failures.Add(name+": CPU の地表の高さと、描いている頂点の高さが "+worstSurface+"m 違います(標本 "+surfaceSamples+" 点、許す差 1e-4m)。");}
             report.Add("millimeter "+name+": nearest "+nearest+" quad="+(quad*1000f).ToString("G3",CultureInfo.InvariantCulture)+"mm distance="+nearestDistance.ToString("G3",CultureInfo.InvariantCulture)+"m maxSecondDifference="+(worst*1e3).ToString("G3",CultureInfo.InvariantCulture)+"mm maxStep="+(slope*1e3).ToString("G3",CultureInfo.InvariantCulture)+"mm");
             // 2 階差分は float の丸め(持ち上げない |高さ| < 1 km で 61 µm)の数倍以内。方向の量子化があれば、傾き 0.1 で 1e-2 m 以上の階段になる。
             // 持ち上げが無いと、高さ −7 km で 1.46 mm、−2.8 km で 0.98 mm(float の刻み)。

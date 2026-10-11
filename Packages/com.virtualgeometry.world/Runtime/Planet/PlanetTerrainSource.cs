@@ -132,11 +132,24 @@ namespace VirtualGeometry.World{
         }
 
         /// <summary>
-        /// 惑星のローカル座標の点 point(Logical)の真下(中心からの方向)の地表の高さ(R からの高さ、帯域制限なし)と、point の地表からの高さを CPU で求める。
-        /// GPU の生成と同じ式(<see cref="PlanetHeightField"/>)で、点を含む Cell の球面上の原点(<see cref="PlanetCellFrame.SphereOrigin"/>。持ち上げた Origin ではない)からの相対位置で計算する。
+        /// 惑星のローカル座標の点 point(Logical)の真下(中心からの方向)の地表の高さ(R からの高さ、帯域制限なし)と、point の地表からの高さを CPU で求める(float で返す版)。
+        /// <see cref="TrySampleSurface(in LogicalVector3,out LogicalScalar,out LogicalScalar)"/> の値を float にしたもので、|高さ| が 4 km で 0.5 mm、9 km で 1 mm の刻みになる。
+        /// mm の精度で地面に物を置くには Logical 版を使う。
         /// </summary>
         public bool TrySampleSurface(in LogicalVector3 point,out float height,out float altitude){
             height=0;altitude=0;
+            if(!this.TrySampleSurface(in point,out LogicalScalar exactHeight,out LogicalScalar exactAltitude)){return false;}
+            return exactHeight.TryToFloat(out height)&&exactAltitude.TryToFloat(out altitude);
+        }
+
+        /// <summary>
+        /// 惑星のローカル座標の点 point(Logical)の真下(中心からの方向)の地表の高さ(R からの高さ、帯域制限なし)と、point の地表からの高さを CPU で求める(Logical で返す版)。
+        /// 手続きの高さは GPU の生成と同じ式(<see cref="PlanetHeightField"/>)で、点を含む Cell の球面上の原点(<see cref="PlanetCellFrame.SphereOrigin"/>。持ち上げた Origin ではない)からの相対位置で計算する(float)。
+        /// 実データの高さは点自身の方向から倍精度で求め、足し合わせて Logical にする。高さ・地表からの高さの引き算は Logical なので、|高さ| が数 km でも float の刻みが入らない。
+        /// 描いている頂点の高さとは、頂点の float の丸め(µm の桁。<see cref="PlanetCellFrame"/>)の範囲で一致する。
+        /// </summary>
+        public bool TrySampleSurface(in LogicalVector3 point,out LogicalScalar height,out LogicalScalar altitude){
+            height=default;altitude=default;
             if(this.Selector==null||!point.TryToFloat3(out Unity.Mathematics.float3 approximate)){return false;}
             Vector3 direction=((Vector3)approximate).normalized;
             if(direction==Vector3.zero){return false;}
@@ -145,22 +158,22 @@ namespace VirtualGeometry.World{
             // 高さ場は半径 R の球面上の原点(SphereOrigin)から測る(持ち上げた原点ではない)。
             if(!LogicalVector3.TrySubtract(in point,frame.SphereOrigin,out LogicalVector3 difference)||!difference.TryToFloat3(out Unity.Mathematics.float3 offset)){return false;}
             Vector3 sphere=PlanetCellGeometry.SphereOffset(frame.ApproximateSphereOrigin/this.radius,(Vector3)offset/this.radius,this.radius,out Vector3 _);
-            if(!this.TryProceduralHeight(in frame,sphere,0f,out height)){return false;}
+            if(!this.TryProceduralHeight(in frame,sphere,0f,out float procedural)){return false;}
+            double total=procedural;
             // 実データの高さは、点自身の方向から倍精度で直接求める(Cell の原点からの差 sphere は float で、大きな Cell では 2cm ほど誤差が出る)。
             if(this.rasters.Length>0){
-                if(!this.TryRasterHeightAt(in point,out float raster)){return false;}
-                height+=raster;
+                if(!this.TryRasterHeightAt(in point,out double raster)){return false;}
+                total+=raster;
             }
-            if(!LogicalVector3.TryLength(in point,out LogicalScalar distance)||!LogicalScalar.TrySubtract(in distance,this.Selector.LogicalRadius,out LogicalScalar aboveRadius)||
-                !aboveRadius.TryToFloat(out float above)){
+            if(!LogicalScalar.TryFromDouble(total,out height)||!LogicalVector3.TryLength(in point,out LogicalScalar distance)||
+                !LogicalScalar.TrySubtract(in distance,this.Selector.LogicalRadius,out LogicalScalar aboveRadius)||!LogicalScalar.TrySubtract(in aboveRadius,in height,out altitude)){
                 return false;
             }
-            altitude=above-height;
             return true;
         }
 
         // 点(惑星のローカル座標、Logical)の方向の実データの高さ(mip 0、倍精度の直接の補間)。
-        private bool TryRasterHeightAt(in LogicalVector3 point,out float height){
+        private bool TryRasterHeightAt(in LogicalVector3 point,out double height){
             height=0;
             if(!point.X.TryToDouble(out double x)||!point.Y.TryToDouble(out double y)||!point.Z.TryToDouble(out double z)){return false;}
             double global=this.rasters[0].SampleDirection(x,y,z);
@@ -169,7 +182,7 @@ namespace VirtualGeometry.World{
                 double regional=this.rasters[1].SampleDirection(x,y,z,out double weight);
                 result=global+(regional-global)*weight;
             }
-            height=(float)result;
+            height=result;
             return true;
         }
 

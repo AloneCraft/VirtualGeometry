@@ -33,8 +33,9 @@ namespace VirtualGeometry.Omni{
         private readonly LogicalVector3[] centers=new LogicalVector3[BodyCount];
         // contacts[i] = 下の天体 i-1 の上の面の点(接点 i、world の Logical)。i = 1..3。
         private readonly LogicalVector3[] contacts=new LogicalVector3[BodyCount];
-        private readonly float[] topHeights=new float[BodyCount];
-        private readonly float[] bottomHeights=new float[BodyCount];
+        // 天体の上下の面の高さ(Logical。float にすると、|高さ| が数 km の天体で刻みが 0.5〜1 mm になる)。
+        private readonly LogicalScalar[] topHeights=new LogicalScalar[BodyCount];
+        private readonly LogicalScalar[] bottomHeights=new LogicalScalar[BodyCount];
         private readonly long[] offsetX=new long[BodyCount];
         private readonly long[] offsetY=new long[BodyCount];
         private readonly long[] offsetZ=new long[BodyCount];
@@ -62,8 +63,14 @@ namespace VirtualGeometry.Omni{
         /// <summary>接点 i(下の天体 i-1 の上の面の点、world、Logical)。</summary>
         public LogicalVector3 Contact(int contact)=>this.contacts[contact];
         /// <summary>天体 i の、中心から上の面までの距離のうち、高さの Field の分(CPU)。</summary>
-        public float TopHeight(int body)=>this.topHeights[body];
-        public float BottomHeight(int body)=>this.bottomHeights[body];
+        public float TopHeight(int body){
+            this.topHeights[body].TryToFloat(out float value);
+            return value;
+        }
+        public float BottomHeight(int body){
+            this.bottomHeights[body].TryToFloat(out float value);
+            return value;
+        }
         public long OffsetX(int contact)=>this.offsetX[contact];
         public long OffsetY(int contact)=>this.offsetY[contact];
         public long OffsetZ(int contact)=>this.offsetZ[contact];
@@ -138,17 +145,17 @@ namespace VirtualGeometry.Omni{
             return true;
         }
 
-        private bool TrySurfaceHeight(int body,in LogicalVector3 direction,in LogicalScalar radius,out float height){
-            height=0;
+        private bool TrySurfaceHeight(int body,in LogicalVector3 direction,in LogicalScalar radius,out LogicalScalar height){
+            height=default;
             if(!LogicalVector3.TryScale(in direction,in radius,out LogicalVector3 onSphere)){return false;}
-            return this.bodies[body].TrySampleSurface(in onSphere,out height,out float _);
+            return this.bodies[body].TrySampleSurface(in onSphere,out height,out LogicalScalar _);
         }
 
         // 天体 i の上の面の点(天体のローカル座標)= 上向き·(R + 上の高さ)。
         private bool TryTopPointLocal(int body,out LogicalVector3 point){
             point=default;
             LogicalScalar radius=this.bodies[body].Selector.LogicalRadius;
-            if(!LogicalScalar.TryFromFloat(this.topHeights[body],out LogicalScalar height)||!LogicalScalar.TryAdd(in radius,in height,out LogicalScalar distance)){return false;}
+            if(!LogicalScalar.TryAdd(in radius,in this.topHeights[body],out LogicalScalar distance)){return false;}
             return LogicalVector3.TryScale(in this.upL,in distance,out point);
         }
 
@@ -179,7 +186,7 @@ namespace VirtualGeometry.Omni{
                 if(!this.TryTopPointLocal(i-1,out LogicalVector3 topLocal)||!LogicalVector3.TryAdd(in center,in topLocal,out LogicalVector3 contact)){return this.Fail("接点 "+i+" を求められません。");}
                 this.contacts[i]=contact;
                 LogicalScalar radius=this.bodies[i].Selector.LogicalRadius;
-                if(!LogicalScalar.TryFromFloat(this.bottomHeights[i],out LogicalScalar bottomHeight)||!LogicalScalar.TryAdd(in radius,in bottomHeight,out LogicalScalar bottom)||
+                if(!LogicalScalar.TryAdd(in radius,in this.bottomHeights[i],out LogicalScalar bottom)||
                     !LogicalScalar.TryFromDouble(this.offsetY[i]*UnitMeters,out LogicalScalar y)||!LogicalScalar.TryAdd(in bottom,in y,out LogicalScalar lift)||
                     !LogicalScalar.TryFromDouble(this.offsetX[i]*UnitMeters,out LogicalScalar x)||!LogicalScalar.TryFromDouble(this.offsetZ[i]*UnitMeters,out LogicalScalar z)||
                     !LogicalVector3.TryScale(in this.upL,in lift,out LogicalVector3 alongUp)||!LogicalVector3.TryScale(in this.uL,in x,out LogicalVector3 alongU)||

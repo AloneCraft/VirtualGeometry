@@ -786,7 +786,9 @@ Omni の COSMIC-PRECISION-001(月の面がボールの縁を越える)に当た�
 - **頂点の位置は「Cell の原点の緯度経度 + 原点からの差」**。原点の画素の位置は CPU が倍精度で整数部と端数に分けて渡し、頂点ごとの緯度経度の差は、桁落ちしない式(`PlanetRasterLayer.Delta`、`PlanetRaster.hlsl` の `PlanetLonLatDelta`)で求めた単位方向の差 eps = sphere/R から求める。
   緯度経度を float の方向から求めると、半径 1.7×10^6 m で位置が約 0.1 m に量子化され、傾きの大きい所で高さに階段が出る
 - **帯域制限**: quad の長さが画素より大きい Cell は、2×2 の平均で半分にしていく mip を使う(quad の長さ以上の最小の mip)。GPU は mip 付きの R32F texture を `Load` で読む
-- CPU の地表の高さ(`TrySampleSurface`、降下カメラの地面の制限)は、実データを点自身の方向から倍精度で直接求める(Cell の原点からの差は float で、粗い Cell では 2cm ほど誤差が出るので)。Cell の頂点の CPU の式(`TryHeight`)は GPU と同じ式
+- CPU の地表の高さ(`TrySampleSurface`、降下カメラの地面の制限、月とボールの接点)は、実データを点自身の方向から倍精度で直接求める(Cell の原点からの差は float で、粗い Cell では 2cm ほど誤差が出るので)。
+  Logical で返す版(`TrySampleSurface(in LogicalVector3, out LogicalScalar height, out LogicalScalar altitude)`)は、実データの倍精度の値に手続きの float の値を足して Logical にし、点の高さとの引き算も Logical で行う(float で返す版はその値を float にしたもので、|高さ| 9 km で刻み 1 mm)。
+  mm の精度で物を地面に置くもの(`MoonBallDemo`、`BodyStackDemo`)は Logical 版を使う。降下カメラは目の高さの制限なので float 版のまま。Cell の頂点の CPU の式(`TryHeight`)は GPU と同じ式
 - 極の真上で atan2(0, 0) が未定義(GPU が NaN を返し、NaN の高さが Cell の bounds に入って選択が細分化しなくなった)なので、`PlanetAtan2` が 0 を返す。生成した頂点に NaN・inf があるときは、その Cell の実際の bounds を使わず解析的な bounds のままにする(`PlanetLayerSource.InvalidBounds`)
 - 差が小さいとき(x > 0 で |y| < 0.1x)の atan2 は、GPU の atan2 の相対誤差(1e-6 ほど)を避けるため、atan の級数で求める
 - データは Omni のデモ(`Assets/Omni/Demos/PlanetSurface/Data`)のコピーを `LocalData/OmniDemo/`(git 管理外)に置く。Omni の LICENSE と「外部資産は配布しない」の規則のため、commit しない。無いときは検証が、コピーする場所を示して失敗する
@@ -844,6 +846,9 @@ Cell の原点を、Cell の中心の方向の地表の高さ H だけ半径 R �
   - GPU と CPU の頂点の差(階層 14〜26、camera に近い 12 Cell): −7.3 km の地点 1.64 mm → 2.3 µm(地表 0.17 m)、−2.9 km の地点 0.55 mm → 14 µm、−1.9 km の地点 0.41 mm → 1.5 µm。上空 1 km の視点でも最大 43 µm
   - 1 quad が約 1 mm の Cell の頂点の高さの 2 階差分: −7.3 km で 1.46 mm → 0.0068 mm、−2.8 km で 0.98 mm → 0.036 mm、−1.9 km で 0.37 mm → 0.003 mm
   - 高さ約 −720 m の SLDEM の中心は H = 0(しきい値未満)のまま不変(0.061 mm は float の刻み 61 µm)
+- CPU の地表の高さ(`TrySampleSurface` の Logical 版)と、描いている頂点(持ち上げた Cell の原点 + 相対位置)の高さ(|原点 + 相対位置| − R)の差(`RealMoonValidation`、地表 0.17 m の視点の真下の Cell、81 点):
+  持ち上げあり 1.4〜15 µm(高さ −1.9〜−7.3 km の 3 地点。持ち上げない SLDEM の中心は float の刻み 61 µm の丸めで 51 µm)、持ち上げなし(`-heightShiftThreshold 1e9`)は 0.16〜0.55 mm。許すのは 0.1 mm。
+  CPU の高さと方向から直接求めた双線形補間の差は 3.5×10^-10 m(float で返していたときは 0.24 mm)
 - 検証の許容値を実測の 2〜10 倍へ締めた(`CheckGpu` は階層 14 以上で 0.3 mm + Cell の大きさの 10^-6、`CheckMillimeter` は 2 階差分 0.2 mm)。持ち上げなしの実行は、この許容値で失敗する(修正前の挙動で不合格、修正後に合格)
 - 回帰: `P2`、`P2Large`、`P4b`、`P4bEarth`、`P5a`、`MoonBall`、`GiantBall`、`BodyStack`、`BodyStackCells` を、既定と `-heightShiftThreshold 0`(全 Cell を持ち上げる)の両方で実行し、すべて PASSED。
   既定では、振幅が 1,024 m 未満の検証は H = 0 のままで、`P2`・`P5a`・`MoonBall` の報告は持ち上げ前と同じ。
@@ -853,7 +858,6 @@ Cell の原点を、Cell の中心の方向の地表の高さ H だけ半径 R �
 ### 限界
 
 - **手続きだけの大振幅の項** `clamp(total)·A` の float の丸めは、H を引いても残る(A = 8 km で 0.25〜0.5 mm)。実データの月のように、振幅を実データに任せる使い方では出ない
-- **CPU の地表の高さ**(`TrySampleSurface`。降下カメラの地面の制限、ボールの接点)は float の高さを返す(9 km で 0.98 mm に量子化)。頂点が直っても、高起伏の地点の接点の置き方は、float の刻みから見積もって最大 0.5 mm 残る(未測定)。高さを double か Logical でも返す経路は未実施
 - 粗い Cell(階層 2 で 3.4 m)の GPU・CPU の差(原点からの差 eps の float の丸め)、極の近く(|緯度| > 75°)、float の `_CenterTangent` は別の原因で残る
 - 持ち上げ量の評価の時間(`RealMoonValidation` の report の `height shift:` の行): 高度 150 km から 0.17 m までの降下 4 か所で、評価 23,967 回(持ち上げた Cell は 17,782 回)、累計 330 ms、1 回 13.7 µs(Editor、batchmode)。
   `BodyStack` の timing は、持ち上げ前後の差を比べていない(振幅が小さく H = 0 のままの検証で、機械の負荷により ±数十 % 揺れた)
