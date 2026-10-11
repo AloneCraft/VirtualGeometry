@@ -56,6 +56,7 @@ $table = @(
     @("PlanetPlayer", "PlanetPlayerBuild.Run", "PlanetPlayer", @("on")),
     @("PlanetPlayerRelease", "PlanetPlayerBuild.RunRelease", "PlanetPlayerRelease", @("on")),
     @("ObserverCamera", "MoonBallValidation.RunObserver", "ObserverCamera", @("on")),
+    @("SceneView", "MoonBallValidation.RunSceneView", "SceneView", @("on")),
     @("ViewScale", "MoonBallValidation.RunViewScale", "ViewScale", @("on")),
     @("RealMoon", "RealMoonValidation.Run", "RealMoon", @("on", "off")),
     @("SyntheticRelief", "RealMoonValidation.RunSynthetic", "SyntheticRelief", @("on", "off")),

@@ -457,6 +457,23 @@ camera が破棄されても Dictionary のキーが残り、source が無効に
 - M = 10^-3、0.1: 接触の視点は比較していない(Camera の Near の下限 0.01 で、論理 Near が 10 m、0.1 m。ボールの面までの距離の半分を超える)
 - Camera の Near を 0.3 のままにして M だけを振ると、M ≤ 1 で論理 Near(M = 1 で 0.3 m、0.1 で 3 m、10^-3 で 300 m)がボールの面(約 0.18 m)より遠くなり、ボールが描かれない(`SetViewScale` の仕様どおりで、実装の欠陥ではない)。初回の検証が M ≤ 1 で失敗したのは、この検証側の設定のため
 
+### 確認(Scene View、`MoonBallValidation.RunSceneView`、2026-10-12)
+
+非表示の `SceneView`(`ScriptableObject.CreateInstance<SceneView>()`。Omni の `OwnedHiddenSceneViewRenderRequestTests` と同じ方法)に Omni の状態(`OmniViewState`: Radial、基準は主 camera の RadialCamera)を付け、
+`RenderPipeline.SubmitRenderRequest`(`UniversalRenderPipeline.SingleCameraRequest`)で RenderTexture へ描く。月とボールの scene、640×480、camera の画角・near・far は主 camera に揃える。
+VG の `VirtualGeometryRenderFeature` は `CameraType.SceneView` を描き、`OmniPlanetPlacement` は `ExternalDrawPaths.Register(SceneViewContent)` を宣言している。
+
+- **Scene View 自身が warp 中心**(`ExploreFromSceneView=true`): 月全体(高さ 2.5R)で、月の画素 73,942(View Scale の検証の月全体の画素数と同じ)、穴 0、月の輪郭が解析の円と 1 画素の帯の外で一致(違い 0)。
+  `ViewSnapshot` は Radial 有効、eye は warp 中心、錐台が使える。接触の視点でも月(100,183 画素)とボール(161,171 画素)が描かれる
+- **実カメラ基準**(`ExploreFromSceneView=false`。eye が warp 中心でない = fail-open): 月全体で月 77,652 画素、接触の視点で月 99,931 画素・ボール 168,323 画素。
+  `ViewSnapshot` は Radial 有効、eye は warp 中心でなく、錐台は使えない。どちらもどの種類でもない画素 0、Unity のエラー 0
+- 最初の試行(Scene View の camera の Unity の transform を動かさない)は、月が 0 画素で不合格だった。非表示の Scene View は Repaint されないので、`LookAtDirect` や `OmniSceneViewVerification.TryMoveLogicalCameraForAutomation`(論理ピボットを動かす)では camera の transform が動かず、
+  eye が原点のままになる。そのため、検証は camera の transform を主 camera の位置・向きに直接置いている
+
+確かめていないこと: **接触の視点でのボールの位置の精度**(Scene View の eye は Unity の transform の float で、月の面(1.7×10^6 m)では刻みが 0.125 m、ボールの半径 0.11 m より粗い。
+この判定を外す前の試行では、接触の視点のボールは解析の球と 10,851 画素足りず・19,932 画素余分だった(現在の検証はボールが描かれることだけを見る)。この精度は Scene View では保証しない。mm の位置が要る確認は主 camera の Logical Transform で行う)、
+開いた Editor の Repaint で動く仮想ビューポートの論理ピボット(Logical の目の位置)、Overlay、実際の入力。
+
 ### 検証(`VirtualGeometry.Omni.Editor.P2OmniPlanetValidation`)
 
 半径 10km、Hmax 300m、目標 2px、640×480。camera は `Logical.Transform` と `RadialCamera`(`SetIdentityViewScale`、M=1)。
@@ -480,7 +497,7 @@ Logical の camera が安全域(±10km)の外にあると、Unity の camera は
 - M = 10^-3 と 0.1 の接触の視点(論理 Near が 10 m、0.1 m で、ボールの面までの距離の半分を超えるので比較していない)
 - z-fighting と深度の分解能の測定は §21 で行った
 - Play/Stop の往復と、camera の GPU buffer のリークは下の「確認(camera の状態の解放と Play/Stop の往復)」で行った
-- Scene View での表示
+- 開いた Editor の実際の Scene View(Repaint、仮想ビューポートの論理ピボット、Overlay、マウスやキーの入力)。非表示の Scene View の camera の描画は下の「確認(Scene View)」で確かめた
 
 
 ## 12. Cell の精度の基盤(P4a)
