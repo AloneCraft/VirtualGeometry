@@ -56,3 +56,4 @@ Unity.exe -batchmode -force-d3d12 -projectPath <project> -executeMethod VirtualG
 ```
 
 結果は `TestResults/Planet/MoonBall`、`GiantBall`、`MoonBallPlay`(Report.txt と画像)。
+`MoonBallPlaySmoke` のキーの確認は、入力元(`IMoonBallKeys`)を差し替えて、キーの割り当てと量を見る。実キーボードの Input System 経由は、手で Game View を操作して確かめる。

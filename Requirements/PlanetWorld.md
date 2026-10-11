@@ -684,7 +684,8 @@ camera は Omni の COSMIC-PRECISION-001 と同じ配置(月の面から 0.17 m�
   ボールの最下の行は、1mm ごとにちょうど 2 行動く(解析も同じ。画角と距離から 1mm = 約 1.8 画素)
 - ズーム: 月全体(高さ 2.5R)から接触の視点(0.17 m)まで高さを 1/20 ずつ縮める 7 段(10^20 m では 18 段)で、穴 0。月全体の段では、月の輪郭が解析の円と 1 画素の帯の内で一致した
   (10^20 m では、Cell の階層が 71 まで細かくなる)
-- Play Mode(batchmode、`MoonBallPlaySmoke`): scene を開いて Play すると、MoonBallDemo が自分で初期化し、自動の動きでボールが 26mm 転がり、エラーなし
+- Play Mode(batchmode、`MoonBallPlaySmoke`): scene を開いて Play すると、MoonBallDemo が自分で初期化し、自動の動きでボールが 26mm 転がり、エラーなし。
+  キーの割り当てと量(上記)も合格
 
 ### 結論と限界
 
@@ -695,7 +696,10 @@ Omni の COSMIC-PRECISION-001(月の面がボールの縁を越える)に当た�
 - **分割しない場合の比較(負の対照)はしていない**。分割しないと壊れることは、Omni の記録と、float の分解能の理屈による(月 1 つの物体では物体空間の分解能が約 0.1〜0.2 m)
 - 月は手続き生成の起伏で、実際の月の地形ではない。ボールは滑らかな球で、模様は shader(パネルの形状はない)
 - 色は照明ありの見た目も画像で確かめたが、見た目の合格条件はない(位置と形だけを数えた)
-- キー操作は、Play Mode の確認では自動の動きだけを使い、キー入力は確かめていない。HUD の文字(IMGUI)は Game View で見ていない(batchmode では写らない)
+- キー操作は、`IMoonBallKeys` を差し替えて確かめた(押した frame に 1 回分だけ動く: ↑↓←→ PageUp/Down が各 1mm、Shift で 10mm、Ctrl で 0.1mm、両方なら Ctrl 優先。1/2/3/Space/R の結果も確認)。
+  実キーボードから Input System を通る経路は確かめていない。焦点の無い batchmode では、仮想のキーボードに積んだ状態イベントが `InputSystem.onEvent` に 1 つも届かなかった
+  (Input System の設定は `IgnoreFocus` と `AllDeviceInputAlwaysGoesToGameView`、`gameIsPlaying` と `gameHasFocus` は true、Dynamic 更新は回っていた。原因は未特定)。
+  HUD の文字(IMGUI)は Game View で見ていない(batchmode では写らない)
 - 論理 near が 0.03 m なので、近接の視点(面から 1 cm)では camera の真下の 3 cm 以内の地面が切れて背景が見える(near の切り取り)
 - 1 つの scene に 0.11 m、1 m、月、10^20 m の 4 つを同時に置く試験(§7 の P6)はしていない。ボールと 1 つの大きな天体の 2 つだけ
 - 10^20 m の scene では、月の Cell の pool(4096)を使い切る。設定エラーは出なかったが、描画の時間は測っていない

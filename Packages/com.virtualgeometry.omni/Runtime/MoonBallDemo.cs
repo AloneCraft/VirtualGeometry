@@ -2,7 +2,6 @@ using System;
 using System.Globalization;
 using Unity.Mathematics;
 using UnityEngine;
-using UnityEngine.InputSystem;
 using VirtualGeometry.World;
 using LogicalMatrix3x3=Omni.Logical.Matrix3x3;
 using LogicalPosition3=Omni.Logical.Position3;
@@ -69,6 +68,7 @@ namespace VirtualGeometry.Omni{
         private float autoTimer;
         private float repeatTimer;
         private GUIStyle style;
+        private IMoonBallKeys keys=MoonBallKeyboard.Instance;
 
         // 自動の動き: (軸 0=x、1=y、2=z、1 回の量(0.1mm 単位)、回数)。
         private static readonly (int Axis,long Delta,int Count)[] AutoStages={
@@ -88,6 +88,15 @@ namespace VirtualGeometry.Omni{
         public long OffsetY=>this.offsetY;
         public long OffsetZ=>this.offsetZ;
         public bool AutoPlay{get=>this.autoPlay;set=>this.autoPlay=value;}
+        /// <summary>今の視点(Free、Contact、Orbit、Zoom)。</summary>
+        public string ViewName=>this.viewMode.ToString();
+        /// <summary>キーの入力元(既定は Input System のキーボード。null を入れると既定に戻る)。</summary>
+        public IMoonBallKeys Keys{
+            get=>this.keys;
+            set{
+                if(value==null){this.keys=MoonBallKeyboard.Instance;}else{this.keys=value;}
+            }
+        }
         public PlanetTerrainSource Moon{get=>this.moon;set=>this.moon=value;}
         public PlanetTerrainSource Ball{get=>this.ball;set=>this.ball=value;}
         public PlanetDescentCamera Descent{get=>this.descent;set=>this.descent=value;}
@@ -253,29 +262,28 @@ namespace VirtualGeometry.Omni{
         }
 
         private void ReadKeys(){
-            Keyboard keyboard=Keyboard.current;
-            if(keyboard==null){return;}
+            IMoonBallKeys input=this.keys;
             long step=10;
-            if(keyboard.leftShiftKey.isPressed||keyboard.rightShiftKey.isPressed){step=100;}
-            if(keyboard.leftCtrlKey.isPressed||keyboard.rightCtrlKey.isPressed){step=1;}
-            this.NudgeKey(keyboard.upArrowKey,1,step,0.0f);
-            this.NudgeKey(keyboard.downArrowKey,1,-step,0.0f);
-            this.NudgeKey(keyboard.rightArrowKey,0,step,0.0f);
-            this.NudgeKey(keyboard.leftArrowKey,0,-step,0.0f);
-            this.NudgeKey(keyboard.pageUpKey,2,step,0.0f);
-            this.NudgeKey(keyboard.pageDownKey,2,-step,0.0f);
-            if(keyboard.spaceKey.wasPressedThisFrame){this.autoPlay=!this.autoPlay;}
-            if(keyboard.digit1Key.wasPressedThisFrame){this.ShowContactView();}
-            if(keyboard.digit2Key.wasPressedThisFrame){this.ShowOrbitView();}
-            if(keyboard.digit3Key.wasPressedThisFrame){this.StartZoom();}
-            if(keyboard.rKey.wasPressedThisFrame){this.autoPlay=false;this.SetOffset(0,0,0);this.ShowContactView();}
+            if(input.Held(MoonBallKey.Shift)){step=100;}
+            if(input.Held(MoonBallKey.Ctrl)){step=1;}
+            this.NudgeKey(input,MoonBallKey.Up,1,step);
+            this.NudgeKey(input,MoonBallKey.Down,1,-step);
+            this.NudgeKey(input,MoonBallKey.Right,0,step);
+            this.NudgeKey(input,MoonBallKey.Left,0,-step);
+            this.NudgeKey(input,MoonBallKey.PageUp,2,step);
+            this.NudgeKey(input,MoonBallKey.PageDown,2,-step);
+            if(input.PressedThisFrame(MoonBallKey.Space)){this.autoPlay=!this.autoPlay;}
+            if(input.PressedThisFrame(MoonBallKey.Digit1)){this.ShowContactView();}
+            if(input.PressedThisFrame(MoonBallKey.Digit2)){this.ShowOrbitView();}
+            if(input.PressedThisFrame(MoonBallKey.Digit3)){this.StartZoom();}
+            if(input.PressedThisFrame(MoonBallKey.Reset)){this.autoPlay=false;this.SetOffset(0,0,0);this.ShowContactView();}
         }
 
         // 押した瞬間に 1 回、押し続けると 0.4 秒後から 0.06 秒ごとに繰り返す。
-        private void NudgeKey(UnityEngine.InputSystem.Controls.KeyControl key,int axis,long delta,float unused){
-            if(key.wasPressedThisFrame){
+        private void NudgeKey(IMoonBallKeys input,MoonBallKey key,int axis,long delta){
+            if(input.PressedThisFrame(key)){
                 this.Nudge(axis,delta);this.repeatTimer=0.4f;
-            }else if(key.isPressed){
+            }else if(input.Held(key)){
                 this.repeatTimer-=Time.deltaTime;
                 if(this.repeatTimer<=0){this.Nudge(axis,delta);this.repeatTimer=0.06f;}
             }
