@@ -13,6 +13,9 @@ namespace VirtualGeometry.World{
     /// </summary>
     public sealed class PlanetRasterLayer:IDisposable{
         private readonly float[][] mips;
+        // mip ごとの極の値(全球の格子だけ使う。先頭の行、最後の行の平均)。極冠(PoleCap)の頂点の値。
+        private readonly float[] poleNorth;
+        private readonly float[] poleSouth;
         private Texture2D texture;
 
         /// <summary>mip 0 の画素数。</summary>
@@ -53,6 +56,18 @@ namespace VirtualGeometry.World{
                 chain.Add(next);current=next;w=nw;h=nh;
             }
             this.mips=chain.ToArray();
+            this.poleNorth=new float[this.mips.Length];
+            this.poleSouth=new float[this.mips.Length];
+            for(int mip=0;mip<this.mips.Length;mip++){
+                int mipWidth=this.MipWidth(mip),mipHeight=this.MipHeight(mip);
+                double north=0,south=0;
+                for(int x=0;x<mipWidth;x++){
+                    north+=this.mips[mip][x];
+                    south+=this.mips[mip][(mipHeight-1)*mipWidth+x];
+                }
+                this.poleNorth[mip]=(float)(north/mipWidth);
+                this.poleSouth[mip]=(float)(south/mipWidth);
+            }
             float maximum=0;
             for(int i=0;i<heights.Length;i++){maximum=Mathf.Max(maximum,Mathf.Abs(heights[i]));}
             this.MaximumAbsoluteHeight=maximum;
@@ -85,6 +100,32 @@ namespace VirtualGeometry.World{
 
         public int MipWidth(int mip)=>Math.Max(1,this.Width>>mip);
         public int MipHeight(int mip)=>Math.Max(1,this.Height>>mip);
+
+        /// <summary>mip の北極、南極の値(先頭の行、最後の行の平均)。経度の方向に一周する格子(全球)だけが使う(<see cref="PoleCap"/>)。</summary>
+        public float PoleNorth(int mip)=>this.poleNorth[mip];
+        public float PoleSouth(int mip)=>this.poleSouth[mip];
+
+        /// <summary>
+        /// 極冠。全球の格子は画素の中心が格子点なので、極は先頭の行の半画素北(行の位置 −0.5)、最後の行の半画素南(行の位置 h−0.5)にある。
+        /// 先頭の行より北(行の位置 &lt; 0)を先頭の行へ clamp すると、極の近くの高さが経度で決まり(先頭の行は列ごとにばらつく。LOLA の北極で 145 m、南極で 1,090 m の幅)、
+        /// 極の 1mm の範囲でも高さが経度で何 m も変わる(経度は極で定まらない)ので、極を含む Cell の頂点が GPU と CPU で一致しなくなる。
+        /// そこで極冠(極から半画素)は、極の値 P(先頭の行の平均)から、先頭の行の補間した値 ring へ、極からの距離に比例して移る: 値 = P + (ring − P)·t、t = 極からの距離/半画素。
+        /// 経度によらず P に収束して連続になる。場が局所的に平面なら、極冠の中でも平面を正確に再現する(ring = P + g·半画素·cos(経度)、t·ring の変動 = g·距離·cos(経度))。
+        /// 南は鏡像。y0 は clamp する前の画素の行、fy は端数、h は mip の高さ、shift は texel から先に引いた高さ。
+        /// </summary>
+        public static double PoleCap(double value,int y0,double fy,int h,double north,double south,double shift){
+            if(y0<0){
+                double t=Math.Max(0.0,Math.Min(1.0,2.0*(y0+fy)+1.0));
+                double pole=north-shift;
+                return pole+(value-pole)*t;
+            }
+            if(y0>=h-1){
+                double t=Math.Max(0.0,Math.Min(1.0,1.0+2.0*((h-1-y0)-fy)));
+                double pole=south-shift;
+                return pole+(value-pole)*t;
+            }
+            return value;
+        }
 
         /// <summary>1 画素の北向きの間隔(m)。半径 radius の天体。</summary>
         public double TexelMeters(double radius)=>radius/this.RowsPerRadian;
@@ -144,15 +185,24 @@ namespace VirtualGeometry.World{
                 Width=this.MipWidth(mip),Height=this.MipHeight(mip),
                 RegionalInset=this.InsetTexels,RegionalFeather=this.FeatherTexels,Regional=this.IsRegional?1:0,
                 MipScale=(float)scale,BaseWidth=this.Width,BaseHeight=this.Height,
+                PoleNorth=this.poleNorth[mip],PoleSouth=this.poleSouth[mip],
             };
             return true;
         }
 
+        /// <summary>この |o.z| 以上(緯度 75° 以上)の原点には、水平成分の大きさから求める極用の式(<see cref="PolarDelta"/>)を使う。PlanetRaster.hlsl の PLANET_POLAR_Z と同じ値。</summary>
+        public const float PolarZ=0.966f;
+
         /// <summary>
         /// 原点の単位方向 o から、球面上の点の差 eps(= n − o、n は頂点の単位方向)の頂点の、緯度経度の差(ラジアン)。
         /// 緯度の差 = asin(nz) − asin(oz)、経度の差 = atan2(nx, ny) − atan2(ox, oy)。どちらも n と o の大きな値どうしの引き算をしない形で求める。
+        /// 極の近く(|o.z| ≥ <see cref="PolarZ"/>)は、cos(緯度) = √(1−z²) が極で桁落ちするので、水平成分の大きさから求める(<see cref="PolarDelta"/>)。
         /// </summary>
         public static void Delta(Vector3 o,Vector3 eps,out double longitude,out double latitude){
+            if(Math.Abs(o.z)>=PolarZ){
+                PolarDelta(o,eps,out longitude,out latitude);
+                return;
+            }
             double a=o.z+eps.z;double b=o.z;
             double ca=Math.Sqrt(Math.Max(1.0-a*a,0.0));double cb=Math.Sqrt(Math.Max(1.0-b*b,0.0));
             double numerator=eps.z*(cb+b*(a+b)/(ca+cb+1e-30));
@@ -161,6 +211,30 @@ namespace VirtualGeometry.World{
             double cross=(double)eps.x*o.y-(double)eps.y*o.x;
             double dot=(double)o.x*o.x+(double)o.y*o.y+(double)eps.x*o.x+(double)eps.y*o.y;
             longitude=Math.Atan2(cross,dot);
+        }
+
+        /// <summary>
+        /// <see cref="Delta"/> の極用の式。cos(緯度) を z から √(1−z²) で求めると、極の近く(z が 1 に近い)で桁落ちする(float の o.z が 1.0 になる緯度 89.99° より先では緯度が −90° にずれる)ので、
+        /// 水平成分の大きさ ho = |o_h|、hn = |n_h| から求める。sin(Δ緯度) ∝ nz·ho − hn·oz = eps.z·ho − (hn−ho)·oz、cos(Δ緯度) ∝ hn·ho + nz·oz。
+        /// hn − ho = (|n_h|² − |o_h|²)/(hn + ho) は、大きな値どうしの引き算をしない形。経度の差 = atan2(eps.x·o.y − eps.y·o.x, ho² + o_h·eps_h)。
+        /// hn は n_h = o_h + eps_h の長さを成分の和から直接求める(|n_h|² = ho² + d2 の平方根にすると、float の GPU では、頂点が極に近いとき(n_h → 0)に相殺して hn に ho の 3e-4 倍の誤差が出る。GPU と同じ式にそろえる)。
+        /// 原点が極そのもの(ho = 0。階層 0 の根だけ)のときは、経度の差を頂点の経度 atan2(eps.x, eps.y) にする(原点の経度は 0)。
+        /// </summary>
+        public static void PolarDelta(Vector3 o,Vector3 eps,out double longitude,out double latitude){
+            double ho2=(double)o.x*o.x+(double)o.y*o.y;
+            double ho=Math.Sqrt(ho2);
+            double oe=(double)o.x*eps.x+(double)o.y*eps.y;
+            double d2=2.0*oe+(double)eps.x*eps.x+(double)eps.y*eps.y;
+            double nx=(double)o.x+eps.x;double ny=(double)o.y+eps.y;
+            double hn=Math.Sqrt(nx*nx+ny*ny);
+            double eh=d2/(hn+ho+1e-30);
+            double nz=(double)o.z+eps.z;
+            latitude=Math.Atan2((double)eps.z*ho-eh*o.z,hn*ho+nz*o.z);
+            if(ho2<1e-30){
+                longitude=Math.Atan2(eps.x,eps.y);
+            }else{
+                longitude=Math.Atan2((double)eps.x*o.y-(double)eps.y*o.x,ho2+oe);
+            }
         }
 
         /// <summary>
@@ -194,6 +268,7 @@ namespace VirtualGeometry.World{
             double floorColumn=Math.Floor(column);double floorRow=Math.Floor(row);
             double fx=column-floorColumn;double fy=row-floorRow;
             int x0=cell.ColumnIndex+(int)floorColumn;int y0=cell.RowIndex+(int)floorRow;
+            int rowUnclamped=y0;
             float[] data=this.mips[cell.Mip];
             int w=cell.Width,h=cell.Height;
             int x1=x0+1,y1=y0+1;
@@ -202,7 +277,9 @@ namespace VirtualGeometry.World{
             y0=Math.Max(0,Math.Min(h-1,y0));y1=Math.Max(0,Math.Min(h-1,y1));
             double h00=data[y0*w+x0]-(double)shift,h10=data[y0*w+x1]-(double)shift,h01=data[y1*w+x0]-(double)shift,h11=data[y1*w+x1]-(double)shift;
             double top=h00+(h10-h00)*fx;double bottom=h01+(h11-h01)*fx;
-            return (float)(top+(bottom-top)*fy);
+            double result=top+(bottom-top)*fy;
+            if(this.WrapLongitude){result=PoleCap(result,rowUnclamped,fy,h,cell.PoleNorth,cell.PoleSouth,shift);}
+            return (float)result;
         }
 
         /// <summary>検証用。mip 0 の双線形補間を、方向(単位ベクトル、倍精度)から直接求める。Cell の分割を使わない独立な計算。</summary>
@@ -228,6 +305,7 @@ namespace VirtualGeometry.World{
             double floorColumn=Math.Floor(column);double floorRow=Math.Floor(row);
             double fx=column-floorColumn;double fy=row-floorRow;
             int x0=(int)floorColumn;int y0=(int)floorRow;
+            int rowUnclamped=y0;
             int x1=x0+1,y1=y0+1;
             float[] data=this.mips[0];
             int w=this.Width,h=this.Height;
@@ -236,7 +314,9 @@ namespace VirtualGeometry.World{
             y0=Math.Max(0,Math.Min(h-1,y0));y1=Math.Max(0,Math.Min(h-1,y1));
             double h00=data[y0*w+x0],h10=data[y0*w+x1],h01=data[y1*w+x0],h11=data[y1*w+x1];
             double top=h00+(h10-h00)*fx;double bottom=h01+(h11-h01)*fx;
-            return top+(bottom-top)*fy;
+            double result=top+(bottom-top)*fy;
+            if(this.WrapLongitude){result=PoleCap(result,rowUnclamped,fy,h,this.poleNorth[0],this.poleSouth[0],0.0);}
+            return result;
         }
 
         /// <summary>検証用。mip 0 の格子の値。</summary>
@@ -264,5 +344,8 @@ namespace VirtualGeometry.World{
         public float MipScale;
         public int BaseWidth;
         public int BaseHeight;
+        /// <summary>この mip の北極、南極の値(全球の格子だけ使う)。<see cref="PlanetRasterLayer.PoleCap"/>。</summary>
+        public float PoleNorth;
+        public float PoleSouth;
     }
 }

@@ -67,6 +67,183 @@ namespace VirtualGeometry.World.Tests{
         }
 
         [Test]
+        public void DeltaNearPole(){
+            // 極の近く(緯度 76°〜89.9999°、両半球)で、緯度経度の差が、方向から直接(倍精度で)求めた差と一致する。
+            // 緯度を cos = √(1−z²) から求める旧式は、極で桁落ちする(このテストの入力で、緯度 89.9° で 26 m、89.97° で 61 m、89.99° で約 300 m 外れる。float の GPU では、89.99° より先で緯度が 90° ずれる)。
+            // 一致の許容は、緯度も経度も 0.1 m + extent×1e-6 m(経度の差は、頂点の水平成分の大きさを掛けて m にする)。
+            var random=new System.Random(11);
+            double worstLatitudeMeters=0;double worstLongitudeMeters=0;
+            foreach(double sign in new[]{1.0,-1.0}){
+                foreach(double latitudeDegrees in new[]{76.0,80.0,85.0,89.0,89.9,89.97,89.99,89.999,89.9999}){
+                    foreach(double extent in new[]{1.0,100.0,1000.0,100000.0}){
+                        double lat=sign*latitudeDegrees*Math.PI/180.0;
+                        double lon=(random.NextDouble()*2-1)*Math.PI;
+                        double[] o={Math.Sin(lon)*Math.Cos(lat),Math.Cos(lon)*Math.Cos(lat),Math.Sin(lat)};
+                        // 原点は float の方向(Cell の原点の単位方向 o も float)。点は、原点の接平面の変位 extent(m)だけ離す。
+                        var originFloat=new Vector3((float)o[0],(float)o[1],(float)o[2]);
+                        double[] originExact={originFloat.x,originFloat.y,originFloat.z};
+                        double[] t={(random.NextDouble()*2-1)*extent,(random.NextDouble()*2-1)*extent,(random.NextDouble()*2-1)*extent};
+                        Vector3 sphere=Sphere(originExact,t,out double[] n);
+                        PlanetRasterLayer.Delta(originFloat,sphere/(float)Radius,out double longitude,out double latitude);
+                        // 基準: 点 n と原点 o(float の値そのもの)の緯度経度の差。asin の代わりに atan2(z, 水平成分) で、極でも精度を保つ。
+                        double originHorizontal=Math.Sqrt(originExact[0]*originExact[0]+originExact[1]*originExact[1]);
+                        double pointHorizontal=Math.Sqrt(n[0]*n[0]+n[1]*n[1]);
+                        double expectedLatitude=Math.Atan2(n[2],pointHorizontal)-Math.Atan2(originExact[2],originHorizontal);
+                        double expectedLongitude=Math.Atan2(n[0],n[1])-Math.Atan2(originExact[0],originExact[1]);
+                        while(expectedLongitude>Math.PI){expectedLongitude-=2*Math.PI;}
+                        while(expectedLongitude<-Math.PI){expectedLongitude+=2*Math.PI;}
+                        // Delta の入力 sphere は、倍精度の n から作った R·(n−o) を float に丸めた値なので、その丸め(extent の相対 6e-8 ほど)を超える差は許す(extent×1e-6 m)。
+                        double latitudeMeters=Math.Abs(latitude-expectedLatitude)*Radius;
+                        worstLatitudeMeters=Math.Max(worstLatitudeMeters,latitudeMeters);
+                        string where="lat="+sign*latitudeDegrees+" extent="+extent;
+                        Assert.That(latitudeMeters,Is.LessThan(0.1+extent*1e-6),"緯度 "+where+" 差 "+latitudeMeters+"m");
+                        double longitudeDifference=Math.Abs(longitude-expectedLongitude);
+                        if(longitudeDifference>Math.PI){longitudeDifference=2*Math.PI-longitudeDifference;}
+                        double longitudeMeters=longitudeDifference*pointHorizontal*Radius;
+                        worstLongitudeMeters=Math.Max(worstLongitudeMeters,longitudeMeters);
+                        Assert.That(longitudeMeters,Is.LessThan(0.1+extent*1e-6),"経度 "+where+" 差 "+longitudeMeters+"m");
+                    }
+                }
+            }
+            Assert.That(worstLatitudeMeters,Is.LessThan(1.0));Assert.That(worstLongitudeMeters,Is.LessThan(1.0));
+        }
+
+        [Test]
+        public void DeltaAtPole(){
+            {
+                // 原点が極そのもの(階層 0 の根)でも NaN にならず、経度の差は頂点の経度、緯度の差は −(極からの角度)。
+                var north=new Vector3(0f,0f,1f);
+                foreach(double lon in new[]{0.3,-2.0,3.0}){
+                    double angle=0.01;
+                    // 点: 極から angle だけ離れた、経度 lon の方向。
+                    double nx=Math.Sin(angle)*Math.Sin(lon);double ny=Math.Sin(angle)*Math.Cos(lon);double nz=Math.Cos(angle);
+                    var eps=new Vector3((float)nx,(float)ny,(float)(nz-1.0));
+                    PlanetRasterLayer.Delta(north,eps,out double longitude,out double latitude);
+                    Assert.That(double.IsNaN(longitude)||double.IsNaN(latitude),Is.False);
+                    Assert.That(longitude,Is.EqualTo(lon).Within(1e-5),"経度");
+                    Assert.That(latitude,Is.EqualTo(-angle).Within(1e-6),"緯度");
+                }
+            }
+            {
+                // 原点が極のごく近く(float の o.z が 1.0)で、点が原点と同じ位置のとき、差は 0。
+                var origin=new Vector3(1e-5f,2e-5f,1f);
+                PlanetRasterLayer.Delta(origin,Vector3.zero,out double longitude,out double latitude);
+                Assert.That(longitude,Is.EqualTo(0.0).Within(1e-12));
+                Assert.That(latitude,Is.EqualTo(0.0).Within(1e-12));
+            }
+        }
+
+        // 極(経度が定まらない所)で、先頭の行と最後の行が列ごとにばらつく全球の格子(LOLA の極の風車状のばらつきの縮小版)。
+        // 一般の行は、地点の方向の滑らかな関数 g·R·(nx+2ny)+500·nz(nz=sin(緯度)。北極で +500、南極で −500)、先頭・最後の行には経度ごとの ±spread の揺れを足す。
+        private static PlanetRasterLayer CreateWindmill(int width,int height,double gradient,float spread){
+            var heights=new float[width*height];
+            for(int y=0;y<height;y++){
+                for(int x=0;x<width;x++){
+                    double longitude=((x+0.5)/width-0.5)*2.0*Math.PI;
+                    double latitude=(0.5-(y+0.5)/height)*Math.PI;
+                    double nx=Math.Sin(longitude)*Math.Cos(latitude);double ny=Math.Cos(longitude)*Math.Cos(latitude);double nz=Math.Sin(latitude);
+                    double value=gradient*Radius*(nx+2.0*ny)+500.0*nz;
+                    if(y==0||y==height-1){value+=spread*Math.Sin(3.0*longitude+y);}
+                    heights[y*width+x]=(float)value;
+                }
+            }
+            return PlanetRasterLayer.CreateGlobal(heights,width,height);
+        }
+
+        [Test]
+        public void PoleCap(){
+            // 極の近くの高さが、経度によらず極の値に収束して連続になる(先頭の行より北を先頭の行へ clamp すると、極の近くの高さが経度で何 m も変わる)。
+            // 北極と南極。mip 0 の Cell(quadLength 0)に、mip が上がった Cell(quadLength が 3 画素)と shift ≠ 0 の確認を足す。
+            PlanetRasterLayer layer=CreateWindmill(256,128,0.02,40f);
+            foreach(double sign in new[]{1.0,-1.0}){
+                {
+                    // 極の値は先頭(最後)の行の平均。
+                    double expected=0;int row=0;if(sign<0){row=layer.Height-1;}
+                    for(int x=0;x<layer.Width;x++){expected+=layer.Texel(x,row);}
+                    expected/=layer.Width;
+                    float pole=layer.PoleNorth(0);if(sign<0){pole=layer.PoleSouth(0);}
+                    Assert.That(pole,Is.EqualTo(expected).Within(1e-3),"極の値 "+sign);
+                }
+                {
+                    // 極そのもの(経度を決める成分がほぼ 0)と、極から 1 m・100 m・1 km(半画素 = 約 21 km の内。128 行・半径 1,737.4 km)で、経度を回しても高さは極からの距離に比例した範囲でしか変わらない。
+                    double pole=layer.SampleDirection(0.0,0.0,sign);
+                    double halfTexel=Radius*Math.PI/layer.Height*0.5;
+                    foreach(double distance in new[]{1.0,100.0,1000.0}){
+                        double low=double.MaxValue,high=double.MinValue;
+                        for(int k=0;k<64;k++){
+                            double lon=k/64.0*2.0*Math.PI;
+                            double angle=distance/Radius;
+                            double value=layer.SampleDirection(Math.Sin(angle)*Math.Sin(lon),Math.Sin(angle)*Math.Cos(lon),sign*Math.Cos(angle));
+                            low=Math.Min(low,value);high=Math.Max(high,value);
+                        }
+                        // 先頭の行の ring の振れ幅(傾き 0.02 の局所的な平面 + 揺れ 40 m)に、距離/半画素 を掛けた範囲。極の値からの差もその範囲。
+                        double bound=(0.02*halfTexel*2.0*2.24+80.0)*(distance/halfTexel)+0.01;
+                        Assert.That(high-low,Is.LessThan(bound),"経度で変わる幅 "+sign+" 距離 "+distance+"m: "+(high-low)+"m");
+                        Assert.That(Math.Abs(low-pole),Is.LessThan(bound),"極からの差 "+sign+" 距離 "+distance+"m");
+                        Assert.That(Math.Abs(high-pole),Is.LessThan(bound),"極からの差 "+sign+" 距離 "+distance+"m");
+                    }
+                    // 1mm でも同じ(高さは極の値の ±1mm の傾き分)。
+                    double near=layer.SampleDirection(Math.Sin(1e-3/Radius)*Math.Sin(1.0),Math.Sin(1e-3/Radius)*Math.Cos(1.0),sign*Math.Cos(1e-3/Radius));
+                    Assert.That(Math.Abs(near-pole),Is.LessThan(0.01),"1mm の高さの変わり "+sign);
+                }
+                {
+                    // mip が上がった Cell(quad の長さが 3 画素)は、その mip の極の値(mip 0 の先頭(最後)の 2^mip 行の平均)を持ち、
+                    // 極の原点で shift を引いた極の値を返す(極冠の t = 0)。mip の極の値でなく mip 0 の値を渡す不具合を検出する。
+                    Assert.That(layer.TryCell(Origin(0.0,0.0,sign),(float)(layer.TexelMeters(Radius)*3.0),Radius,out PlanetRasterCell coarse),Is.True);
+                    Assert.That(coarse.Mip,Is.GreaterThanOrEqualTo(1));
+                    int rowsInMip=1<<coarse.Mip;
+                    double sum=0;
+                    for(int r=0;r<rowsInMip;r++){
+                        int row=r;if(sign<0){row=layer.Height-1-r;}
+                        for(int x=0;x<layer.Width;x++){sum+=layer.Texel(x,row);}
+                    }
+                    double expectedPole=sum/(rowsInMip*layer.Width);
+                    float cellPole=coarse.PoleNorth;if(sign<0){cellPole=coarse.PoleSouth;}
+                    Assert.That(cellPole,Is.EqualTo(expectedPole).Within(1e-3),"mip の極の値 "+sign);
+                    float layerPole=layer.PoleNorth(coarse.Mip);if(sign<0){layerPole=layer.PoleSouth(coarse.Mip);}
+                    Assert.That(cellPole,Is.EqualTo(layerPole),"Cell の極の値は層の mip の値");
+                    float shift=123.5f;
+                    float atPole=layer.Sample(in coarse,Vector3.zero,Radius,shift,out float _);
+                    Assert.That(atPole,Is.EqualTo(expectedPole-shift).Within(2e-3),"極で shift を引いた極の値 "+sign);
+                }
+                {
+                    // Cell の原点が極のごく近く・極そのもの・極から 100 m で、CPU の Sample(原点 + 差)が SampleDirection(方向から直接)と一致する。
+                    var random=new System.Random(21);
+                    foreach(double polarDistance in new[]{0.0,0.3,100.0,2000.0}){
+                        double angle=polarDistance/Radius;
+                        double lonOrigin=random.NextDouble()*2.0*Math.PI;
+                        double[] o={Math.Sin(angle)*Math.Sin(lonOrigin),Math.Sin(angle)*Math.Cos(lonOrigin),sign*Math.Cos(angle)};
+                        var originFloat=new Vector3((float)o[0],(float)o[1],(float)o[2]);
+                        // 原点は float の方向そのもの(TryCell が正規化する)。
+                        Assert.That(layer.TryCell(Origin(originFloat.x,originFloat.y,originFloat.z),0f,Radius,out PlanetRasterCell cell),Is.True);
+                        for(int i=0;i<40;i++){
+                            double[] tangent={(random.NextDouble()*2-1)*5.0,(random.NextDouble()*2-1)*5.0,(random.NextDouble()*2-1)*5.0};
+                            double[] originExact={originFloat.x,originFloat.y,originFloat.z};
+                            Vector3 sphere=Sphere(originExact,tangent,out double[] n);
+                            float height=layer.Sample(in cell,sphere,Radius,out float _);
+                            double expected=layer.SampleDirection(n[0],n[1],n[2]);
+                            // 極の近くでは経度が速く変わるので、位置の誤差 1e-4 m が高さにかかる傾き(極冠で 0.02+揺れ/半画素)を許す。
+                            Assert.That(height,Is.EqualTo(expected).Within(0.05),"原点 極から "+polarDistance+"m "+sign+" #"+i);
+                        }
+                    }
+                }
+            }
+            {
+                // 局所的に平面の場なら、極冠の中でも平面を再現する(clamp では ring の値になって、極の近くの勾配が 0 になる)。
+                // 揺れなし・傾きのある平面: 高さ = g·R·(nx+2ny)+500·nz。北極の P は 500(g·R·(nx+2ny) の ring の平均は 0)、半画素の ring の平均も 500。
+                PlanetRasterLayer plane=CreateWindmill(512,256,0.02,0f);
+                double halfTexel=Radius*Math.PI/plane.Height*0.5;
+                double distance=halfTexel*0.4;
+                double angle=distance/Radius;
+                double lon=1.0;
+                double value=plane.SampleDirection(Math.Sin(angle)*Math.Sin(lon),Math.Sin(angle)*Math.Cos(lon),Math.Cos(angle));
+                double truth=0.02*Radius*(Math.Sin(angle)*Math.Sin(lon)+2.0*Math.Sin(angle)*Math.Cos(lon))+500.0*Math.Cos(angle);
+                // 北緯 90° の 500·nz は 500 が極の値。ring の経度の依存 0.02·R·sin(angle')·(...)は、極冠の線形補間で正しい勾配になる。
+                Assert.That(value-500.0,Is.EqualTo(truth-500.0).Within(0.1),"平面の再現(clamp なら約 250 m ずれる)");
+            }
+        }
+
+        [Test]
         public void Sample(){
             PlanetRasterLayer layer=CreateGlobal(360,180);
             {

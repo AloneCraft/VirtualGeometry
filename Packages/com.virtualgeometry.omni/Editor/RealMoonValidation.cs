@@ -50,15 +50,35 @@ namespace VirtualGeometry.Omni.Editor{
         private static int onlySite=-1;
         // true なら、実データ(LocalData)の代わりに、合成の高起伏の格子(−7,300 m〜+9,000 m、極で連続)を使う(データの無い環境でも走る)。
         private static bool synthetic;
+        // true なら、場所を極の近く(緯度 ±80°〜±90°)にする。極の近くは緯度経度の格子の特異点なので、GPU と CPU の頂点の比較から外していた(|緯度| > 75°)のを、全 Cell で比べる。
+        private static bool polar;
+        // 実データ(LOLA)で極の近くを見る実行。LOLA の極の行(行 0)は列ごとにばらつき(北 −80〜+65 m、南 +342〜+1,431 m)、隣の列と北で 27 m、南で 306 m 違う
+        // (1 列は極から 947 m の輪で約 1 m)ので、極冠の外周に崖が残る。そこでは float の位置の丸め(約 0.1 mm)が、崖の勾配(数百)倍の高さの違いになり、合成の滑らかな場より緩い許容値が要る。
+        private static bool RealPolar=>polar&&!synthetic;
 
         public static void RunSouth(){
-            onlySite=3;synthetic=false;
+            onlySite=3;synthetic=false;polar=false;
             Begin("TestResults/Planet/RealMoonSouth");
         }
 
         public static void Run(){
-            onlySite=-1;synthetic=false;
+            onlySite=-1;synthetic=false;polar=false;
             Begin("TestResults/Planet/RealMoon");
+        }
+
+        /// <summary>
+        /// 実データ(LOLA)で、極の近く(経度 0 と −172°、緯度 ±{80, 85, 89, 89.9, 89.969, 90}°)を比べる。GPU と CPU の頂点の差、描画頂点と CPU の地表の高さの差、非有限の頂点を見る。
+        /// 実データの極は列ごとに値がばらつく(北 145 m、南 1,090 m の幅)ので、1 mm の 2 階差分は記録だけで、合否に使わない。結果は TestResults/Planet/RealMoonPolar。
+        /// </summary>
+        public static void RunPolar(){
+            onlySite=-1;synthetic=false;polar=true;
+            Begin("TestResults/Planet/RealMoonPolar");
+        }
+
+        /// <summary>合成の高起伏(極で連続)で、同じ極の近くの場所を比べる。滑らかな場なので、1 mm の 2 階差分も合否に使う。結果は TestResults/Planet/SyntheticPolar。</summary>
+        public static void RunPolarSynthetic(){
+            onlySite=-1;synthetic=true;polar=true;
+            Begin("TestResults/Planet/SyntheticPolar");
         }
 
         /// <summary>
@@ -66,7 +86,7 @@ namespace VirtualGeometry.Omni.Editor{
         /// 場所は、格子の最大・最小の位置と、経度・緯度 0。結果は TestResults/Planet/SyntheticRelief。
         /// </summary>
         public static void RunSynthetic(){
-            onlySite=-1;synthetic=true;
+            onlySite=-1;synthetic=true;polar=false;
             Begin("TestResults/Planet/SyntheticRelief");
         }
 
@@ -154,8 +174,10 @@ namespace VirtualGeometry.Omni.Editor{
         private const float SyntheticMaximum=9000f;
 
         private static string DatasetName(){
-            if(synthetic){return "synthetic"+SyntheticWidth+"x"+SyntheticHeight;}
-            return "LOLA5760x2880+SLDEM344x344";
+            string suffix="";
+            if(polar){suffix="+polar";}
+            if(synthetic){return "synthetic"+SyntheticWidth+"x"+SyntheticHeight+suffix;}
+            return "LOLA5760x2880+SLDEM344x344"+suffix;
         }
 
         // 合成の高さ(m)。方向 n=(sin λ cos φ, cos λ cos φ, sin φ) の滑らかな関数なので極で連続。−7,300 m と +9,000 m に格子の中で届くよう、最小・最大に合わせて線形に写す。
@@ -183,6 +205,15 @@ namespace VirtualGeometry.Omni.Editor{
         // 検証の場所(経度、緯度。度)。実データは、SLDEM の中心、静かの海の周り、ティコの周り、南極エイトケン盆地の近く。
         // 合成は、格子の最大の位置、最小の位置、経度・緯度 0、その中間の高さ(勾配が大きい所)。
         private static double[][] Sites(){
+            if(polar){
+                var list=new List<double[]>();
+                foreach(double sign in new[]{1.0,-1.0}){
+                    foreach(double latitude in new[]{80.0,85.0,89.0,89.9,89.969,90.0}){
+                        foreach(double longitude in new[]{0.0,-172.0}){list.Add(new[]{longitude,sign*latitude});}
+                    }
+                }
+                return list.ToArray();
+            }
             if(!synthetic){
                 return new[]{
                     new[]{0.0,0.0},            // SLDEM の中心(局所の Override の中)
@@ -277,7 +308,10 @@ namespace VirtualGeometry.Omni.Editor{
             double[][] sites=Sites();
             if(onlySite>=0){sites=new[]{sites[onlySite]};}
             foreach(double[] site in sites){
-                string name="Site"+site[0].ToString("F1",CultureInfo.InvariantCulture)+"_"+site[1].ToString("F1",CultureInfo.InvariantCulture);
+                // 極の近くは、緯度 89.969° と 90° が小数 1 桁で同じ名前(90.0)になるので、小数 3 桁にする(画像・ハッシュの基準・報告の名前が重ならないように)。
+                string latitudeFormat="F1";
+                if(polar){latitudeFormat="F3";}
+                string name="Site"+site[0].ToString("F1",CultureInfo.InvariantCulture)+"_"+site[1].ToString(latitudeFormat,CultureInfo.InvariantCulture);
                 // 上空 150 km から斜めに見下ろす。
                 PlaceCamera(site[0],site[1],150000.0,0.0,35.0);
                 if(onlySite>=0){DiagnoseChain(site[0],site[1]);}
@@ -294,7 +328,8 @@ namespace VirtualGeometry.Omni.Editor{
                 }
                 CheckMillimeter(name,site[0],site[1]);
             }
-            report.Add("pool: used="+moon.UsedSlots+"/"+moon.PoolCapacity+" evictions="+moon.Evictions+" starved="+moon.StarvedRequests+" lastError="+(moon.LastError??"(none)"));
+            report.Add("pool: used="+moon.UsedSlots+"/"+moon.PoolCapacity+" evictions="+moon.Evictions+" starved="+moon.StarvedRequests+" lastError="+(moon.LastError??"(none)")+" invalidBounds="+moon.InvalidBounds);
+            if(polar&&moon.InvalidBounds>0){failures.Add("極の近くで、非有限の頂点を持つ Cell が "+moon.InvalidBounds+" 件ありました。");}
             float averageMicroseconds=0f;
             if(moon.HeightShiftEvaluations>0){averageMicroseconds=moon.HeightShiftMilliseconds*1000f/moon.HeightShiftEvaluations;}
             report.Add("height shift: evaluations="+moon.HeightShiftEvaluations+" applied="+moon.HeightShiftApplied+" totalMilliseconds="+moon.HeightShiftMilliseconds.ToString("F1",CultureInfo.InvariantCulture)+
@@ -380,9 +415,9 @@ namespace VirtualGeometry.Omni.Editor{
                 if(!LogicalVector3.TrySubtract(frame.Origin,cameraLogical.LocalPosition,out LogicalVector3 difference)||!difference.TryToFloat3(out float3 relative)){continue;}
                 float distance=((Vector3)relative).magnitude;
                 if(distance>nearLimit&&nearLimit<float.MaxValue){continue;}
-                // 極の近く(|緯度| > 75°)は、経度が不安定(緯度経度の格子の特異点)なので、別に扱う。
+                // 極の近く(|緯度| > 75°)の Cell は、この実行(既定)の照合から外す(ハッシュの基準を保つため)。極は RunPolar / RunPolarSynthetic が全 Cell で比べる。
                 Vector3 approximate=frame.ApproximateOrigin.normalized;
-                if(Math.Abs(approximate.z)>0.966f){continue;}
+                if(!polar&&Math.Abs(approximate.z)>0.966f){continue;}
                 order.Add(new KeyValuePair<float,PlanetCellKey>(distance,key));
             }
             order.Sort((a,b)=>a.Key.CompareTo(b.Key));
@@ -423,6 +458,8 @@ namespace VirtualGeometry.Omni.Editor{
                 double cellSize=moon.Selector.QuadArc(key.Level)*PlanetLayerSource.CellQuads;
                 double allowed=2e-3+1.5e-5*cellSize;
                 if(key.Level>=LiftedLevel){allowed=3e-4+1e-6*cellSize;}
+                // 実データの極の近く(階層 14 以上)。実測の最大は北 0.37 mm、南 0.92 mm(合成の滑らかな場は、持ち上げない緯度 80° の Cell の 0.19 mm 以外は 35 µm 以下)。2 mm までを許す。極冠が無いと 109 m〜715 m 違った。
+                if(RealPolar&&key.Level>=LiftedLevel){allowed=Math.Max(allowed,2e-3);}
                 if(cellWorst>allowed){failures.Add("GPU の頂点が CPU の式と "+cellWorst+"m 違います(許す差 "+allowed+"m、"+name+"、"+key+")。");}
                 if(cellWorst>worst){worst=cellWorst;worstKey=key;}
             }
@@ -458,12 +495,13 @@ namespace VirtualGeometry.Omni.Editor{
             }
             if(!moon.TryReadbackCellForDiagnostics(in nearest,out VirtualGeometryPackedVertex[] vertices,out PlanetCellFrame frameOfNearest)){failures.Add(name+": 最も近い Cell を読み戻せません。");return;}
             Vector3 up=frameOfNearest.ApproximateOrigin.normalized;
+            // 内積は double で求める(float の内積の丸め、|成分| 500 m で 61 µm が、格納された float の頂点の丸めの上に乗って、2 階差分を 2 倍ほど大きく見せる)。
             double worst=0;double slope=0;
             for(int j=1;j<side-1;j++){
                 for(int i=1;i<side-1;i++){
-                    float center=Vector3.Dot(vertices[j*side+i].Position,up);
-                    float left=Vector3.Dot(vertices[j*side+i-1].Position,up);float right=Vector3.Dot(vertices[j*side+i+1].Position,up);
-                    float below=Vector3.Dot(vertices[(j-1)*side+i].Position,up);float above=Vector3.Dot(vertices[(j+1)*side+i].Position,up);
+                    double center=Dot(vertices[j*side+i].Position,up);
+                    double left=Dot(vertices[j*side+i-1].Position,up);double right=Dot(vertices[j*side+i+1].Position,up);
+                    double below=Dot(vertices[(j-1)*side+i].Position,up);double above=Dot(vertices[(j+1)*side+i].Position,up);
                     worst=Math.Max(worst,Math.Max(Math.Abs(left-2*center+right),Math.Abs(below-2*center+above)));
                     slope=Math.Max(slope,Math.Abs(right-left)*0.5);
                 }
@@ -487,11 +525,21 @@ namespace VirtualGeometry.Omni.Editor{
             report.Add("surface "+name+": CPU TrySampleSurface vs rendered vertex height: samples="+surfaceSamples+" worst="+(worstSurface*1e6).ToString("G3",CultureInfo.InvariantCulture)+"um");
             // 原点を持ち上げた Cell は µm の桁(float の頂点の丸め + GPU の補間の丸め)。持ち上げない |高さ| < 1 km の Cell は float の刻み 61 µm の丸めで 50 µm ほど(0.1 mm までを許す)。
             // 持ち上げが無いと、|高さ| 1.9〜7.3 km の地点で 0.16〜0.55 mm になる。
-            if(surfaceSamples==0||worstSurface>1e-4){failures.Add(name+": CPU の地表の高さと、描いている頂点の高さが "+worstSurface+"m 違います(標本 "+surfaceSamples+" 点、許す差 1e-4m)。");}
+            // 実データの極の近くは 1 mm まで(実測の最大は 0.41 mm。極冠が無いと 29 m 違った)。
+            double surfaceAllowed=1e-4;
+            if(RealPolar){surfaceAllowed=1e-3;}
+            if(surfaceSamples==0||worstSurface>surfaceAllowed){failures.Add(name+": CPU の地表の高さと、描いている頂点の高さが "+worstSurface+"m 違います(標本 "+surfaceSamples+" 点、許す差 "+surfaceAllowed+"m)。");}
+            // 地表 0.17m の視点で、最も近い Cell が 1 mm の細かさまで細分化されていること(細分化が止まると mm の精度で物を置けない)。
+            // 実データの極の近くは対象外: 南極の行 0 の崖で、細分化が収束しない(pool が足りなくなる)ことがある。報告には quad の大きさが残る。
+            if(!RealPolar&&quad>1.0e-3f){failures.Add(name+": 地表 0.17m の視点で最も近い Cell の quad が "+quad*1000f+"mm で、1mm の細かさに届いていません。");}
             report.Add("millimeter "+name+": nearest "+nearest+" quad="+(quad*1000f).ToString("G3",CultureInfo.InvariantCulture)+"mm distance="+nearestDistance.ToString("G3",CultureInfo.InvariantCulture)+"m maxSecondDifference="+(worst*1e3).ToString("G3",CultureInfo.InvariantCulture)+"mm maxStep="+(slope*1e3).ToString("G3",CultureInfo.InvariantCulture)+"mm");
             // 2 階差分は float の丸め(持ち上げない |高さ| < 1 km で 61 µm)の数倍以内。方向の量子化があれば、傾き 0.1 で 1e-2 m 以上の階段になる。
             // 持ち上げが無いと、高さ −7 km で 1.46 mm、−2.8 km で 0.98 mm(float の刻み)。
-            if(worst>2e-4){failures.Add(name+": 最も細かい Cell の頂点の高さの 2 階差分が "+worst+"m あります(量子化の階段の疑い)。");}
+            if(worst>2e-4&&(!polar||synthetic)){failures.Add(name+": 最も細かい Cell の頂点の高さの 2 階差分が "+worst+"m あります(量子化の階段の疑い)。");}
+        }
+
+        private static double Dot(Vector3 a,Vector3 b){
+            return (double)a.x*b.x+(double)a.y*b.y+(double)a.z*b.z;
         }
 
         private static IEnumerable<object> Converge(string name){

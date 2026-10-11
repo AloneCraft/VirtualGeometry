@@ -32,6 +32,7 @@ namespace VirtualGeometry.World{
         private readonly Vector4[] rasterFraction=new Vector4[2];
         private readonly int[] rasterSize=new int[8];
         private readonly Vector4[] rasterRegional=new Vector4[2];
+        private readonly Vector4[] rasterPole=new Vector4[2];
         private PlanetCellKey rasterCacheKey;
         private float rasterCacheQuad=-1f;
         private bool rasterCacheValid;
@@ -285,12 +286,14 @@ namespace VirtualGeometry.World{
                     this.rasterFraction[i]=new Vector4(cell.ColumnFraction,cell.RowFraction,cell.ColumnsPerRadian,cell.RowsPerRadian);
                     this.rasterSize[i*4]=cell.Width;this.rasterSize[i*4+1]=cell.Height;this.rasterSize[i*4+2]=cell.Regional;this.rasterSize[i*4+3]=cell.BaseWidth;
                     this.rasterRegional[i]=new Vector4(cell.RegionalInset,cell.RegionalFeather,cell.MipScale,cell.BaseHeight);
+                    this.rasterPole[i]=new Vector4(cell.PoleNorth,cell.PoleSouth,0f,0f);
                 }
                 commands.SetComputeVectorParam(shader,"_RasterDirection",this.rasterCells[0].Direction);
                 commands.SetComputeIntParams(shader,"_RasterIndex",this.rasterIndex);
                 commands.SetComputeVectorArrayParam(shader,"_RasterFraction",this.rasterFraction);
                 commands.SetComputeIntParams(shader,"_RasterSize",this.rasterSize);
                 commands.SetComputeVectorArrayParam(shader,"_RasterRegional",this.rasterRegional);
+                commands.SetComputeVectorArrayParam(shader,"_RasterPole",this.rasterPole);
             }
             int count=Mathf.Clamp(this.octaves,1,MaximumOctaves);
             for(int octave=0;octave<count;octave++){

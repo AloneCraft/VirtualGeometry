@@ -791,6 +791,16 @@ Omni の COSMIC-PRECISION-001(月の面がボールの縁を越える)に当た�
   mm の精度で物を地面に置くもの(`MoonBallDemo`、`BodyStackDemo`)は Logical 版を使う。降下カメラは目の高さの制限なので float 版のまま。Cell の頂点の CPU の式(`TryHeight`)は GPU と同じ式
 - 極の真上で atan2(0, 0) が未定義(GPU が NaN を返し、NaN の高さが Cell の bounds に入って選択が細分化しなくなった)なので、`PlanetAtan2` が 0 を返す。生成した頂点に NaN・inf があるときは、その Cell の実際の bounds を使わず解析的な bounds のままにする(`PlanetLayerSource.InvalidBounds`)
 - 差が小さいとき(x > 0 で |y| < 0.1x)の atan2 は、GPU の atan2 の相対誤差(1e-6 ほど)を避けるため、atan の級数で求める
+- **極の近くの緯度経度の差**(`|o.z| ≥ 0.966`、緯度 75° 以上の原点。`PlanetRasterLayer.PolarDelta`、`PlanetRaster.hlsl` の `PlanetPolarDelta`):
+  緯度を cos = √(1−z²) から求める式は極で桁落ちする(float の GPU では、`o.z` が 1.0 になる緯度 89.99° より先で緯度が −90° にずれて赤道の行を読む。緯度 89.9° の 1 km の Cell で、GPU と CPU の頂点の高さが 0.029 m、描画頂点と CPU の地表の高さが 1.26 mm 違った)ので、
+  水平成分の大きさ ho = |o_h|、hn = |n_h| から求める。hn は n_h = o_h + eps_h の長さを成分の和から直接求める(ho² + d2 の平方根にすると、極に近い頂点で float が相殺して hn に ho の 3×10^-4 倍の誤差が出る)。原点が極そのもの(階層 0 の根)は、経度の差を頂点の経度にする。
+  `|o.z| < 0.966` の原点は従来の式のままで、極以外の Cell の頂点はビット単位で変わらない(RealMoon の頂点ハッシュ 17 件が基準と一致)
+- **GPU の atan2**: 極の近くの経度・緯度の差は、標準の `atan2` でなく `PlanetAtan2Accurate`(|a| ≤ tan(π/8) に折り返した級数、float の丸めに近い精度)で求める。
+  標準の atan2 に由来すると考えられる誤差で、極冠(下)の列の位置が 1e-3 画素ずれ、極から 100 m の頂点で高さが 0.6〜1.3 mm 違った。差し替えで 35 µm 以下になった(合成の滑らかな場、緯度 85° 以上)
+- **極冠**(`PlanetRasterLayer.PoleCap`。GPU は `PlanetRasterLayerSample` と `_RasterPole`): 全球の格子は画素の中心が格子点なので、極は先頭の行の半画素北(行の位置 −0.5)、最後の行の半画素南(行の位置 h−0.5)にある。
+  先頭の行より北を先頭の行へ clamp すると、極の近くの高さが経度で決まり(先頭の行は列ごとにばらつく)、経度の定まらない極の 1 mm の範囲でも高さが経度で何 m も変わる。
+  そこで極から半画素の中は、極の値 P(mip ごとの先頭・最後の行の平均。`PoleNorth(mip)`、`PoleSouth(mip)`)から、先頭(最後)の行の補間した値 ring へ、極からの距離に比例して移る: 値 = P + (ring − P)·t、t = 極からの距離/半画素。
+  経度によらず P に収束して連続になり、場が局所的に平面なら極冠の中でも平面を正確に再現する。CPU の `Sample`、`SampleDirection`、GPU が同じ式。経度が一周する格子(全球)だけに働き、局所の格子には働かない
 - データは Omni のデモ(`Assets/Omni/Demos/PlanetSurface/Data`)のコピーを `LocalData/OmniDemo/`(git 管理外)に置く。Omni の LICENSE と「外部資産は配布しない」の規則のため、commit しない。無いときは検証が、コピーする場所を示して失敗する
 
 ### 確認(`RealMoonValidation.Run`、2026-10-11、LOLA 5760×2880 と SLDEM2015 の 344×344(0N/0E、512 画素/度)で月を描く)
@@ -802,11 +812,27 @@ Omni の COSMIC-PRECISION-001(月の面がボールの縁を越える)に当た�
   粗い Cell(階層 2、一辺約 680 km)は 3.4 m(Cell の大きさの 5×10^-6。原点からの差の float の丸めが位置に約 1 m の誤差を作る。許す差は階層 13 以下で 2 mm + Cell の大きさの 1.5×10^-5、階層 14 以上で 0.3 mm + Cell の大きさの 10^-6)
 - 1 quad が約 1 mm の Cell(地表 0.17m の視点の真下の Cell)の頂点の高さの 2 階差分: 最大 0.061 mm(SLDEM の中心。他の 3 か所は 0.003〜0.036 mm)で、方向の量子化の階段(傾き 0.1 で 1e-2 m 以上)は無い。許すのは 0.2 mm
 - 月全体の画像(高さ 2.5R)で穴 0。上空 150 km から斜めに見て、クレーターの地形が出る(`TestResults/Planet/RealMoon` の画像で確認)
-- 世界パッケージのテスト 27 本(`PlanetRasterLayerTests`、`PlanetCellFrameTests.TryWithHeightShift`、`PlanetCellSelectorTests.Frame` を含む)合格。テストは、格子の座標の規約、緯度経度の差、Cell の原点 + 差の補間と方向からの直接の補間の一致(粗い Cell から 1mm まで)、1mm 間隔の点列の高さの差(傾きの大きい格子)、mip の平均、局所の重みを見る
+- 世界パッケージのテスト 31 本(`PlanetRasterLayerTests`、`PlanetCellFrameTests.TryWithHeightShift`、`PlanetCellSelectorTests.Frame` を含む)合格。テストは、格子の座標の規約、緯度経度の差(極の近く `DeltaNearPole`、極そのもの `DeltaAtPole` を含む)、Cell の原点 + 差の補間と方向からの直接の補間の一致(粗い Cell から 1mm まで)、1mm 間隔の点列の高さの差(傾きの大きい格子)、mip の平均、局所の重み、極冠(`PoleCap`。極の値への収束、clamp では外れる平面の再現、mip が上がった Cell の極の値、shift)を見る
+
+### 確認(極の近く、`RealMoonValidation.RunPolarSynthetic` と `RunPolar`、2026-10-12)
+
+経度 0 と −172°、緯度 ±{80, 85, 89, 89.9, 89.969, 90}°(24 地点)、高度 1000 / 10 / 0.17 m で、camera に近い 12 Cell の頂点を GPU と CPU で比べる(極の近くの Cell を除外しない)。
+非有限の頂点を持つ Cell(`InvalidBounds`)は 0。結果は `TestResults/Planet/SyntheticPolar`、`RealMoonPolar`。
+
+- **合成の滑らかな場**(`RunPolarSynthetic`、極で連続): 修正の前後で、極(±90°)の階層 14 の Cell の GPU と CPU の頂点の差は、緯度の式だけ直した段階で 3 mm、極冠を足して 0.6〜1.3 mm、`PlanetAtan2Accurate` で 35 µm 以下(許す差は 0.47 mm)。
+  緯度 85° 以上の全地点で GPU と CPU の差は 35 µm 以下、描画頂点と CPU の地表の高さの差は 19 µm 以下、1 mm の 2 階差分は 0.033 mm 以下、地表 0.17 m の視点で最も近い Cell の quad は全 24 地点で 0.635 mm。
+  緯度 80° の北の地点は、原点を持ち上げない Cell(高さ −621 m)で、GPU と CPU の差 0.19 mm、2 階差分 0.186 mm(float の刻み 61 µm の数倍)。pool は 4,096 枠を使い切るが、starved は 0。PASSED
+- **実データ(LOLA)**(`RunPolar`): 極の真上の GPU と CPU の頂点の高さの差(階層 14 以上)は、緯度の式だけ直した段階で北 109 m(高度 10 m)・南 715 m(高度 1000 m)、地表との差 29 m だったのが、北 0.37 mm、南 0.92 mm、描画頂点と CPU の地表の高さの差が北 0.11 mm、南 0.41 mm になった。
+  許す差は階層 14 以上の GPU と CPU が 2 mm、地表が 1 mm(合成の滑らかな場より緩い。理由は下の限界)。PASSED。北は全地点で quad 0.0794〜0.635 mm まで細分化される
 
 ### 限界
 
-- **緯度経度の格子の極の特異性は直していない**。極の近く(|緯度| > 75°)は、経度が不安定で、GPU と CPU の高さが大きいときで約 90 m 違う。粗い Cell の GPU/CPU の照合から外してある。緯度 ±90° の真上の画像と、極の近くの 1 mm の確認はしていない(極では、極座標の格子が要る)
+- **実データ(LOLA)の極の行は列ごとにばらつく**(行 0: 北 −80〜+65 m、南 +342〜+1,431 m。隣の列と北で 27 m、南で 306 m 違う。極冠の外周 947 m の 1 列は約 1 m)。極冠はこのばらつきを外周に残すので、南極の近くに崖がある。
+  (a) 勾配が大きく、float の位置の丸め(約 0.1 mm)が高さの 0.3〜0.9 mm の違いになる(許す差を緩めた理由)。
+  (b) 南極の真上と緯度 −89.969° 付近は、細分化が 1 mm まで収束せず(pool が尽きる。used 4096/4096、starved 約 6 万)、地表 0.17 m の視点でも最も近い Cell の quad が 20 mm〜1.3 m で止まる(緯度 −89.9° は 0.08〜0.3 mm まで届く)。
+  (c) そのため、実データの極の近くでは「最も近い Cell が 1 mm」と 1 mm の 2 階差分を合否に使わない(合成の滑らかな場では使う)。
+  崖は元データの特徴で、極冠の式の問題ではない。対処は元データの前処理(極の近くの行を、経度方向の分解能に合わせて低域通過する等)で、Field の供給元の仕事として未実施
+- 既定の `Run`、`RunSouth` の GPU/CPU の照合は、粗い Cell のうち |z| > 0.966 の Cell を除外したまま(頂点ハッシュの基準を保つため)。極は `RunPolar`、`RunPolarSynthetic` が全 Cell で比べる
 - 頂点の位置の float の刻みは、Cell の原点の持ち上げ(§19)で解消した。残る限界は §19
 - 手続きの項による「データの帯域より上の増幅」(§2)は、この検証では使っていない(手続きの高さ 0、実データだけ)。仕組みは既存の octave の帯域制限で、実データの Nyquist より上の波長だけを足す設定にするだけ。実データ + 増幅の確認と、増幅の振幅を実データの粗さから決める方法は未実施
 - 「Field の供給元の interface」(格子以外の供給元)は作っていない。いまは全球 + 局所の 2 枚の格子だけ
@@ -840,7 +866,7 @@ Cell の原点を、Cell の中心の方向の地表の高さ H だけ半径 R �
 
 ### 確認(2026-10-11)
 
-- 世界パッケージのテスト 27 本合格。
+- 世界パッケージのテスト 27 本合格(この時点。極の近くの確認を足した現在は §18 の 31 本)。
 - `RealMoonValidation.Run`、持ち上げなし(`-heightShiftThreshold 1e9`): 読み戻した全頂点(位置・法線)の FNV ハッシュ 17 件が、持ち上げを入れる前(基準)とビット単位で同じ。evictions も同じ 17,554 回。GPU・CPU・shader の変更が、H = 0 のとき挙動を変えない
 - 同、持ち上げあり(既定):
   - GPU と CPU の頂点の差(階層 14〜26、camera に近い 12 Cell): −7.3 km の地点 1.64 mm → 2.3 µm(地表 0.17 m)、−2.9 km の地点 0.55 mm → 14 µm、−1.9 km の地点 0.41 mm → 1.5 µm。上空 1 km の視点でも最大 43 µm
@@ -862,7 +888,7 @@ Cell の原点を、Cell の中心の方向の地表の高さ H だけ半径 R �
 ### 限界
 
 - **手続きだけの大振幅の項** `clamp(total)·A` の float の丸めは、H を引いても残る(A = 8 km で 0.25〜0.5 mm)。実データの月のように、振幅を実データに任せる使い方では出ない
-- 粗い Cell(階層 2 で 3.4 m)の GPU・CPU の差(原点からの差 eps の float の丸め)、極の近く(|緯度| > 75°)、float の `_CenterTangent` は別の原因で残る
+- 粗い Cell(階層 2 で 3.4 m)の GPU・CPU の差(原点からの差 eps の float の丸め)、float の `_CenterTangent` は別の原因で残る(極の近くは §18 の極の近くの確認と限界)
 - 持ち上げ量の評価の時間(`RealMoonValidation` の report の `height shift:` の行): 高度 150 km から 0.17 m までの降下 4 か所で、評価 23,967 回(持ち上げた Cell は 17,782 回)、累計 330 ms、1 回 13.7 µs(Editor、batchmode)。
   `BodyStack` の timing は、持ち上げ前後の差を比べていない(振幅が小さく H = 0 のままの検証で、機械の負荷により ±数十 % 揺れた)
 - `TryCellHeightShift` の評価結果は Cell ごとに frame に入れて覚える(Selector の frame の cache は 65,536 件で捨てるが、生成済みの Cell は slot の frame の値を返すので変わらない)。`HeightShiftThreshold` を有効なまま変えると作り直す

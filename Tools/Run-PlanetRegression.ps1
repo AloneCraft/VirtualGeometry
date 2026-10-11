@@ -5,6 +5,8 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File Tools\Run-PlanetRegression.ps1 -Jobs MoonBall,BodyStack -Modes on -Tests
 # (-Jobs and -Modes accept a comma separated list, also when the script is started with -File.)
 #
+# With -HashBaseline <file>, the RealMoon run in mode "on" also compares its vertex hashes against that recorded file.
+#
 # Modes (how the height-shift threshold is overridden, see VirtualGeometry.Omni.Editor.HeightShiftOverride):
 #   on     default behaviour (no override)
 #   forced -heightShiftThreshold 0   lift every cell that has a non-zero height (finds readers that forgot SphereOrigin)
@@ -17,7 +19,10 @@ param(
     [string[]]$Modes = @(),
     [string]$Tag = "regression",
     [string]$Unity = "C:\Program Files\Unity\Hub\Editor\6000.6.0f1\Editor\Unity.exe",
-    [switch]$Tests
+    [switch]$Tests,
+    # A recorded vertex-hash baseline file. When given, the RealMoon run in mode "on" compares its vertex hashes against it
+    # (-vertexHashMode compare). The baseline is per machine/GPU/driver, so it is not kept in the repository; a different environment is reported as "not compared".
+    [string]$HashBaseline = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,6 +44,8 @@ $table = @(
     @("BodyStackCells", "BodyStackValidation.RunCells", "BodyStackCells", @("on", "forced")),
     @("RealMoon", "RealMoonValidation.Run", "RealMoon", @("on", "off")),
     @("SyntheticRelief", "RealMoonValidation.RunSynthetic", "SyntheticRelief", @("on", "off")),
+    @("RealMoonPolar", "RealMoonValidation.RunPolar", "RealMoonPolar", @("on")),
+    @("SyntheticPolar", "RealMoonValidation.RunPolarSynthetic", "SyntheticPolar", @("on")),
     @("PlaneSink", "PlaneSinkValidation.Run", "PlaneSink", @("on")),
     @("PlaneSinkPlay", "PlaneSinkPlaySmoke.Run", "PlaneSinkPlay", @("on"))
 )
@@ -83,6 +90,7 @@ foreach ($row in $table) {
         $arguments = @("-batchmode", "-force-d3d12", "-projectPath", $project, "-executeMethod", ($prefix + $row[1]), "-logFile", (Join-Path $logs ($row[0] + "-" + $mode + ".log")))
         if ($mode -eq "forced") { $arguments += @("-heightShiftThreshold", "0") }
         if ($mode -eq "off") { $arguments += @("-heightShiftThreshold", "1e9") }
+        if ($HashBaseline -ne "" -and $row[0] -eq "RealMoon" -and $mode -eq "on") { $arguments += @("-vertexHashBaseline", $HashBaseline, "-vertexHashMode", "compare") }
         $report = Join-Path $dir "Report.txt"
         if (Test-Path $report) { Remove-Item $report -Force }
         $p = Start-Process -FilePath $Unity -ArgumentList (ArgumentString $arguments) -PassThru -Wait
