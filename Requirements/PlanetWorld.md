@@ -849,6 +849,10 @@ Cell の原点を、Cell の中心の方向の地表の高さ H だけ半径 R �
 - CPU の地表の高さ(`TrySampleSurface` の Logical 版)と、描いている頂点(持ち上げた Cell の原点 + 相対位置)の高さ(|原点 + 相対位置| − R)の差(`RealMoonValidation`、地表 0.17 m の視点の真下の Cell、81 点):
   持ち上げあり 1.4〜15 µm(高さ −1.9〜−7.3 km の 3 地点。持ち上げない SLDEM の中心は float の刻み 61 µm の丸めで 51 µm)、持ち上げなし(`-heightShiftThreshold 1e9`)は 0.16〜0.55 mm。許すのは 0.1 mm。
   CPU の高さと方向から直接求めた双線形補間の差は 3.5×10^-10 m(float で返していたときは 0.24 mm)
+- 合成の高起伏(`RealMoonValidation.RunSynthetic`、データ無しで走る。方向の滑らかな関数 `sin(60·n.x+0.7)·cos(60·n.y+0.3)+0.5·sin(37·n.z+1.1)` を −7,300 m〜+9,000 m に線形に写した 2880×1440 の全球の格子、勾配は最大約 0.3。場所は格子の最大・最小の位置、経度・緯度 0、最大の近く):
+  持ち上げあり(既定)は PASSED。最大 +9,000 m の地点で GPU と CPU の頂点の差 1.65 µm(地表 0.17 m)、CPU の地表の高さと描画頂点の高さの差 1.6 µm、1 mm の Cell の 2 階差分 0.011 mm。最小 −7,300 m の地点で 3.0 µm、3.6 µm、0.006 mm。持ち上げ量の評価 22,858 回、1 回 18.7 µs。
+  持ち上げなし(`-heightShiftThreshold 1e9`)は、締めた許容値で FAILED(期待どおり)
+- 頂点ハッシュの基準の自動比較(`RealMoonValidation`): 記録(17 件)→ 再実行で比較して 17 件一致(実行ごとに同じ値)→ 1 件を書き換えると、その名前を指して FAILED → 設定(`-heightShiftThreshold 1e9`)を変えると「環境違いのため未比較」
 - 検証の許容値を実測の 2〜10 倍へ締めた(`CheckGpu` は階層 14 以上で 0.3 mm + Cell の大きさの 10^-6、`CheckMillimeter` は 2 階差分 0.2 mm)。持ち上げなしの実行は、この許容値で失敗する(修正前の挙動で不合格、修正後に合格)
 - 回帰: `P2`、`P2Large`、`P4b`、`P4bEarth`、`P5a`、`MoonBall`、`GiantBall`、`BodyStack`、`BodyStackCells` を、既定と `-heightShiftThreshold 0`(全 Cell を持ち上げる)の両方で実行し、すべて PASSED。
   既定では、振幅が 1,024 m 未満の検証は H = 0 のままで、`P2`・`P5a`・`MoonBall` の報告は持ち上げ前と同じ。
@@ -862,8 +866,8 @@ Cell の原点を、Cell の中心の方向の地表の高さ H だけ半径 R �
 - 持ち上げ量の評価の時間(`RealMoonValidation` の report の `height shift:` の行): 高度 150 km から 0.17 m までの降下 4 か所で、評価 23,967 回(持ち上げた Cell は 17,782 回)、累計 330 ms、1 回 13.7 µs(Editor、batchmode)。
   `BodyStack` の timing は、持ち上げ前後の差を比べていない(振幅が小さく H = 0 のままの検証で、機械の負荷により ±数十 % 揺れた)
 - `TryCellHeightShift` の評価結果は Cell ごとに frame に入れて覚える(Selector の frame の cache は 65,536 件で捨てるが、生成済みの Cell は slot の frame の値を返すので変わらない)。`HeightShiftThreshold` を有効なまま変えると作り直す
-- 高起伏の検証は `LocalData/OmniDemo`(git 管理外)の実データを使う。データが無い環境では走らない(合成の高起伏の検証は未作成)
-- 頂点の FNV ハッシュ(`RealMoonValidation` の report の `vertexHash=`)は、持ち上げ前と持ち上げなし(`-heightShiftThreshold 1e9`)を、report を並べて手で比べた。基準値を記録して自動で比べる仕組みは無い(ハッシュは GPU とドライバーで変わる)
+- 実データ(`LocalData/OmniDemo`、git 管理外)の検証は、データが無い環境では走らない。データ無しで走る合成の高起伏の検証は `RealMoonValidation.RunSynthetic`(下の確認)
+- 頂点の FNV ハッシュ(`RealMoonValidation` の report の `vertexHash=`)は、`VertexHashBaseline`(`-vertexHashBaseline <file>`、`-vertexHashMode record|compare|auto`)が基準のファイルと自動で比べる。ハッシュは GPU とドライバーで変わるので、ファイルの先頭の環境(GPU 名、API、Unity の版、持ち上げの設定、データ)が違えば比べず「環境違いのため未比較」と report に書く(失敗にはしない)。基準のファイルは環境ごとの値なので、リポジトリには置かない(`TestResults/` は git 管理外)
 - `RadialBall` の `_PlanetCellUp.w = R + H` は、起伏のあるボールで H ≠ 0 になる経路を通した検証が無い(検証のボールは起伏 0 で、H = 0)。月の頂点と描画行列・`_PlanetCellRef` は H ≠ 0 で通した(`MoonBall`、`BodyStack` を `-heightShiftThreshold 0` で実行)
 
 ## 20. 単純に拡大した面と VG の面に、ボールを沈める比べ(PlaneSink)

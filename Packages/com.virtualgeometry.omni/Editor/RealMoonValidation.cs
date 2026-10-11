@@ -48,15 +48,26 @@ namespace VirtualGeometry.Omni.Editor{
         private static readonly List<string> errors=new List<string>();
 
         private static int onlySite=-1;
+        // true なら、実データ(LocalData)の代わりに、合成の高起伏の格子(−7,300 m〜+9,000 m、極で連続)を使う(データの無い環境でも走る)。
+        private static bool synthetic;
 
         public static void RunSouth(){
-            onlySite=3;
+            onlySite=3;synthetic=false;
             Begin("TestResults/Planet/RealMoonSouth");
         }
 
         public static void Run(){
-            onlySite=-1;
+            onlySite=-1;synthetic=false;
             Begin("TestResults/Planet/RealMoon");
+        }
+
+        /// <summary>
+        /// 合成の高起伏の月(半径 1,737.4 km、高さ −7,300 m〜+9,000 m、勾配は最大約 0.3、極で連続)で、同じ検証をする(実データが無くても走る)。
+        /// 場所は、格子の最大・最小の位置と、経度・緯度 0。結果は TestResults/Planet/SyntheticRelief。
+        /// </summary>
+        public static void RunSynthetic(){
+            onlySite=-1;synthetic=true;
+            Begin("TestResults/Planet/SyntheticRelief");
         }
 
         private static void Begin(string output){
@@ -91,15 +102,20 @@ namespace VirtualGeometry.Omni.Editor{
         }
 
         private static void Setup(){
-            string root=Path.GetDirectoryName(Application.dataPath);
-            string globalPath=Path.Combine(root,DataFolder,GlobalFile);
-            string regionalPath=Path.Combine(root,DataFolder,RegionalFile);
-            if(!File.Exists(globalPath)||!File.Exists(regionalPath)){
-                throw new FileNotFoundException("実データがありません。Omni のデモ(Assets/Omni/Demos/PlanetSurface/Data)の "+GlobalFile+" と "+RegionalFile+" を "+DataFolder+" へコピーしてください(git 管理外)。");
+            regionalLayer=null;
+            if(synthetic){
+                globalLayer=PlanetRasterLayer.CreateGlobal(SyntheticHeights(SyntheticWidth,SyntheticHeight),SyntheticWidth,SyntheticHeight);
+            }else{
+                string root=Path.GetDirectoryName(Application.dataPath);
+                string globalPath=Path.Combine(root,DataFolder,GlobalFile);
+                string regionalPath=Path.Combine(root,DataFolder,RegionalFile);
+                if(!File.Exists(globalPath)||!File.Exists(regionalPath)){
+                    throw new FileNotFoundException("実データがありません。Omni のデモ(Assets/Omni/Demos/PlanetSurface/Data)の "+GlobalFile+" と "+RegionalFile+" を "+DataFolder+" へコピーしてください(git 管理外)。合成データの検証は RunSynthetic。");
+                }
+                globalLayer=PlanetRasterLayer.CreateGlobal(PlanetRasterLayer.ReadFloat32(File.ReadAllBytes(globalPath),5760,2880),5760,2880);
+                // SLDEM: 344×344、512 画素/度、中心は 0N/0E。±9.5 km(約 ±(9.5km/59m)=161 画素)の内側を使う。端から 14 画素(約 0.8 km)の内側まで重み 0、そこから 26 画素(約 1.5 km)で 1。
+                regionalLayer=PlanetRasterLayer.CreateRegional(PlanetRasterLayer.ReadFloat32(File.ReadAllBytes(regionalPath),344,344),344,344,0.0,0.0,512.0,14f,26f);
             }
-            globalLayer=PlanetRasterLayer.CreateGlobal(PlanetRasterLayer.ReadFloat32(File.ReadAllBytes(globalPath),5760,2880),5760,2880);
-            // SLDEM: 344×344、512 画素/度、中心は 0N/0E。±9.5 km(約 ±(9.5km/59m)=161 画素)の内側を使う。端から 14 画素(約 0.8 km)の内側まで重み 0、そこから 26 画素(約 1.5 km)で 1。
-            regionalLayer=PlanetRasterLayer.CreateRegional(PlanetRasterLayer.ReadFloat32(File.ReadAllBytes(regionalPath),344,344),344,344,0.0,0.0,512.0,14f,26f);
 
             MoonBallSceneBuilder.UsePipeline();
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);
@@ -110,6 +126,7 @@ namespace VirtualGeometry.Omni.Editor{
             // 手続きの高さは 0(実データだけ)。階層は 1 quad が 1mm になる 28 まで。
             MoonBallSceneBuilder.Configure(moon,(float)MoonRadius,0f,3800f,1,32,4096,64,true);
             HeightShiftOverride.Apply(moon);
+            VertexHashBaseline.Begin("gpu="+SystemInfo.graphicsDeviceName+";api="+SystemInfo.graphicsDeviceType+";unity="+Application.unityVersion+";shift="+HeightShiftOverride.Describe()+";data="+DatasetName());
             report.Add("heightShiftThreshold: "+HeightShiftOverride.Describe()+" (component "+moon.HeightShiftThreshold.ToString("G",CultureInfo.InvariantCulture)+")");
             moon.Material=AssetDatabase.LoadAssetAtPath<Material>(MoonBallSceneBuilder.MoonMaterialPath);
             moon.SetRasters(globalLayer,regionalLayer);
@@ -129,6 +146,69 @@ namespace VirtualGeometry.Omni.Editor{
             sun.transform.rotation=Quaternion.Euler(35f,-40f,0f);
             RenderSettings.ambientMode=UnityEngine.Rendering.AmbientMode.Flat;RenderSettings.ambientLight=new Color(0.03f,0.03f,0.04f);
             RenderSettings.skybox=null;
+        }
+
+        private const int SyntheticWidth=2880;
+        private const int SyntheticHeight=1440;
+        private const float SyntheticMinimum=-7300f;
+        private const float SyntheticMaximum=9000f;
+
+        private static string DatasetName(){
+            if(synthetic){return "synthetic"+SyntheticWidth+"x"+SyntheticHeight;}
+            return "LOLA5760x2880+SLDEM344x344";
+        }
+
+        // 合成の高さ(m)。方向 n=(sin λ cos φ, cos λ cos φ, sin φ) の滑らかな関数なので極で連続。−7,300 m と +9,000 m に格子の中で届くよう、最小・最大に合わせて線形に写す。
+        // 勾配は、k=60 で最大約 0.3(16,300 m × 78 / 1,737 km)。経度の周期 3 と緯度の変化を持つ(全球の格子の座標の規約は PlanetRasterLayer と同じ)。
+        private static float[] SyntheticHeights(int width,int height){
+            var raw=new double[width*height];
+            double minimum=double.MaxValue;double maximum=double.MinValue;
+            for(int y=0;y<height;y++){
+                double lat=(0.5-(y+0.5)/height)*Math.PI;
+                for(int x=0;x<width;x++){
+                    double lon=((x+0.5)/width-0.5)*2.0*Math.PI;
+                    double nx=Math.Sin(lon)*Math.Cos(lat);double ny=Math.Cos(lon)*Math.Cos(lat);double nz=Math.Sin(lat);
+                    double value=Math.Sin(60.0*nx+0.7)*Math.Cos(60.0*ny+0.3)+0.5*Math.Sin(37.0*nz+1.1);
+                    raw[y*width+x]=value;
+                    minimum=Math.Min(minimum,value);maximum=Math.Max(maximum,value);
+                }
+            }
+            var result=new float[width*height];
+            for(int i=0;i<result.Length;i++){
+                result[i]=(float)(SyntheticMinimum+(raw[i]-minimum)/(maximum-minimum)*(SyntheticMaximum-SyntheticMinimum));
+            }
+            return result;
+        }
+
+        // 検証の場所(経度、緯度。度)。実データは、SLDEM の中心、静かの海の周り、ティコの周り、南極エイトケン盆地の近く。
+        // 合成は、格子の最大の位置、最小の位置、経度・緯度 0、その中間の高さ(勾配が大きい所)。
+        private static double[][] Sites(){
+            if(!synthetic){
+                return new[]{
+                    new[]{0.0,0.0},            // SLDEM の中心(局所の Override の中)
+                    new[]{23.47,0.67},         // 静かの海の周り
+                    new[]{-11.2,-43.3},        // ティコの周り(高地のクレーター)
+                    new[]{-172.0,-70.0},       // 南極エイトケン盆地の近く(最も低い所の周り)
+                };
+            }
+            int columnMin=0,rowMin=0,columnMax=0,rowMax=0;
+            double minimum=double.MaxValue;double maximum=double.MinValue;
+            for(int r=0;r<globalLayer.Height;r++){
+                for(int c=0;c<globalLayer.Width;c++){
+                    float value=globalLayer.Texel(c,r);
+                    if(value<minimum){minimum=value;columnMin=c;rowMin=r;}
+                    if(value>maximum){maximum=value;columnMax=c;rowMax=r;}
+                }
+            }
+            double LongitudeOf(int c){return ((c+0.5)/globalLayer.Width-0.5)*360.0;}
+            double LatitudeOf(int r){return (0.5-(r+0.5)/globalLayer.Height)*180.0;}
+            // 勾配が大きい所: 最大の位置から経度 1.5°、緯度 1° ずらした点(極から遠い)。
+            return new[]{
+                new[]{LongitudeOf(columnMax),LatitudeOf(rowMax)},
+                new[]{LongitudeOf(columnMin),LatitudeOf(rowMin)},
+                new[]{0.0,0.0},
+                new[]{LongitudeOf(columnMax)+1.5,Math.Max(-60.0,Math.Min(60.0,LatitudeOf(rowMax)-1.0))},
+            };
         }
 
         // 月面の経度・緯度(度)の単位方向(Omni の規約: 経度 = atan2(x, y)、緯度 = atan2(z, √(x²+y²)))。
@@ -176,8 +256,9 @@ namespace VirtualGeometry.Omni.Editor{
         }
 
         private static IEnumerator Steps(){
-            report.Add("data: LOLA "+globalLayer.Width+"x"+globalLayer.Height+" (texel "+globalLayer.TexelMeters(MoonRadius).ToString("F0",CultureInfo.InvariantCulture)+"m, mips "+globalLayer.MipCount+") SLDEM "+regionalLayer.Width+"x"+regionalLayer.Height+
-                " (texel "+regionalLayer.TexelMeters(MoonRadius).ToString("F1",CultureInfo.InvariantCulture)+"m, mips "+regionalLayer.MipCount+")");
+            string regionalText="none";
+            if(regionalLayer!=null){regionalText=regionalLayer.Width+"x"+regionalLayer.Height+" (texel "+regionalLayer.TexelMeters(MoonRadius).ToString("F1",CultureInfo.InvariantCulture)+"m, mips "+regionalLayer.MipCount+")";}
+            report.Add("data: "+DatasetName()+" global "+globalLayer.Width+"x"+globalLayer.Height+" (texel "+globalLayer.TexelMeters(MoonRadius).ToString("F0",CultureInfo.InvariantCulture)+"m, mips "+globalLayer.MipCount+") regional "+regionalText);
             int waited=0;
             while(moon.Selector==null){if(waited++>100){throw new InvalidOperationException("月が有効になりません。");}yield return null;}
             GlobalStatistics();
@@ -193,12 +274,7 @@ namespace VirtualGeometry.Omni.Editor{
                 if(holes!=0){failures.Add("月全体: 穴が "+holes+" 画素ありました。");}
                 CheckGpu("Whole",float.MaxValue);
             }
-            double[][] sites={
-                new[]{0.0,0.0},            // SLDEM の中心(局所の Override の中)
-                new[]{23.47,0.67},         // 静かの海の周り
-                new[]{-11.2,-43.3},        // ティコの周り(高地のクレーター)
-                new[]{-172.0,-70.0},       // 南極エイトケン盆地の近く(最も低い所の周り)
-            };
+            double[][] sites=Sites();
             if(onlySite>=0){sites=new[]{sites[onlySite]};}
             foreach(double[] site in sites){
                 string name="Site"+site[0].ToString("F1",CultureInfo.InvariantCulture)+"_"+site[1].ToString("F1",CultureInfo.InvariantCulture);
@@ -256,7 +332,11 @@ namespace VirtualGeometry.Omni.Editor{
             report.Add("LOLA range: min="+minimum.ToString("F0",CultureInfo.InvariantCulture)+"m at lon "+LongitudeOf(minC).ToString("F1",CultureInfo.InvariantCulture)+" lat "+LatitudeOf(minR).ToString("F1",CultureInfo.InvariantCulture)+
                 "  max="+maximum.ToString("F0",CultureInfo.InvariantCulture)+"m at lon "+LongitudeOf(maxC).ToString("F1",CultureInfo.InvariantCulture)+" lat "+LatitudeOf(maxR).ToString("F1",CultureInfo.InvariantCulture)+
                 "  moon selection amplitude="+moon.RasterMaximumHeight.ToString("F0",CultureInfo.InvariantCulture)+"m");
-            if(minimum>-8000||maximum<9000){failures.Add("LOLA の範囲が想定(約 −9 km〜+10.8 km)と違います: "+minimum+" 〜 "+maximum);}
+            if(synthetic){
+                if(minimum>SyntheticMinimum+1||maximum<SyntheticMaximum-1){failures.Add("合成の格子の範囲が想定("+SyntheticMinimum+"〜"+SyntheticMaximum+")と違います: "+minimum+" 〜 "+maximum);}
+            }else if(minimum>-8000||maximum<9000){
+                failures.Add("LOLA の範囲が想定(約 −9 km〜+10.8 km)と違います: "+minimum+" 〜 "+maximum);
+            }
         }
 
         // CPU の TrySampleSurface(Cell の原点 + 差)が、方向から直接求めた双線形補間(全球 + 局所の重み付き)と一致すること。
@@ -275,7 +355,8 @@ namespace VirtualGeometry.Omni.Editor{
                 if(!unit.X.TryToDouble(out double ux)||!unit.Y.TryToDouble(out double uy)||!unit.Z.TryToDouble(out double uz)){continue;}
                 d=new double3(ux,uy,uz);
                 double global=globalLayer.SampleDirection(d.x,d.y,d.z);
-                double regional=regionalLayer.SampleDirection(d.x,d.y,d.z,out double weight);
+                double regional=global;double weight=0;
+                if(regionalLayer!=null){regional=regionalLayer.SampleDirection(d.x,d.y,d.z,out weight);}
                 double expected=global+(regional-global)*weight;
                 double error=Math.Abs(height-expected);
                 worst=Math.Max(worst,error);count++;
@@ -348,6 +429,7 @@ namespace VirtualGeometry.Omni.Editor{
             string levels="";
             foreach(KeyValuePair<int,double> pair in byLevel){levels+=pair.Key+":"+pair.Value.ToString("G3",CultureInfo.InvariantCulture)+" ";}
             report.Add("GPU vs CPU "+name+": cells="+cells+" worst="+worst.ToString("G3",CultureInfo.InvariantCulture)+"m at "+worstKey+" worstByLevel: "+levels+" vertexHash="+hash.ToString("X8")+" | "+worstDetail);
+            VertexHashBaseline.Record(name,hash);
         }
 
         private static uint HashVertices(uint hash,VirtualGeometryPackedVertex[] vertices){
@@ -469,6 +551,7 @@ namespace VirtualGeometry.Omni.Editor{
             EditorApplication.update-=Tick;Application.logMessageReceived-=Record;
             if(error!=null){failures.Add(error.ToString());}
             foreach(string message in errors){failures.Add("Unity logged error: "+message);}
+            VertexHashBaseline.Complete(report,failures);
             report.Add("UTC="+DateTime.UtcNow.ToString("O",CultureInfo.InvariantCulture)+" Unity="+Application.unityVersion+" GPU="+SystemInfo.graphicsDeviceName+" API="+SystemInfo.graphicsDeviceType);
             if(failures.Count==0){report.Add("PASSED");}else{report.Add("FAILED");report.AddRange(failures);}
             Directory.CreateDirectory(results);

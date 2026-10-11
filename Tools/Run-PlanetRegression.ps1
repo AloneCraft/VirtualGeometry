@@ -8,7 +8,7 @@
 # Modes (how the height-shift threshold is overridden, see VirtualGeometry.Omni.Editor.HeightShiftOverride):
 #   on     default behaviour (no override)
 #   forced -heightShiftThreshold 0   lift every cell that has a non-zero height (finds readers that forgot SphereOrigin)
-#   off    -heightShiftThreshold 1e9 never lift (reproduces the behaviour before the cell-origin lift). RealMoon is EXPECTED to fail here.
+#   off    -heightShiftThreshold 1e9 never lift (reproduces the behaviour before the cell-origin lift). RealMoon and SyntheticRelief are EXPECTED to fail here.
 # Each run copies Report.txt to Report.<mode>.txt in the job's result folder and appends a line to
 # TestResults\Planet\Regression\<Tag>-summary.txt. Exit code 1 if any run did not give the expected verdict,
 # if a job name or mode is unknown, or if nothing was run.
@@ -38,6 +38,7 @@ $table = @(
     @("BodyStack", "BodyStackValidation.Run", "BodyStack", @("on", "forced")),
     @("BodyStackCells", "BodyStackValidation.RunCells", "BodyStackCells", @("on", "forced")),
     @("RealMoon", "RealMoonValidation.Run", "RealMoon", @("on", "off")),
+    @("SyntheticRelief", "RealMoonValidation.RunSynthetic", "SyntheticRelief", @("on", "off")),
     @("PlaneSink", "PlaneSinkValidation.Run", "PlaneSink", @("on")),
     @("PlaneSinkPlay", "PlaneSinkPlaySmoke.Run", "PlaneSinkPlay", @("on"))
 )
