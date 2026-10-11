@@ -73,6 +73,8 @@ namespace VirtualGeometry.World{
         /// <summary>slot が足りず、退避できる Cell も無かったために生成できなかった要求の累計。</summary>
         public int StarvedRequests{get;private set;}
         public int Evictions{get;private set;}
+        /// <summary>生成した頂点に NaN または inf があり、実際の bounds を使わなかった Cell の累計(0 が正常)。</summary>
+        public int InvalidBounds{get;private set;}
         /// <summary>直近の draw の選択で、Cell の選択(<see cref="PlanetCellSelector.Select"/>)、要求の割り当て、draw の準備にかかった CPU 時間(ミリ秒、診断用)。</summary>
         public float LastSelectMilliseconds{get;private set;}
         public float LastFlushMilliseconds{get;private set;}
@@ -309,7 +311,13 @@ namespace VirtualGeometry.World{
             }
             // cluster の bounds は Cell の原点からの相対位置。選択もこの相対位置のまま使う(大きな惑星で float の原点を足さない)。
             Vector3 middle=(low+high)*0.5f;
-            this.actualBounds[slot]=new Vector4(middle.x,middle.y,middle.z,((high-low)*0.5f).magnitude);
+            float boundsRadius=((high-low)*0.5f).magnitude;
+            // 頂点に NaN や inf があると bounds も NaN になり、選択の比較がすべて偽になって細分化も culling もされなくなる。その Cell は解析的な bounds のままにする。
+            if(float.IsNaN(boundsRadius)||float.IsInfinity(boundsRadius)||float.IsNaN(middle.x)||float.IsNaN(middle.y)||float.IsNaN(middle.z)){
+                this.InvalidBounds++;
+                return;
+            }
+            this.actualBounds[slot]=new Vector4(middle.x,middle.y,middle.z,boundsRadius);
             this.actualValid[slot]=true;
         }
 

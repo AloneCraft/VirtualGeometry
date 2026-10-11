@@ -173,7 +173,7 @@ namespace VirtualGeometry.World{
         }
 
         protected override void BindGeneration(CommandBuffer commands,ComputeShader shader,int kernel){
-            this.terrain.BindHeightField(commands,shader);
+            this.terrain.BindHeightField(commands,shader,kernel);
             this.FillWaveArrays();
             commands.SetComputeFloatParam(shader,"_WaveCount",this.waves.Length);
             commands.SetComputeVectorArrayParam(shader,"_WaveDirection",this.waveDirection);

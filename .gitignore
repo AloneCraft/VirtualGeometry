@@ -34,3 +34,6 @@ TestResults/
 /[Aa]ssets/Development/PlanetSpike/P3a.meta
 /[Aa]ssets/Development/PlanetWorld/
 /[Aa]ssets/Development/PlanetWorld.meta
+
+# Omni のデモの外部データ(LOLA、SLDEM2015 など)。Omni の LICENSE と「外部資産は配布しない」の規則のため、コピーを commit しない
+/LocalData/

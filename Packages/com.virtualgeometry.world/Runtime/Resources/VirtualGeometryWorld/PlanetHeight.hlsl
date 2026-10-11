@@ -6,6 +6,9 @@
 // 「原点の格子番号 _NoiseLattice + 端数 _NoiseFraction + sphere の格子」に分けて、大きな座標を float にしない。
 // 高さ = Hmax·clamp(大陸 + 山 + 細部, −1, 1)。各項の振幅は Hmax に対する割合。
 // 帯域制限: 波長が 2·quadLength より短い octave は足さない(頂点の間隔で表せない帯域。粗い Cell の折り返しを防ぐ)。
+// 実データの格子(PlanetRaster.hlsl)の高さを、手続きの高さの後ろに足す(PlanetCell.hlsl の _Radius が先に必要)。
+
+#include "PlanetRaster.hlsl"
 
 #define PLANET_HEIGHT_MAXIMUM_OCTAVES 32
 #define PLANET_HEIGHT_CONTINENT_OCTAVES 4
@@ -108,7 +111,8 @@ float PlanetHeight(float3 sphere,float quadLength)
         }
         amplitude*=0.5;
     }
-    return clamp(total,-1.0,1.0)*_HeightAmplitude;
+    // 実データの高さ(PlanetRaster.hlsl)を足す。実データがあるときは、手続きの項は実データの帯域より上の細部に使う(PlanetTerrainSource の設定)。
+    return clamp(total,-1.0,1.0)*_HeightAmplitude+PlanetRasterHeight(sphere);
 }
 
 #endif
