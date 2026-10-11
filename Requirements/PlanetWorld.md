@@ -881,6 +881,8 @@ Omni を入れたプロジェクトで Player をビルドするには、次が�
 - `OmniRadialBuildPreparation.Prepare(scene)`: 対数版の標準 URP Shader を `Assets/Radial`(git 管理外)へ生成する
 - URP の共有 resource の Camera MotionVectors を Omni 版へ接続する(`OmniUniversalRendererResourceInstaller.TryInstall`。internal なのでリフレクションで呼ぶ)。**ビルドの間だけ接続し、終わったら元の参照へ戻す**(プロジェクトの URP の設定を変えたままにしない)
 - Graphics API を DX12 だけにし、`enableFrameTimingStats` を有効にする(これもビルドの間だけ)
+- ビルドの後、URP の共有 settings と使う pipeline asset は、ビルドの前の内容へ戻す(`PlanetPlayerBuild` がビルドの前に覚えて書き戻す)。
+  戻らないもの: `ProjectSettings/ProjectSettings.asset` の `preloadedAssets` に 1 件が足される(Unity と Omni のビルドの処理の副作用)。ビルドの後は、この差分をコミットしない(`git checkout -- ProjectSettings/ProjectSettings.asset`)
 
 2026-10-12 の結果(Mono、RTX 4060 Ti、DX12、640×480、vsync なし、`maxQueuedFrames` 2、各視点の 120 frame の平均を、同じ変種の 2 回の実行で平均した。ビルド 0 エラー、Development 166 MiB・非 Development 101 MiB。
 保存した報告は `TestResults/Planet/PlanetPlayer/PlayerReport.v1.txt`・`v2`(Development)、`PlanetPlayerRelease/PlayerReport.v3.txt`・`v4`(非 Development)):
