@@ -337,7 +337,7 @@ VG core の回帰(EditMode と M0〜M5)は、**Omni を入れないプロジェ�
 
 2026-10-10 の確認:Omni なし・P3a の変更あり(コミット前)で、EditMode 51/51 と M0〜M5 の 11 本が合格した。
 M3 の cull の統計(Frustum 棄却、HZB 棄却、可視 cluster、画像の差分)は、変更前の記録と全シナリオで一致した。
-Player のビルドと実行(`M5PlayerBuildValidation`)は、この変更では実行していない。
+Player のビルドと実行(`M5PlayerBuildValidation`)は、この変更では実行していない(惑星の Player は §17)。
 
 2026-10-10 の確認:Omni なし・P2 の core の変更(draw ごとの cull 空間と描画、§11)ありで、
 EditMode 51/51 と M0〜M5 の 11 本が合格し、M3 の `Metrics.csv` と `Results.txt` は変更前と一致した。
@@ -854,7 +854,36 @@ Omni の COSMIC-PRECISION-001(月の面がボールの縁を越える)に当た�
 - 内訳(Debug コード、接点 3): 巨大な天体の Cell の選択 9.9 ms、描画の準備 19.6 ms(配置 `Describe` 17.3 ms、Cell ごとの値 1.6 ms)、月の選択 6.2 ms、準備 13.0 ms。選択と準備は Cell の数に比例する。
   Release コードでは、巨大な天体の選択 2.5 ms、準備 7.0 ms(配置 6.3 ms)。残りの約 30 ms は、Cell ごとの draw の提出(Cell ごとに 1 回の indirect draw と MaterialPropertyBlock)と考えられる(仮説。draw を 1 回にまとめる P2b で確かめる)
 - 描画の準備で重いのは、Omni の物体ごとの値(`DrawTransform` と Logical の姿勢の合成)の Cell ごとの計算(Release コードで約 6 µs/Cell)
-- **GPU の frame 時間は測れていない。** `FrameTimingManager` は batchmode の Editor では GPU 時間に 0 を返した。上の「全体」は CPU の提出が律速の値で、GPU 時間の上限の目安にもならない
+- Editor では GPU の frame 時間は測れなかった(`FrameTimingManager` は batchmode の Editor では GPU 時間に 0 を返した。上の「全体」は CPU の提出が律速の値で、GPU 時間の上限の目安にもならない)。GPU 時間は下の Player で測った
+
+### Player のビルドと実行(`PlanetPlayerBuild`、`PlanetPlayerSmoke`、2026-10-12)
+
+BodyStack の scene に `PlanetPlayerSmoke`(`VirtualGeometry.Omni` の MonoBehaviour。Editor では何もしない。引数 `-planetResults <folder>` があるときだけ動く)を足して Windows の Player(DX12、Mono)をビルドし、可視のウィンドウ(640×480、vsync なし、`-nographics` なし)で動かす。
+4 つの視点(接点 3・2・1、全体)で、選択が収束するのを待ち、120 frame の時間(`FrameTimingManager`)と、camera の描画(URP の StandardRequest、HUD なし)の画素を記録し、`PlayerReport.txt` を書いて終了する。
+実行: `Tools/Run-PlanetRegression.ps1 -Jobs PlanetPlayer,PlanetPlayerRelease`(Development と非 Development)。結果は `TestResults/Planet/PlanetPlayer*`(`Report.txt` が合わせた結果、`PlayerReport.txt`、`Player.log`、各視点の PNG)。
+
+Omni を入れたプロジェクトで Player をビルドするには、次が要る(どちらも Omni Manager から手で行う手順と同じで、無いと Omni の検査がビルドを止める)。`PlanetPlayerBuild` がビルドの前後で行う:
+
+- `OmniRadialBuildPreparation.Prepare(scene)`: 対数版の標準 URP Shader を `Assets/Radial`(git 管理外)へ生成する
+- URP の共有 resource の Camera MotionVectors を Omni 版へ接続する(`OmniUniversalRendererResourceInstaller.TryInstall`。internal なのでリフレクションで呼ぶ)。**ビルドの間だけ接続し、終わったら元の参照へ戻す**(プロジェクトの URP の設定を変えたままにしない)
+- Graphics API を DX12 だけにし、`enableFrameTimingStats` を有効にする(これもビルドの間だけ)
+
+2026-10-12 の結果(Mono、RTX 4060 Ti、DX12、640×480、vsync なし、`maxQueuedFrames` 2、各視点の 120 frame の平均。ビルド 0 エラー、Development 166 MiB・非 Development 101 MiB):
+
+| 視点 | 描いた Cell(巨大/月/球/ボール、合計) | CPU frame(Development / 非 Development) | CPU の render thread | GPU(Development / 非 Development) |
+|---|---|---|---|---|
+| 接点 3 | 991 / 642 / 69 / 64(1,766) | 34.0 / 37.4 ms | 9.9 / 10.9 ms | 17.9 / 18.9 ms |
+| 接点 2 | 952 / 734 / 50 / 6(1,742) | 34.2 / 32.4 ms | 10.0 / 9.4 ms | 17.2 / 18.2 ms |
+| 接点 1 | 1,605 / 759 / 0 / 0(2,364) | 47.4 / 45.3 ms | 13.2 / 12.6 ms | 4.3 / 5.4 ms |
+| 全体 | 1,019 / 51 / 6 / 6(1,082) | 21.1 / 19.6 ms | 6.3 / 5.9 ms | 11.3 / 11.4 ms |
+
+- 画素: 接点の 3 視点で、水平より 2 画素以上下を向く光線の画素に背景は 0(穴なし)。全体の視点も全画素が背景ではない。Player のエラーログは 0(下の Omni の診断 1 件を除く)
+- **CPU の frame 時間は、描いた Cell の数にほぼ比例する(1 Cell あたり約 19〜20 µs)。** 目安の CPU 2 ms を大きく超えるのは Editor と同じ。非 Development(Mono)でも Development とほとんど変わらないので、CPU の大半は管理コードではなく、Cell ごとの indirect draw と MaterialPropertyBlock の提出(エンジンの内部)と考えられる(仮説)。IL2CPP は試していない
+- **GPU の frame 時間は、Cell の数に比例しない。** 接点 3・2 は約 17〜19 ms(1 Cell あたり約 10 µs)、全体は約 11 ms、接点 1 は draw が最も多いのに約 4〜5 ms(1 Cell あたり約 2 µs)。原因は未調査
+  (仮説: 描いた Cell のうち、cull を生き残る cluster の数と画素の重なり。球とボールが写る視点で大きい)。frame の律速は CPU で、GPU は frame 時間の約 1/2(接点 3・2)〜1/10(接点 1)
+- Omni の診断が 1 件、Player で `LogError` として出る: `[Omni][Scene BRG] No active Scene BRG manifest entry is available.`
+  (`RadialSceneBatchRendererService.TryRebuild`。Renderer が 1 つも無い scene では、通常の Renderer を一括で描く経路に manifest が無いため。VG の描画とは無関係に見える)。smoke は件数を報告に書いて無視する。Omni への報告は未送信(宛先が未定)
+- **確かめていないこと**: IL2CPP の Player、実際のキーボード入力・HUD の目視(Player は自動の視点だけ)、Editor の画像と Player の画像の画素単位の一致(Player は見た目の材質、Editor の検証は単色)、Player の長時間の動作、他の GPU
 
 ### pool の大きさ(`RealMoonValidation.Run -poolCapacity N`、2026-10-12)
 

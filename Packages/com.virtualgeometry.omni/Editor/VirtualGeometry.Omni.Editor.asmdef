@@ -1,6 +1,6 @@
 {
   "name": "VirtualGeometry.Omni.Editor",
   "rootNamespace": "VirtualGeometry.Omni.Editor",
-  "references": ["VirtualGeometry.Omni", "VirtualGeometry.World", "VirtualizedGeometry.Runtime", "VirtualizedGeometry.Editor", "Radial.Runtime", "Unity.Mathematics", "Unity.RenderPipelines.Core.Runtime", "Unity.RenderPipelines.Universal.Runtime"],
+  "references": ["VirtualGeometry.Omni", "VirtualGeometry.World", "VirtualizedGeometry.Runtime", "VirtualizedGeometry.Editor", "Radial.Runtime", "Omni.Editor", "Unity.Mathematics", "Unity.RenderPipelines.Core.Runtime", "Unity.RenderPipelines.Universal.Runtime"],
   "includePlatforms": ["Editor"]
 }

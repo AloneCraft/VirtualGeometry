@@ -53,6 +53,8 @@ $table = @(
     @("Amplification", "AmplificationValidation.Run", "Amplification", @("on")),
     @("ColorLayer", "ColorLayerValidation.Run", "ColorLayer", @("on")),
     @("OceanProbe", "OceanProbeValidation.Run", "OceanProbe", @("on")),
+    @("PlanetPlayer", "PlanetPlayerBuild.Run", "PlanetPlayer", @("on")),
+    @("PlanetPlayerRelease", "PlanetPlayerBuild.RunRelease", "PlanetPlayerRelease", @("on")),
     @("ObserverCamera", "MoonBallValidation.RunObserver", "ObserverCamera", @("on")),
     @("ViewScale", "MoonBallValidation.RunViewScale", "ViewScale", @("on")),
     @("RealMoon", "RealMoonValidation.Run", "RealMoon", @("on", "off")),
