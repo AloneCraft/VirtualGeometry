@@ -118,6 +118,10 @@ namespace VirtualGeometry.World{
             this.FlushRequests();
         }
 
+        protected override void OnCameraReleased(Camera camera){
+            this.history.Remove(camera);this.drawProperties.Remove(camera);
+        }
+
         protected override void OnDisable(){
             this.slotByKey.Clear();this.history.Clear();this.requests.Clear();this.output.Clear();
             this.keyBySlot=null;this.used=null;this.touchedFrame=null;this.selector=null;

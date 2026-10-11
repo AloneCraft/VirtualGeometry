@@ -278,6 +278,7 @@ namespace VirtualizedGeometry{
         private readonly List<int> generating=new List<int>();
         private readonly Dictionary<Camera,VirtualGeometryClusterCameraState> cameraStates=new Dictionary<Camera,VirtualGeometryClusterCameraState>();
         private readonly Dictionary<Camera,string> unsupported=new Dictionary<Camera,string>();
+        private readonly List<Camera> destroyedCameras=new List<Camera>();
         private readonly List<int> drawScratch=new List<int>();
         private GraphicsBuffer boundsSlots;
         private CommandBuffer generationCommands;
@@ -388,7 +389,32 @@ namespace VirtualizedGeometry{
             this.pool?.Dispose();this.pool=null;this.ready=null;
         }
 
+        /// <summary>
+        /// 破棄された camera の状態(cull の候補・描画記録・可視 index・引数の GPU buffer。slot が多いと 1 camera あたり数百 MB)を解放する。
+        /// camera が破棄されても Dictionary のキーは残るので、解放しないと、この source が無効になるまで GPU の memory に残る(Scene View、撮影用、閉じた scene の camera)。
+        /// </summary>
+        private void ReleaseDestroyedCameras(){
+            if(this.cameraStates.Count==0&&this.unsupported.Count==0){return;}
+            this.destroyedCameras.Clear();
+            foreach(Camera camera in this.cameraStates.Keys){if(camera==null){this.destroyedCameras.Add(camera);}}
+            foreach(Camera camera in this.unsupported.Keys){if(camera==null&&!this.destroyedCameras.Contains(camera)){this.destroyedCameras.Add(camera);}}
+            for(int i=0;i<this.destroyedCameras.Count;i++){
+                Camera camera=this.destroyedCameras[i];
+                if(this.cameraStates.TryGetValue(camera,out VirtualGeometryClusterCameraState state)){
+                    state.Dispose();this.cameraStates.Remove(camera);
+                }
+                this.unsupported.Remove(camera);
+                this.OnCameraReleased(camera);
+            }
+            this.destroyedCameras.Clear();
+        }
+
+        /// <summary>破棄された camera の状態を解放した後に呼ぶ。派生クラスが camera ごとに持つ値(選択の履歴など)を捨てる。既定では何もしない。</summary>
+        protected virtual void OnCameraReleased(Camera camera){
+        }
+
         private void OnBeginContextRendering(ScriptableRenderContext context,List<Camera> cameras){
+            this.ReleaseDestroyedCameras();
             if(this.pool==null||this.pending.Count==0||Time.frameCount==this.lastGenerationFrame){return;}
             ComputeShader shader=VirtualGeometryClusterShaders.Cull;
             if(shader==null){this.lastError="VirtualGeometryClusterCull.computeが見つかりません。";return;}

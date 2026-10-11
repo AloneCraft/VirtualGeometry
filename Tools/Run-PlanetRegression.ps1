@@ -46,6 +46,8 @@ $table = @(
     @("SyntheticMoonBall", "MoonBallValidation.RunSyntheticMoon", "SyntheticMoonBall", @("on", "off")),
     @("ReliefBall", "MoonBallValidation.RunReliefBall", "ReliefBall", @("on")),
     @("DepthResolution", "DepthResolutionValidation.Run", "DepthResolution", @("on")),
+    @("CameraStateRelease", "CameraStateReleaseValidation.Run", "CameraStateRelease", @("on")),
+    @("PlayStopLeak", "PlayStopLeakValidation.Run", "PlayStopLeak", @("on")),
     @("RealMoon", "RealMoonValidation.Run", "RealMoon", @("on", "off")),
     @("SyntheticRelief", "RealMoonValidation.RunSynthetic", "SyntheticRelief", @("on", "off")),
     @("RealMoonPolar", "RealMoonValidation.RunPolar", "RealMoonPolar", @("on")),

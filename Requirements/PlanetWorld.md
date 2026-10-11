@@ -423,6 +423,20 @@ cull は供給元が決めた空間(`VirtualGeometryClusterCullSpace`。既定�
 
 Radial の写像は warp 中心から見た方向を保つので、eye が warp 中心にあれば、頂点の画面位置と三角形の被覆は Unity の world 空間で描いたときと同じになる。
 
+### 確認(camera の状態の解放と Play/Stop の往復、2026-10-12)
+
+core の `VirtualGeometryClusterSource` は camera ごとに GPU buffer(cull の候補・描画記録・可視 index・引数)を持つ(月の source、`maximumDrawSlots` 4096 で 1 camera あたり約 490 MiB)。
+camera が破棄されても Dictionary のキーが残り、source が無効になるまで解放されなかった(Scene View、撮影用の一時 camera、閉じた scene の camera)。
+`OnBeginContextRendering` で破棄された camera の状態を解放する(`ReleaseDestroyedCameras`。派生の `PlanetLayerSource` は選択の履歴と draw の値も捨てる。`OnCameraReleased`)ようにした。
+
+- `CameraStateReleaseValidation`(`TestResults/Planet/CameraStateRelease`): 月とボールの主 camera で収束後、主 camera の複製 2 台を描くと GPU の memory(`Profiler.GetAllocatedMemoryForGraphicsDriver`)が 973 MiB 増える。
+  複製を破棄して 30 frame 進めると、修正前は 0 MiB しか戻らず(戻った割合 0.00、不合格)、修正後は 973 MiB 戻る(1.00)
+- core の回帰（Omni なしの基準 worktree、変更した 1 ファイルをコピー）: EditMode 51 本、M0〜M4、M5 の Shared・Lit・Depth・Debug・Lifecycle・Geometry がすべて合格し、M3 の Metrics は変更前とバイト単位で同一
+- `PlayStopLeakValidation`(`TestResults/Planet/PlayStopLeak`): 月とボールの scene を Play → 150 frame 描画 → Stop を 10 往復。条件 A(domain reload と scene reload を止める)、B(domain reload だけ止める)で、
+  停止後の GPU の memory は 866 MiB のまま(増加 0 MiB)、描画中の最大も 1,354 MiB のまま。既定の domain reload ありは、static の状態ごと検証の状態が消えるので、この枠組みでは測れない
+- Unity の object は 1 往復あたり 3 個増える(GameObject、Transform、`RadialSceneBatchDriver`)。増えるのは Omni の `Omni Scene BRG Driver`(`HideAndDontSave` の GameObject)だけで、VG の object は増えない。
+  Omni の `RadialSceneBatchRendererService.Shutdown` が `s_Driver` を null にするだけで GameObject を破棄していないように見える(推測、未確認)。Omni への報告は未送信（宛先のセッションが見つからなかった）
+
 ### 検証(`VirtualGeometry.Omni.Editor.P2OmniPlanetValidation`)
 
 半径 10km、Hmax 300m、目標 2px、640×480。camera は `Logical.Transform` と `RadialCamera`(`SetIdentityViewScale`、M=1)。
@@ -444,7 +458,7 @@ Logical の camera が安全域(±10km)の外にあると、Unity の camera は
 - 半径 600km は §12 で、穴 0、頂点の精度、Hmax の球から 1.7m〜10km の 3 視点で Standard との輪郭の差 0 を確認した。地面に近い視点での Standard との比較は、基準自体が float の量子化を含むので行っていない
 - M≠1 の View Scale、eye が warp 中心に無い場合(fail-open の経路)
 - z-fighting と深度の分解能の測定は §21 で行った
-- Play/Stop の往復と、GraphicsBuffer のリークの計数
+- Play/Stop の往復と、camera の GPU buffer のリークは下の「確認(camera の状態の解放と Play/Stop の往復)」で行った
 - Scene View での表示
 
 
