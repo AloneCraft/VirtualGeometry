@@ -57,7 +57,11 @@ namespace VirtualGeometry.World{
         public float WaveAmplitude=>this.amplitude;
         public float LongestWavelength=>this.longestWavelength;
         public int WaveCount=>this.waves.Length;
-        public float WaveTime{get;set;}
+        /// <summary>
+        /// 波の時刻(秒)。倍精度で持つ。float で持つと、5×10^5 秒(約 6 日)を超えると frame ごとの加算(約 0.016 秒)が丸めで消えて波が止まり、
+        /// 位相 ω·t の積(ω は最大 11 rad/s)も 10^5 秒で 0.1 rad 以上狂う。位相は <see cref="TimePhase"/> が倍精度で 2π に巻いてから float にして渡す。
+        /// </summary>
+        public double WaveTime{get;set;}
         public bool AdvanceTime{get=>this.advanceTime;set=>this.advanceTime=value;}
         protected override float SelectionAmplitude=>this.amplitude;
         protected override string GeneratorResource=>"VirtualGeometryWorld/PlanetOceanGenerate";
@@ -89,6 +93,13 @@ namespace VirtualGeometry.World{
 
         private void Update(){
             if(this.advanceTime){this.WaveTime+=Time.deltaTime;}
+        }
+
+        /// <summary>時刻の位相 ω·t を、倍精度で [0, 2π) に巻いた値(float)。ω は float の値そのものを使う(GPU と CPU が同じ ω を使う)。</summary>
+        public static float TimePhase(float angularFrequency,double time){
+            double phase=Math.IEEERemainder((double)angularFrequency*time,2.0*Math.PI);
+            if(phase<0){phase+=2.0*Math.PI;}
+            return (float)phase;
         }
 
         // Pierson–Moskowitz スペクトルを、山の波長の 2 倍から shortestWavelength まで対数で等間隔に waveCount 個に分ける。
@@ -154,8 +165,8 @@ namespace VirtualGeometry.World{
             for(int i=0;i<this.waves.Length;i++){
                 Wave wave=this.waves[i];
                 this.waveDirection[i]=new Vector4(wave.Direction.x,wave.Direction.y,wave.Direction.z,1f/wave.Wavelength);
-                // 時刻の位相 ω·t は 2π で巻いてから渡す(float の t が大きくなっても sin の引数を小さく保つ)。
-                float timePhase=Mathf.Repeat(wave.AngularFrequency*this.WaveTime,2f*Mathf.PI);
+                // 時刻の位相 ω·t は、倍精度で 2π に巻いてから float にして渡す(t が大きくなっても sin の引数を小さく保つ)。
+                float timePhase=TimePhase(wave.AngularFrequency,this.WaveTime);
                 this.waveShape[i]=new Vector4(wave.Amplitude,wave.Sharpness,timePhase,wave.Wavelength);
             }
         }
@@ -212,13 +223,42 @@ namespace VirtualGeometry.World{
                 Wave wave=this.waves[w];
                 if(bandLimited&&wave.Wavelength<2f*quadLength){continue;}
                 frame.TryWavePhase(in wave.LogicalDirection,in wave.InverseWavelength,out float fraction);
-                float timePhase=Mathf.Repeat(wave.AngularFrequency*this.WaveTime,2f*Mathf.PI);
+                float timePhase=TimePhase(wave.AngularFrequency,this.WaveTime);
                 float theta=2f*Mathf.PI*(fraction+Vector3.Dot(wave.Direction,sphere)/wave.Wavelength)-timePhase;
                 Vector3 along=wave.Direction-direction*Vector3.Dot(wave.Direction,direction);
                 offset+=direction*(wave.Amplitude*Mathf.Sin(theta))+along*(wave.Sharpness*wave.Amplitude*Mathf.Cos(theta));
             }
             if(!this.terrain.TryHeight(in frame,sphere,quadLength,out float height)){return false;}
             position=sphere+offset;depth=-height;
+            return true;
+        }
+
+        /// <summary>
+        /// 検証用。<see cref="TryEvaluateVertexForDiagnostics"/>(GPU と同じ float の式)の波の変位を、時刻の位相と三角関数を倍精度で評価した位置(Cell の原点からの相対位置)。
+        /// GPU と CPU が同じ float の式で同じ誤り(長時間後の位相の狂い)をしても、これと比べれば分かる。位相は ω·t を倍精度で巻く(<see cref="TimePhase"/> は使わず、別に書く)。
+        /// </summary>
+        public bool TryEvaluateVertexInDouble(in PlanetCellKey key,int i,int j,bool bandLimited,out Vector3 position){
+            position=default;
+            if(this.Selector==null){return false;}
+            PlanetCellFrame frame=this.Selector.Frame(in key);
+            Vector3 sphere=PlanetCellGeometry.SpherePoint(in frame,CellQuads,i,j,this.Radius,out Vector3 direction);
+            float quadLength=this.Selector.QuadArc(key.Level);
+            double offsetX=0,offsetY=0,offsetZ=0;
+            for(int w=0;w<this.waves.Length;w++){
+                Wave wave=this.waves[w];
+                if(bandLimited&&wave.Wavelength<2f*quadLength){continue;}
+                frame.TryWavePhase(in wave.LogicalDirection,in wave.InverseWavelength,out float fraction);
+                double product=(double)wave.AngularFrequency*this.WaveTime;
+                double timePhase=product-2.0*Math.PI*Math.Floor(product/(2.0*Math.PI));
+                double theta=2.0*Math.PI*((double)fraction+(double)Vector3.Dot(wave.Direction,sphere)/wave.Wavelength)-timePhase;
+                double sine=Math.Sin(theta);double cosine=Math.Cos(theta);
+                Vector3 along=wave.Direction-direction*Vector3.Dot(wave.Direction,direction);
+                double vertical=wave.Amplitude*sine;double horizontal=(double)wave.Sharpness*wave.Amplitude*cosine;
+                offsetX+=direction.x*vertical+along.x*horizontal;
+                offsetY+=direction.y*vertical+along.y*horizontal;
+                offsetZ+=direction.z*vertical+along.z*horizontal;
+            }
+            position=sphere+new Vector3((float)offsetX,(float)offsetY,(float)offsetZ);
             return true;
         }
     }

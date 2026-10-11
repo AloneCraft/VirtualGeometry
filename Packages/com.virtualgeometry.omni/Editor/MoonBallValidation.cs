@@ -22,6 +22,8 @@ namespace VirtualGeometry.Omni.Editor{
     ///   (Omni の COSMIC-PRECISION-001 の現象 = ボールの縁を月の面が越える、もここで数える)
     /// - 月全体から接触の視点まで高さを縮める間、穴が無く、月全体の輪郭が解析的な円と一致する
     /// 実行: -batchmode -force-d3d12 -executeMethod VirtualGeometry.Omni.Editor.MoonBallValidation.Run(月)/ RunGiant(半径 10^20 m)
+    /// 起伏のある地面の確認: RunRealMoon(実データの月)/ RunSyntheticMoon(合成の高起伏の月)で、4 地点にボールを接して置き、接触の隙間・1mm ずつの動き・画像を確かめる。
+    /// RunReliefBall: 起伏のあるボール(原点の持ち上げ H ≠ 0 の RadialBall)を、持ち上げなしと画像・頂点で比べる。
     /// </summary>
     public static class MoonBallValidation{
         private const int Width=640;
@@ -29,7 +31,12 @@ namespace VirtualGeometry.Omni.Editor{
         private const int ConvergeLimit=900;
         private static readonly Color32 Background=new Color32(255,0,255,255);
 
+        private enum Mode{Default,Raster,Relief}
+
         private static MoonBallSettings settings;
+        private static Mode mode;
+        private static bool realData;
+        private static PlanetRasterLayer rasterGlobal;
         private static string results;
         private static MoonBallObjects objects;
         private static Camera camera;
@@ -50,12 +57,30 @@ namespace VirtualGeometry.Omni.Editor{
         private static readonly List<string> errors=new List<string>();
 
         public static void Run(){
-            settings=MoonBallSettings.Moon;results="TestResults/Planet/MoonBall";
+            settings=MoonBallSettings.Moon;results="TestResults/Planet/MoonBall";mode=Mode.Default;
             Start();
         }
 
         public static void RunGiant(){
-            settings=MoonBallSettings.Giant;results="TestResults/Planet/GiantBall";
+            settings=MoonBallSettings.Giant;results="TestResults/Planet/GiantBall";mode=Mode.Default;
+            Start();
+        }
+
+        /// <summary>実データ(LOLA 全球 + SLDEM の局所)の月に、ボールを 4 地点で接して置く。結果は TestResults/Planet/RealMoonBall。</summary>
+        public static void RunRealMoon(){
+            settings=MoonBallSettings.Raster;results="TestResults/Planet/RealMoonBall";mode=Mode.Raster;realData=true;
+            Start();
+        }
+
+        /// <summary>合成の高起伏(−7,300 m〜+9,000 m、勾配は最大約 0.3)の月に、ボールを 4 地点で接して置く(データが無くても走る)。結果は TestResults/Planet/SyntheticMoonBall。</summary>
+        public static void RunSyntheticMoon(){
+            settings=MoonBallSettings.Raster;results="TestResults/Planet/SyntheticMoonBall";mode=Mode.Raster;realData=false;
+            Start();
+        }
+
+        /// <summary>起伏のあるボールを、原点を持ち上げない(しきい値 1e9)と全 Cell 持ち上げる(0)で比べる。結果は TestResults/Planet/ReliefBall。</summary>
+        public static void RunReliefBall(){
+            settings=MoonBallSettings.ReliefBall;results="TestResults/Planet/ReliefBall";mode=Mode.Relief;
             Start();
         }
 
@@ -94,7 +119,13 @@ namespace VirtualGeometry.Omni.Editor{
             MoonBallSceneBuilder.UsePipeline();
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);
             objects=MoonBallSceneBuilder.Populate(settings);
-            HeightShiftOverride.ApplyToScene();
+            if(mode==Mode.Raster){
+                PlanetRasterLayer regional=null;
+                if(realData){RealMoonData.LoadReal(out rasterGlobal,out regional);}else{rasterGlobal=RealMoonData.CreateSynthetic();}
+                objects.MoonSource.SetRasters(rasterGlobal,regional);
+            }
+            // 起伏のあるボールの検証は、しきい値を自分で切り替えるので、コマンドラインの上書きは使わない。
+            if(mode!=Mode.Relief){HeightShiftOverride.ApplyToScene();}
             camera=objects.Camera;camera.backgroundColor=new Color(1,0,1,1);
             cameraLogical=objects.CameraObject.GetComponent<global::Omni.Logical.Transform>();
             moonLogical=objects.Moon.GetComponent<global::Omni.Logical.Transform>();
@@ -120,6 +151,12 @@ namespace VirtualGeometry.Omni.Editor{
         }
 
         private static IEnumerator Steps(){
+            if(mode==Mode.Raster){return StepsRaster();}
+            if(mode==Mode.Relief){return StepsRelief();}
+            return StepsDefault();
+        }
+
+        private static IEnumerator StepsDefault(){
             report.Add("moon: radius="+moon.Radius.ToString("G6",CultureInfo.InvariantCulture)+" height="+settings.MoonHeight+" ball radius="+ball.Radius+" camera near logical="+0.3f/10f+"m");
             // 月とボールの Selector が使えるまで待つ。
             int waited=0;
@@ -223,10 +260,221 @@ namespace VirtualGeometry.Omni.Editor{
             if(moon.LastError!=null||ball.LastError!=null){failures.Add("設定エラー: "+moon.LastError+" "+ball.LastError);}
         }
 
-        private static IEnumerable<object> Converge(string name){
+        // 起伏のある地面(実データ・合成の高起伏の月)に、ボールを接して置く。4 地点それぞれで:
+        // - 接触の視点で、ボールの隙間 0〜3 mm の各段の描画が、Logical の位置から求めた球と 1 画素の帯の内で一致する
+        // - 近接の視点(隙間 0)で、(1) 接点の真下の月のメッシュの高さが CPU の地表の高さ(接点)に一致し、
+        //   (2) 解析の球(半径 r)と月のメッシュの隙間の最小が、接点の外向き up に沿って置いた球が傾き s の面に食い込む深さ −r(√(1+s²)−1) に一致し、
+        //   (3) ボールのメッシュの頂点が球面(半径 r)の上にある
+        // - 隙間 1〜3 mm では、(4) 同じ Cell の頂点が、隙間 0 から up 方向へちょうど k mm、接平面の方向には 0 動く(ボールの Logical の位置が半径 1.7×10^6 m でも 1 mm のまま)
+        // 月のメッシュの検証は解析の球で測る(ボールのメッシュは、camera に見える Cell だけが選ばれ、傾いた面では最も食い込む点の Cell が選ばれないことがある)。
+        private static IEnumerator StepsRaster(){
+            int waited=0;
+            while(moon.Selector==null||ball.Selector==null){
+                if(waited++>100){throw new InvalidOperationException("月またはボールが有効になりません。");}
+                yield return null;
+            }
+            string dataName="synthetic";
+            if(realData){dataName="LOLA5760x2880+SLDEM344x344";}
+            report.Add("raster moon: data="+dataName+" radius="+moon.Radius.ToString("G6",CultureInfo.InvariantCulture)+" rasterMaximumHeight="+moon.RasterMaximumHeight.ToString("G6",CultureInfo.InvariantCulture)+
+                " ball radius="+ball.Radius+" heightShiftThreshold="+HeightShiftOverride.Describe()+" (component "+moon.HeightShiftThreshold.ToString("G",CultureInfo.InvariantCulture)+")");
+            double[][] sites;
+            if(realData){
+                sites=new[]{
+                    new[]{0.0,0.0},          // SLDEM の中心(局所の Override の中。高さ約 −720 m。原点を持ち上げない)
+                    new[]{-172.0,-70.0},     // 南極エイトケン盆地の近く(最も低い所の周り。−7,304 m、勾配 0.025)
+                    new[]{-154.3,-39.3},     // 低く平坦な所(−7,051 m)
+                    new[]{-158.3,3.3},       // 高い所(+8,415 m。正の持ち上げ、勾配 0.064)
+                };
+            }else{
+                sites=RealMoonData.ExtremeSites(rasterGlobal);
+            }
+            foreach(double[] site in sites){
+                string name="Site"+site[0].ToString("F1",CultureInfo.InvariantCulture)+"_"+site[1].ToString("F1",CultureInfo.InvariantCulture);
+                double lon=site[0]*Math.PI/180.0;double lat=site[1]*Math.PI/180.0;
+                demo.ContactDirection=new Vector3((float)(Math.Sin(lon)*Math.Cos(lat)),(float)(Math.Cos(lon)*Math.Cos(lat)),(float)Math.Sin(lat));
+                if(!demo.Initialize()){throw new InvalidOperationException(name+" Initialize: "+demo.Failure);}
+                report.Add(name+": contact surfaceHeight="+demo.SurfaceHeight.ToString("G6",CultureInfo.InvariantCulture)+"m");
+                // 原点を持ち上げる Cell(|高さ| がしきい値以上)なら、頂点の刻みは µm の桁。持ち上げない Cell は float の刻み 61 µm(|高さ| < 1 km)以上。
+                bool lifted=Math.Abs(demo.SurfaceHeight)>=moon.HeightShiftThreshold;
+                double minimumTolerance=MinimumGapToleranceLifted;float contactTolerance=ContactHeightToleranceLifted;
+                if(!lifted){minimumTolerance=MinimumGapToleranceUnlifted;contactTolerance=ContactHeightToleranceUnlifted;}
+                SetFlat(true);
+                demo.ShowContactView();
+                // 接触の視点: 隙間 0〜3 mm
+                for(int k=0;k<=3;k++){
+                    demo.SetOffset(0,10*k,0);
+                    foreach(object step in Converge(name+" Gap"+k,Width,ImageHeight)){yield return step;}
+                    Texture2D image=Capture();
+                    if(k==0||k==3){Save(name+"Gap"+k+"mm",image);}
+                    CompareBall(name+" Gap"+k+"mm",image);
+                }
+                // 近接の視点(面から 1cm、ボールの中心から水平 25cm、接点を見る)
+                demo.SetOffset(0,0,0);
+                demo.PlaceCamera(0.01,0.25,true);
+                Dictionary<PlanetCellKey,Vector3[]> baseline=null;
+                for(int k=0;k<=3;k++){
+                    demo.SetOffset(0,10*k,0);
+                    foreach(object step in Converge(name+" MacroGap"+k,Width,ImageHeight)){yield return step;}
+                    Texture2D image=Capture();
+                    if(k==0){Save(name+"MacroFlat",image);}
+                    CompareBall(name+" MacroGap"+k+"mm",image);
+                    Dictionary<PlanetCellKey,Vector3[]> positions=ReadBallPositions();
+                    if(k==0){
+                        baseline=positions;
+                        if(!MeasureRasterContact(name,positions,out RasterContact contact)){continue;}
+                        double minimumError=contact.MinimumGap-contact.ExpectedMinimum;
+                        report.Add(name+": contact slope="+contact.Slope.ToString("G3",CultureInfo.InvariantCulture)+" expectedMinimumGap="+(contact.ExpectedMinimum*1e6).ToString("G4",CultureInfo.InvariantCulture)+"um measured="+
+                            (contact.MinimumGap*1e6).ToString("G4",CultureInfo.InvariantCulture)+"um error="+(minimumError*1e6).ToString("G3",CultureInfo.InvariantCulture)+"um moonHeightAtContact="+(contact.MoonAtContact*1e6f).ToString("G4",CultureInfo.InvariantCulture)+
+                            "um ballVertexOffSphere="+(contact.WorstSphereError*1e6).ToString("G3",CultureInfo.InvariantCulture)+"um (lifted="+lifted+")");
+                        if(!(Math.Abs(minimumError)<=minimumTolerance)){failures.Add(name+": 月のメッシュと解析の球の隙間の最小が、幾何から決まる値と "+minimumError*1e6+"um 違います(許す差 "+minimumTolerance*1e6+"um)。");}
+                        if(!(Mathf.Abs(contact.MoonAtContact)<=contactTolerance)){failures.Add(name+": 接点の真下の月のメッシュの高さが、CPU の地表の高さと "+contact.MoonAtContact*1e6f+"um 違います(許す差 "+contactTolerance*1e6+"um)。");}
+                        if(!(contact.WorstSphereError<=BallSphereTolerance)){failures.Add(name+": ボールのメッシュの頂点が球面から "+contact.WorstSphereError*1e6+"um 外れています(許す差 "+BallSphereTolerance*1e6+"um)。");}
+                    }else if(baseline!=null){
+                        RigidRise(name,k,baseline,positions);
+                    }
+                }
+                // 見た目(照明・模様・格子あり)
+                demo.SetOffset(0,0,0);
+                demo.ShowContactView();
+                SetFlat(false);
+                foreach(object step in Converge(name+" Shaded")){yield return step;}
+                Save(name+"Shaded",Capture());
+                SetFlat(true);
+            }
+            report.Add("pool: moon used="+moon.UsedSlots+"/"+moon.PoolCapacity+" ball used="+ball.UsedSlots+"/"+ball.PoolCapacity+" lastError="+(moon.LastError??"(none)")+"/"+(ball.LastError??"(none)")+" invalidBounds="+moon.InvalidBounds+"/"+ball.InvalidBounds);
+            if(moon.LastError!=null||ball.LastError!=null){failures.Add("設定エラー: "+moon.LastError+" "+ball.LastError);}
+            if(moon.InvalidBounds!=0||ball.InvalidBounds!=0){failures.Add("非有限の頂点を持つ Cell があります(月 "+moon.InvalidBounds+"、ボール "+ball.InvalidBounds+")。");}
+        }
+
+        // 許容値。持ち上げた Cell は頂点の刻みが µm の桁(実測の最大は 30 µm)なので、40 µm / 20 µm。
+        // 持ち上げない Cell(|高さ| < 1 km)は float の刻み 61 µm の丸めが月のメッシュに乗り、傾きの推定(±20 mm の中心差分)の誤差も加わるので、150 µm / 100 µm。
+        private const double MinimumGapToleranceLifted=40e-6;
+        private const float ContactHeightToleranceLifted=20e-6f;
+        private const double MinimumGapToleranceUnlifted=150e-6;
+        private const float ContactHeightToleranceUnlifted=100e-6f;
+        // ボールの頂点の球面からのずれ、1 mm ずつ上げたときの剛体の動きのずれ(float の頂点の丸めだけ)。
+        private const double BallSphereTolerance=2e-6;
+        private const double RigidTolerance=2e-6;
+
+        // 隙間 0 の位置 baseline から隙間 k mm へ上げたとき、同じ Cell の頂点が up 方向へ k mm、接平面の方向へ 0 動いているか。
+        private static void RigidRise(string name,int k,Dictionary<PlanetCellKey,Vector3[]> baseline,Dictionary<PlanetCellKey,Vector3[]> positions){
+            Vector3 expectedMove=demo.Up*(k*1e-3f);
+            int common=0;double worst=0;
+            foreach(KeyValuePair<PlanetCellKey,Vector3[]> pair in baseline){
+                if(!positions.TryGetValue(pair.Key,out Vector3[] moved)){continue;}
+                common++;
+                for(int i=0;i<pair.Value.Length;i++){worst=Math.Max(worst,(moved[i]-pair.Value[i]-expectedMove).magnitude);}
+            }
+            report.Add(name+": gap "+k+"mm: commonBallCells="+common+" rigidRiseError="+(worst*1e6).ToString("G3",CultureInfo.InvariantCulture)+"um");
+            if(common<10){failures.Add(name+": 隙間 "+k+" mm で、隙間 0 と共通のボールの Cell が少なすぎます("+common+")。");}
+            if(!(worst<=RigidTolerance)){failures.Add(name+": ボールを "+k+" mm 上げたとき、頂点の動きが "+worst*1e6+"um ずれています(許す差 "+RigidTolerance*1e6+"um)。");}
+        }
+
+        // 起伏のあるボール(振幅 20 mm)で、Cell の原点を持ち上げた場合(H ≠ 0。RadialBall の _PlanetCellUp.w = R + H の経路)と、持ち上げない場合を比べる。
+        // 同じ視点・同じ位置で、単色と見た目の画像が 1 画素の帯の外で一致し、読み戻した頂点の位置(接点からの相対)が一致する。
+        private static IEnumerator StepsRelief(){
+            int waited=0;
+            while(moon.Selector==null||ball.Selector==null){
+                if(waited++>100){throw new InvalidOperationException("月またはボールが有効になりません。");}
+                yield return null;
+            }
+            if(!demo.Initialize()){throw new InvalidOperationException("Initialize: "+demo.Failure);}
+            report.Add("relief ball: radius="+ball.Radius+" amplitude="+settings.BallHeight+"m wavelength="+settings.BallWavelength+"m octaves="+settings.BallOctaves);
+            demo.ShowContactView();
+            var flatImages=new Texture2D[2];
+            var shadedImages=new Texture2D[2];
+            var positions=new Dictionary<PlanetCellKey,Vector3[]>[2];
+            int[] liftedCells=new int[2];
+            int[] selectedCells=new int[2];
+            float[] largestShift=new float[2];
+            int[] appliedCounts=new int[2];
+            float[] thresholds={1e9f,0f};
+            string[] labels={"NoLift","Lift"};
+            for(int mode2=0;mode2<2;mode2++){
+                ball.HeightShiftThreshold=thresholds[mode2];
+                SetFlat(true);
+                foreach(object step in Converge("Relief"+labels[mode2]+"Flat",Width,ImageHeight)){yield return step;}
+                flatImages[mode2]=Capture();Save("Relief"+labels[mode2]+"Flat",flatImages[mode2]);
+                positions[mode2]=ReadBallPositions();
+                selectedCells[mode2]=ball.LastSelected.Count;
+                foreach(PlanetCellKey key in ball.LastSelected){
+                    float shift=ball.Selector.Frame(in key).HeightShift;
+                    if(shift!=0f){liftedCells[mode2]++;largestShift[mode2]=Mathf.Max(largestShift[mode2],Mathf.Abs(shift));}
+                }
+                appliedCounts[mode2]=ball.HeightShiftApplied;
+                SetFlat(false);
+                foreach(object step in Converge("Relief"+labels[mode2]+"Shaded",Width,ImageHeight)){yield return step;}
+                shadedImages[mode2]=Capture();Save("Relief"+labels[mode2]+"Shaded",shadedImages[mode2]);
+                SetFlat(true);
+                report.Add("relief "+labels[mode2]+": ballCells="+selectedCells[mode2]+" liftedCells="+liftedCells[mode2]+" largestShift="+(largestShift[mode2]*1e3f).ToString("G4",CultureInfo.InvariantCulture)+"mm heightShiftApplied="+appliedCounts[mode2]);
+            }
+            if(liftedCells[0]!=0){failures.Add("持ち上げなし(しきい値 1e9)なのに、持ち上げた Cell が "+liftedCells[0]+" あります。");}
+            if(liftedCells[1]==0){failures.Add("全 Cell を持ち上げる設定(しきい値 0)なのに、持ち上げた Cell がありません(H ≠ 0 の経路を通っていません)。");}
+
+            // 頂点の位置(接点からの相対)
+            int common=0;int onlyNoLift=0;int onlyLift=0;double worstDifference=0;
+            foreach(KeyValuePair<PlanetCellKey,Vector3[]> pair in positions[0]){
+                if(!positions[1].TryGetValue(pair.Key,out Vector3[] lifted)){onlyNoLift++;continue;}
+                common++;
+                for(int i=0;i<pair.Value.Length;i++){worstDifference=Math.Max(worstDifference,(pair.Value[i]-lifted[i]).magnitude);}
+            }
+            foreach(PlanetCellKey key in positions[1].Keys){if(!positions[0].ContainsKey(key)){onlyLift++;}}
+            report.Add("relief vertices: commonCells="+common+" onlyNoLift="+onlyNoLift+" onlyLift="+onlyLift+" worstPositionDifference="+(worstDifference*1e6).ToString("G3",CultureInfo.InvariantCulture)+"um");
+            if(common==0){failures.Add("持ち上げの有無で共通の Cell がありません。");}
+            if(onlyNoLift+onlyLift>(common+onlyNoLift+onlyLift)/100){failures.Add("持ち上げの有無で選ばれる Cell が違います(共通 "+common+"、持ち上げなしだけ "+onlyNoLift+"、持ち上げありだけ "+onlyLift+")。");}
+            if(!(worstDifference<=1e-6)){failures.Add("持ち上げの有無で頂点の位置が "+worstDifference*1e6+"um 違います(許す差 1um)。");}
+
+            // 画像: 単色(ボールの輪郭と、月・背景)は 1 画素の帯の外で一致し、見た目(模様)は帯の外の画素の差が小さい。
+            Color32[] flatA=flatImages[0].GetPixels32();Color32[] flatB=flatImages[1].GetPixels32();
+            int width=flatImages[0].width;int height=flatImages[0].height;
+            var ballMask=new bool[flatA.Length];
+            int ballPixels=0;
+            for(int i=0;i<flatA.Length;i++){ballMask[i]=Classify(flatA[i])==1;if(ballMask[i]){ballPixels++;}}
+            bool[] band=Band(ballMask,width,height);
+            int flatMismatch=0;
+            for(int i=0;i<flatA.Length;i++){
+                if(Classify(flatA[i])!=Classify(flatB[i])&&!band[i]){flatMismatch++;}
+            }
+            Color32[] shadedA=shadedImages[0].GetPixels32();Color32[] shadedB=shadedImages[1].GetPixels32();
+            int shadedMismatch=0;int largestChannelDifference=0;
+            for(int i=0;i<shadedA.Length;i++){
+                if(band[i]){continue;}
+                int difference=Math.Max(Math.Abs(shadedA[i].r-shadedB[i].r),Math.Max(Math.Abs(shadedA[i].g-shadedB[i].g),Math.Abs(shadedA[i].b-shadedB[i].b)));
+                largestChannelDifference=Math.Max(largestChannelDifference,difference);
+                if(difference>ShadedDifferenceLevel){shadedMismatch++;}
+            }
+            report.Add("relief images: ballPixels="+ballPixels+" flatMismatchOutside1px="+flatMismatch+" shadedMismatchOutside1px(>"+ShadedDifferenceLevel+")="+shadedMismatch+" largestChannelDifference="+largestChannelDifference);
+            if(ballPixels<2000){failures.Add("ボールの画素が少なすぎます("+ballPixels+")。視点が合っていません。");}
+            if(flatMismatch!=0){failures.Add("持ち上げの有無で、単色の画像が 1 画素の帯の外で "+flatMismatch+" 画素違います。");}
+            if(shadedMismatch!=0){failures.Add("持ち上げの有無で、見た目の画像が 1 画素の帯の外で "+shadedMismatch+" 画素(差 "+ShadedDifferenceLevel+" 超)違います。");}
+            report.Add("pool: ball used="+ball.UsedSlots+"/"+ball.PoolCapacity+" lastError="+(ball.LastError??"(none)")+" invalidBounds="+moon.InvalidBounds+"/"+ball.InvalidBounds);
+            if(moon.LastError!=null||ball.LastError!=null){failures.Add("設定エラー: "+moon.LastError+" "+ball.LastError);}
+            if(moon.InvalidBounds!=0||ball.InvalidBounds!=0){failures.Add("非有限の頂点を持つ Cell があります(月 "+moon.InvalidBounds+"、ボール "+ball.InvalidBounds+")。");}
+        }
+
+        // 見た目の画像の 1 チャンネルの差がこれ(0〜255)を超える画素を、違う画素として数える。
+        private const int ShadedDifferenceLevel=24;
+
+        // 選んだボールの Cell ごとの、全頂点の位置(接点からの相対、Logical で引いてから float)。
+        private static Dictionary<PlanetCellKey,Vector3[]> ReadBallPositions(){
+            var result=new Dictionary<PlanetCellKey,Vector3[]>();
+            if(!LogicalVector3.TryAdd(moonLogical.LocalPosition,demo.Contact,out LogicalVector3 contactWorld)){failures.Add("接点を求められません。");return result;}
+            int grid=(PlanetLayerSource.CellQuads+1)*(PlanetLayerSource.CellQuads+1);
+            foreach(PlanetCellKey key in ball.LastSelected){
+                if(!ball.TryReadbackCellForDiagnostics(in key,out VirtualGeometryPackedVertex[] vertices,out PlanetCellFrame frame)){continue;}
+                if(!LogicalVector3.TryAdd(ballLogical.LocalPosition,frame.Origin,out LogicalVector3 originWorld)||!LogicalVector3.TrySubtract(in originWorld,in contactWorld,out LogicalVector3 d)||!d.TryToFloat3(out float3 o)){continue;}
+                var points=new Vector3[grid];
+                for(int i=0;i<grid;i++){points[i]=(Vector3)o+vertices[i].Position;}
+                result[key]=points;
+            }
+            return result;
+        }
+
+        // 選択が収束するまで描く。width / height は撮影と同じ解像度にする(別の解像度だと、撮影の 1 frame 目は子の生成待ちの粗い選択になる)。
+        private static IEnumerable<object> Converge(string name,int width=320,int height=240){
             int stable=0;int previous=-1;int frames=0;
             while(frames<ConvergeLimit){
-                Capture(320,240);
+                Destroy(Capture(width,height));
                 int signature=moon.LastSelected.Count*31+ball.LastSelected.Count;
                 foreach(PlanetCellKey key in moon.LastSelected){signature^=key.GetHashCode();}
                 foreach(PlanetCellKey key in ball.LastSelected){signature^=key.GetHashCode()*17;}
@@ -237,6 +485,10 @@ namespace VirtualGeometry.Omni.Editor{
                 yield return null;
             }
             if(frames>=ConvergeLimit){failures.Add(name+": "+ConvergeLimit+" frame で選択が収束しませんでした。");}
+        }
+
+        private static void Destroy(UnityEngine.Object value){
+            if(value!=null){UnityEngine.Object.DestroyImmediate(value);}
         }
 
         private static Texture2D Capture(int width=Width,int height=ImageHeight){
@@ -345,7 +597,7 @@ namespace VirtualGeometry.Omni.Editor{
             Color32[] pixels=image.GetPixels32();
             int width=image.width;int height=image.height;
             double radius=moon.Radius;
-            double ratio=(radius-settings.MoonHeight)/(radius+altitude);
+            double ratio=(radius-(moon.HeightAmplitude+moon.RasterMaximumHeight))/(radius+altitude);
             double dip=Math.Asin(Math.Max(-1.0,Math.Min(1.0,ratio)));
             double pixelAngle=camera.fieldOfView*Mathf.Deg2Rad/height;
             int holes=0;
@@ -380,25 +632,34 @@ namespace VirtualGeometry.Omni.Editor{
             return outside;
         }
 
+        // 接触の隙間の測定値(メートル)。
+        private struct ContactMeasure{
+            // ボールの最下の頂点の、真下の月のメッシュとの高さの差(up 方向)。
+            public float Lowest;
+            // ボールの下側の 64 頂点の、真下の月のメッシュとの高さの差の最小(負なら食い込み)。
+            public float Minimum;
+            public int Found;
+            public bool HasMoon;
+            // 接点の真下の月のメッシュの高さ(接点の平面から up 方向)。
+            public float MoonAtContact;
+            public int BallVertices;
+            public int Triangles;
+        }
+
         // ボールと月の、描いている頂点(メッシュ)の隙間。
         // 接点からの相対位置(Logical で引いてから float)で、ボールの下側の頂点と、その真下の月のメッシュの三角形の高さを比べる。
         private static void ContactMeshGap(){
             demo.SetOffset(0,0,0);
-            LogicalVector3 contactWorld;
-            if(!LogicalVector3.TryAdd(moonLogical.LocalPosition,demo.Contact,out contactWorld)){failures.Add("接点を求められません。");return;}
-            Vector3 up=demo.Up;Vector3 u=demo.AxisU;Vector3 v=demo.AxisV;
+            if(!MeasureContactMesh(out ContactMeasure measure)){return;}
+            if(measure.Found==0){failures.Add("接触の隙間: ボールの下の月のメッシュが見つかりません。");}
+            else if(!(Mathf.Abs(measure.Minimum)<=1e-4f&&Mathf.Abs(measure.Lowest)<=1e-3f)){failures.Add("接触の隙間が大きすぎます(最小 "+measure.Minimum*1e6f+"um、最下の頂点 "+measure.Lowest*1e6f+"um)。");}
+        }
+
+        // 接点の近くの月のメッシュの三角形(接点からの相対位置、Logical で引いてから float)。選んだ Cell のうち、接平面の方向に 0.3 m + Cell の大きさ以内のもの。
+        private static List<Vector3> ReadMoonTriangles(LogicalVector3 contactWorld,Vector3 u,Vector3 v,out float nearest,out int nearestLevel){
             int side=PlanetLayerSource.CellQuads+1;
-            int grid=side*side;
-            // ボールのメッシュ(回転なし)
-            var ballPoints=new List<Vector3>();
-            foreach(PlanetCellKey key in ball.LastSelected){
-                if(!ball.TryReadbackCellForDiagnostics(in key,out VirtualGeometryPackedVertex[] vertices,out PlanetCellFrame frame)){continue;}
-                if(!LogicalVector3.TryAdd(ballLogical.LocalPosition,frame.Origin,out LogicalVector3 originWorld)||!LogicalVector3.TrySubtract(in originWorld,in contactWorld,out LogicalVector3 d)||!d.TryToFloat3(out float3 o)){continue;}
-                for(int i=0;i<grid;i++){ballPoints.Add((Vector3)o+vertices[i].Position);}
-            }
-            // 月のメッシュ(接点の近く)
             var triangles=new List<Vector3>();
-            float nearest=float.MaxValue;int nearestLevel=-1;
+            nearest=float.MaxValue;nearestLevel=-1;
             foreach(PlanetCellKey key in moon.LastSelected){
                 float cellSize=moon.Selector.QuadArc(key.Level)*PlanetLayerSource.CellQuads;
                 PlanetCellFrame frame=moon.Selector.Frame(in key);
@@ -417,8 +678,29 @@ namespace VirtualGeometry.Omni.Editor{
                     }
                 }
             }
+            return triangles;
+        }
+
+        // 今の位置のボールと月のメッシュを読み戻して、接触の隙間を測る(ボールの位置は動かさない)。ボールの高さ方向に低い 64 頂点で測る(傾きの小さい面で、最下の頂点の近くが最も近い)。
+        // メッシュを読み戻せなければ false(failures に書く)。
+        private static bool MeasureContactMesh(out ContactMeasure measure){
+            measure=default;
+            LogicalVector3 contactWorld;
+            if(!LogicalVector3.TryAdd(moonLogical.LocalPosition,demo.Contact,out contactWorld)){failures.Add("接点を求められません。");return false;}
+            Vector3 up=demo.Up;Vector3 u=demo.AxisU;Vector3 v=demo.AxisV;
+            int side=PlanetLayerSource.CellQuads+1;
+            int grid=side*side;
+            // ボールのメッシュ(回転なし)
+            var ballPoints=new List<Vector3>();
+            foreach(PlanetCellKey key in ball.LastSelected){
+                if(!ball.TryReadbackCellForDiagnostics(in key,out VirtualGeometryPackedVertex[] vertices,out PlanetCellFrame frame)){continue;}
+                if(!LogicalVector3.TryAdd(ballLogical.LocalPosition,frame.Origin,out LogicalVector3 originWorld)||!LogicalVector3.TrySubtract(in originWorld,in contactWorld,out LogicalVector3 d)||!d.TryToFloat3(out float3 o)){continue;}
+                for(int i=0;i<grid;i++){ballPoints.Add((Vector3)o+vertices[i].Position);}
+            }
+            // 月のメッシュ(接点の近く)
+            List<Vector3> triangles=ReadMoonTriangles(contactWorld,u,v,out float nearest,out int nearestLevel);
             report.Add("contact mesh: moonCells="+moon.LastSelected.Count+" nearestCellOriginLateral="+nearest.ToString("G4",CultureInfo.InvariantCulture)+"m (level "+nearestLevel+")");
-            if(ballPoints.Count==0||triangles.Count==0){failures.Add("接触の隙間: ボールまたは月のメッシュを読み戻せません(ボール "+ballPoints.Count+"、月の三角形 "+triangles.Count/3+")。");return;}
+            if(ballPoints.Count==0||triangles.Count==0){failures.Add("接触の隙間: ボールまたは月のメッシュを読み戻せません(ボール "+ballPoints.Count+"、月の三角形 "+triangles.Count/3+")。");return false;}
             // ボールの頂点のうち、高い方向(up)に最も低い 64 個について、真下の月のメッシュの高さとの差を求める。
             ballPoints.Sort((a,b)=>Vector3.Dot(a,up).CompareTo(Vector3.Dot(b,up)));
             float minimum=float.MaxValue;float lowest=0;int found=0;
@@ -437,16 +719,90 @@ namespace VirtualGeometry.Omni.Editor{
                 report.Add("contact mesh detail: ballLowestHeight="+(Vector3.Dot(bottom,up)*1e6f).ToString("G5",CultureInfo.InvariantCulture)+"um lateral=("+
                     (Vector3.Dot(bottom,u)*1e3f).ToString("G4",CultureInfo.InvariantCulture)+","+(Vector3.Dot(bottom,v)*1e3f).ToString("G4",CultureInfo.InvariantCulture)+")mm moonHeightAtContact="+
                     (hasMoon?(moonAtContact*1e6f).ToString("G5",CultureInfo.InvariantCulture)+"um":"(none)"));
+                measure=new ContactMeasure{HasMoon=hasMoon,MoonAtContact=moonAtContact};
             }
             report.Add("contact mesh gap: ballVertices="+ballPoints.Count+" moonTriangles="+triangles.Count/3+" lowestVertexGap="+(lowest*1e6f).ToString("G4",CultureInfo.InvariantCulture)+"um minimumGap(64 lowest)="+
                 (minimum*1e6f).ToString("G4",CultureInfo.InvariantCulture)+"um (checked "+found+")");
-            if(found==0){failures.Add("接触の隙間: ボールの下の月のメッシュが見つかりません。");}
-            else if(Mathf.Abs(minimum)>1e-4f||Mathf.Abs(lowest)>1e-3f){failures.Add("接触の隙間が大きすぎます(最小 "+minimum*1e6f+"um、最下の頂点 "+lowest*1e6f+"um)。");}
+            measure.Lowest=lowest;measure.Minimum=minimum;measure.Found=found;measure.BallVertices=ballPoints.Count;measure.Triangles=triangles.Count/3;
+            return true;
+        }
+
+        // 起伏のある地面の接触の測定値(メートル)。
+        private struct RasterContact{
+            // 接点の真下の月のメッシュの高さ(接点の平面から up 方向)。
+            public float MoonAtContact;
+            // 接点の面の傾き(±20 mm の中心差分の勾配の大きさ)。
+            public float Slope;
+            // 解析の球と月のメッシュの隙間(up 方向)の最小と、傾き s から決まる値 −r(√(1+s²)−1)。
+            public double MinimumGap;
+            public double ExpectedMinimum;
+            // ボールのメッシュの頂点の、解析の球面からのずれの最大。
+            public double WorstSphereError;
+        }
+
+        // 隙間 0 の位置で、月のメッシュと解析の球の隙間、ボールの頂点の球面からのずれを測る。ballPositions は <see cref="ReadBallPositions"/> の値(接点からの相対)。
+        private static bool MeasureRasterContact(string name,Dictionary<PlanetCellKey,Vector3[]> ballPositions,out RasterContact result){
+            result=default;
+            if(!LogicalVector3.TryAdd(moonLogical.LocalPosition,demo.Contact,out LogicalVector3 contactWorld)){failures.Add(name+": 接点を求められません。");return false;}
+            Vector3 up=demo.Up;Vector3 u=demo.AxisU;Vector3 v=demo.AxisV;
+            List<Vector3> all=ReadMoonTriangles(contactWorld,u,v,out float nearest,out int nearestLevel);
+            // 問い合わせは接点の近く(水平 0.1 m 以内)の三角形だけで足りる。
+            var triangles=new List<Vector3>();
+            for(int i=0;i<all.Count;i+=3){
+                bool near=false;
+                for(int c=0;c<3;c++){
+                    Vector3 point=all[i+c];
+                    if(Mathf.Abs(Vector3.Dot(point,u))<=0.1f&&Mathf.Abs(Vector3.Dot(point,v))<=0.1f){near=true;break;}
+                }
+                if(near){triangles.Add(all[i]);triangles.Add(all[i+1]);triangles.Add(all[i+2]);}
+            }
+            report.Add(name+": moon mesh: cells="+moon.LastSelected.Count+" nearestCellOriginLateral="+nearest.ToString("G4",CultureInfo.InvariantCulture)+"m (level "+nearestLevel+") trianglesNear="+triangles.Count/3);
+            if(triangles.Count==0){failures.Add(name+": 接点の近くの月のメッシュを読み戻せません。");return false;}
+            // 傾き: 接点の三角形の 0.6 mm の勾配は float の刻み(持ち上げない Cell で 61 µm)で 0.1 ほど狂うので、±20 mm の中心差分にする。
+            const float baseline=0.02f;
+            if(!MeshHeightAt(triangles,u,v,up,0,0,out float centerHeight)||!MeshHeightAt(triangles,u,v,up,baseline,0,out float plusU)||!MeshHeightAt(triangles,u,v,up,-baseline,0,out float minusU)||
+                !MeshHeightAt(triangles,u,v,up,0,baseline,out float plusV)||!MeshHeightAt(triangles,u,v,up,0,-baseline,out float minusV)){
+                failures.Add(name+": 接点の近くの月のメッシュの高さを求められません。");return false;
+            }
+            double gradientU=(plusU-minusU)/(2.0*baseline);double gradientV=(plusV-minusV)/(2.0*baseline);
+            double slope=Math.Sqrt(gradientU*gradientU+gradientV*gradientV);
+            if(double.IsNaN(slope)||double.IsInfinity(slope)||float.IsNaN(centerHeight)||float.IsInfinity(centerHeight)){failures.Add(name+": 接点の近くの月のメッシュの高さが有限ではありません(NaN または inf の頂点)。");return false;}
+            double radius=ball.Radius;
+            double gapOffset=demo.OffsetY*MoonBallDemo.UnitMeters;
+            // 最も食い込む点は、最下の点から上り方向へ r·s/√(1+s²)。その周り ±2.5 mm を 0.25 mm 刻みで、解析の球の高さ − 月のメッシュの高さ の最小を探す。
+            double distanceToOptimum=radius*slope/Math.Sqrt(1.0+slope*slope);
+            double centerU=0;double centerV=0;
+            if(slope>0){centerU=distanceToOptimum*gradientU/slope;centerV=distanceToOptimum*gradientV/slope;}
+            double best=double.MaxValue;
+            for(int iu=-10;iu<=10;iu++){
+                for(int iv=-10;iv<=10;iv++){
+                    double qu=centerU+iu*0.25e-3;double qv=centerV+iv*0.25e-3;
+                    double rho2=qu*qu+qv*qv;
+                    if(rho2>=radius*radius){continue;}
+                    if(!MeshHeightAt(triangles,u,v,up,(float)qu,(float)qv,out float meshHeight)){continue;}
+                    double sphereHeight=gapOffset+radius-Math.Sqrt(radius*radius-rho2);
+                    best=Math.Min(best,sphereHeight-meshHeight);
+                }
+            }
+            if(best==double.MaxValue||double.IsNaN(best)||double.IsInfinity(best)){failures.Add(name+": 食い込みの最小を求める点で、月のメッシュが見つからないか、高さが有限ではありません。");return false;}
+            // ボールの頂点: 中心 = 接点 + up·(r + 隙間)からの距離が r。
+            Vector3 center=up*(float)(radius+gapOffset);
+            double worstSphere=0;
+            foreach(KeyValuePair<PlanetCellKey,Vector3[]> pair in ballPositions){
+                for(int i=0;i<pair.Value.Length;i++){worstSphere=Math.Max(worstSphere,Math.Abs((pair.Value[i]-center).magnitude-radius));}
+            }
+            result=new RasterContact{MoonAtContact=centerHeight,Slope=(float)slope,MinimumGap=best,ExpectedMinimum=-radius*(Math.Sqrt(1.0+slope*slope)-1.0),WorstSphereError=worstSphere};
+            return true;
         }
 
         // 接点の接平面の座標 (qu, qv) の真上下にある、月のメッシュの高さ(up 方向)。
         private static bool MeshHeightAt(List<Vector3> triangles,Vector3 u,Vector3 v,Vector3 up,float qu,float qv,out float height){
-            height=0;
+            return MeshHeightAt(triangles,u,v,up,qu,qv,out height,out float _,out float _);
+        }
+
+        // 同じで、三角形の平面の高さの勾配(u、v の方向)も返す。
+        private static bool MeshHeightAt(List<Vector3> triangles,Vector3 u,Vector3 v,Vector3 up,float qu,float qv,out float height,out float gradientU,out float gradientV){
+            height=0;gradientU=0;gradientV=0;
             for(int t=0;t<triangles.Count;t+=3){
                 Vector3 a=triangles[t];Vector3 b=triangles[t+1];Vector3 c=triangles[t+2];
                 float au=Vector3.Dot(a,u),av=Vector3.Dot(a,v),bu=Vector3.Dot(b,u),bv=Vector3.Dot(b,v),cu=Vector3.Dot(c,u),cv=Vector3.Dot(c,v);
@@ -457,7 +813,15 @@ namespace VirtualGeometry.Omni.Editor{
                 float w2=1f-w0-w1;
                 const float epsilon=-1e-5f;
                 if(w0<epsilon||w1<epsilon||w2<epsilon){continue;}
-                height=w0*Vector3.Dot(a,up)+w1*Vector3.Dot(b,up)+w2*Vector3.Dot(c,up);
+                float ah=Vector3.Dot(a,up),bh=Vector3.Dot(b,up),ch=Vector3.Dot(c,up);
+                height=w0*ah+w1*bh+w2*ch;
+                // 三角形の平面の高さの勾配(u、v の方向)の大きさ。
+                float e1u=bu-au,e1v=bv-av,e1h=bh-ah,e2u=cu-au,e2v=cv-av,e2h=ch-ah;
+                float determinant=e1u*e2v-e1v*e2u;
+                if(Mathf.Abs(determinant)>1e-18f){
+                    gradientU=(e1h*e2v-e1v*e2h)/determinant;
+                    gradientV=(e1u*e2h-e1h*e2u)/determinant;
+                }
                 return true;
             }
             return false;

@@ -97,6 +97,8 @@ namespace VirtualGeometry.Omni{
                 if(value==null){this.keys=MoonBallKeyboard.Instance;}else{this.keys=value;}
             }
         }
+        /// <summary>接点の方向(月の中心から外向き、惑星のローカル座標)。<see cref="Initialize"/> の前に設定する(変えたら Initialize を呼び直す)。</summary>
+        public Vector3 ContactDirection{get=>this.contactDirection;set=>this.contactDirection=value;}
         public PlanetTerrainSource Moon{get=>this.moon;set=>this.moon=value;}
         public PlanetTerrainSource Ball{get=>this.ball;set=>this.ball=value;}
         public PlanetDescentCamera Descent{get=>this.descent;set=>this.descent=value;}

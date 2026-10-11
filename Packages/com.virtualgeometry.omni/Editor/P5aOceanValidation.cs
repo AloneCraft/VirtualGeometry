@@ -231,6 +231,16 @@ namespace VirtualGeometry.Omni.Editor{
             int changed=CountChangedSea(before,after);
             report.Add("animation: changedSeaPixels="+changed);
             if(changed==0){failures.Add("時刻を変えても海の画素が変わりませんでした。");}
+            // 長時間後の波の位相: 時刻 10^6 秒、10^7 秒(約 12 日、116 日)でも、GPU の頂点が、位相を倍精度で巻いた参照と一致する
+            // (位相を float の積で巻くと、10^6 秒で 1 rad ほど狂って波が数 m ずれる。GPU と CPU の float の式は同じ誤りをするので、比べる相手は倍精度の参照)。
+            foreach(double late in new[]{1e6+0.37,1e7+0.37}){
+                ocean.WaveTime=late;
+                for(int frame=0;frame<3;frame++){
+                    Capture();
+                    yield return null;
+                }
+                CompareLateTime("LateTime"+late.ToString("G3",CultureInfo.InvariantCulture));
+            }
             ocean.WaveTime=FrozenTime;
             SetFlat(true);
             report.Add("pool: terrain used="+terrain.UsedSlots+" ocean used="+ocean.UsedSlots+" lastError="+(terrain.LastError??"(none)")+"/"+(ocean.LastError??"(none)"));
@@ -356,6 +366,30 @@ namespace VirtualGeometry.Omni.Editor{
             if(droppedCells>0&&dropped<=worst*10f){failures.Add(name+": 帯域制限で落とすはずの波が、GPU の変位に入っているように見えます(全成分との差 "+dropped+"m、CPU との差 "+worst+"m)。");}
             if(points==0){failures.Add(name+": CPU と GPU を比べる海の頂点がありません。");}
             if(worst>1e-2f){failures.Add(name+": 海面の CPU と GPU の差が 1cm を超えました(最大 "+worst+"m)。");}
+        }
+
+        // 動く Cell(波が変位に入る階層)の格子の 9 点で、GPU の頂点を、位相を倍精度で巻いた参照と比べる。
+        private static void CompareLateTime(string name){
+            var perLevel=new Dictionary<int,int>();
+            float worst=0;int points=0;float amplitude=ocean.WaveAmplitude;
+            int side=PlanetLayerSource.CellQuads+1;
+            foreach(PlanetCellKey key in ocean.LastSelected){
+                if(!ocean.IsAnimated(key.Level)){continue;}
+                perLevel.TryGetValue(key.Level,out int count);
+                if(count>=2){continue;}
+                if(!ocean.TryReadbackCellForDiagnostics(in key,out VirtualGeometryPackedVertex[] vertices,out PlanetCellFrame _)){continue;}
+                perLevel[key.Level]=count+1;
+                for(int j=0;j<=PlanetLayerSource.CellQuads;j+=PlanetLayerSource.CellQuads/2){
+                    for(int i=0;i<=PlanetLayerSource.CellQuads;i+=PlanetLayerSource.CellQuads/2){
+                        if(!ocean.TryEvaluateVertexInDouble(in key,i,j,true,out Vector3 reference)){continue;}
+                        worst=Mathf.Max(worst,(vertices[j*side+i].Position-reference).magnitude);
+                        points++;
+                    }
+                }
+            }
+            report.Add(name+": oceanDoubleReference time="+ocean.WaveTime.ToString("G9",CultureInfo.InvariantCulture)+" points="+points+" levels="+perLevel.Count+" maxError="+worst.ToString("G4",CultureInfo.InvariantCulture)+"m (waveAmplitude "+amplitude.ToString("G3",CultureInfo.InvariantCulture)+"m)");
+            if(points==0){failures.Add(name+": 倍精度の参照と比べる海の頂点がありません。");}
+            if(worst>1e-2f){failures.Add(name+": 長時間後の海面が、倍精度の参照と 1cm を超えて違います(最大 "+worst+"m)。");}
         }
 
         // 海(青が緑より強い)と陸の画素の数。

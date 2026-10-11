@@ -21,11 +21,30 @@ namespace VirtualGeometry.Omni.Editor{
         public int MoonOctaves;
         public int MoonMaximumLevel;
         public float BallRadius;
+        // ボールの起伏(振幅 m、波長 m、octave 数)。0 / 0 / 0 なら、高さのない球(既定)。
+        public float BallHeight;
+        public float BallWavelength;
+        public int BallOctaves;
 
         /// <summary>月: 半径 1,737.4 km(Omni の CosmicScale と同じ)、ボール: 半径 0.11 m(直径 0.22 m の 5 号球)。</summary>
         public static MoonBallSettings Moon=>new MoonBallSettings{
             Name="MoonAndBall",ScenePath=MoonBallSceneBuilder.Root+"/MoonAndBall.unity",
             MoonRadius=1737400f,MoonHeight=300f,MoonWavelength=1.6e6f,MoonOctaves=28,MoonMaximumLevel=40,BallRadius=0.11f,
+        };
+
+        /// <summary>
+        /// 実データ・合成の高起伏の格子を載せる月(手続きの高さは 0)。Populate の後に <c>MoonSource.SetRasters</c> を呼ぶ。階層は 1 quad が 1mm になる 28 まで(余裕を見て 32)。
+        /// </summary>
+        public static MoonBallSettings Raster=>new MoonBallSettings{
+            Name="RasterMoonAndBall",ScenePath=MoonBallSceneBuilder.Root+"/RasterMoonAndBall.unity",
+            MoonRadius=1737400f,MoonHeight=0f,MoonWavelength=3800f,MoonOctaves=1,MoonMaximumLevel=32,BallRadius=0.11f,
+        };
+
+        /// <summary>起伏のあるボール(振幅 20 mm、波長 50 mm、6 octave)。RadialBall の _PlanetCellUp.w = R + H を H ≠ 0 で通す検証用(scene は保存しない)。</summary>
+        public static MoonBallSettings ReliefBall=>new MoonBallSettings{
+            Name="ReliefBall",ScenePath=MoonBallSceneBuilder.Root+"/ReliefBall.unity",
+            MoonRadius=1737400f,MoonHeight=300f,MoonWavelength=1.6e6f,MoonOctaves=28,MoonMaximumLevel=40,BallRadius=0.11f,
+            BallHeight=0.02f,BallWavelength=0.05f,BallOctaves=6,
         };
 
         /// <summary>半径 10^20 m の天体(月の約 6×10^13 倍)とボール。</summary>
@@ -166,7 +185,9 @@ namespace VirtualGeometry.Omni.Editor{
             result.Ball.AddComponent<global::Omni.Logical.Transform>();
             result.BallSource=result.Ball.AddComponent<PlanetTerrainSource>();
             result.Ball.AddComponent<OmniPlanetPlacement>();
-            Configure(result.BallSource,settings.BallRadius,0f,0.1f,1,10,512,32,false);
+            float ballWavelength=settings.BallWavelength;
+            if(!(ballWavelength>0f)){ballWavelength=0.1f;}
+            Configure(result.BallSource,settings.BallRadius,settings.BallHeight,ballWavelength,Math.Max(1,settings.BallOctaves),10,512,32,false);
             result.BallSource.Material=result.BallMaterial;
             result.Ball.SetActive(true);
 

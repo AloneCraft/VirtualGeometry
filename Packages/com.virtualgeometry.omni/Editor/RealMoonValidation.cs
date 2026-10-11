@@ -24,10 +24,7 @@ namespace VirtualGeometry.Omni.Editor{
     /// 実行: -batchmode -force-d3d12 -executeMethod VirtualGeometry.Omni.Editor.RealMoonValidation.Run
     /// </summary>
     public static class RealMoonValidation{
-        private const string DataFolder="LocalData/OmniDemo";
-        private const string GlobalFile="lola-5760x2880-meters.bytes";
-        private const string RegionalFile="sldem-0n-0e-344x344-meters.bytes";
-        private const double MoonRadius=1737400.0;
+        private const double MoonRadius=RealMoonData.MoonRadius;
         private const int Width=640;
         private const int ImageHeight=480;
         private const int ConvergeLimit=900;
@@ -124,17 +121,9 @@ namespace VirtualGeometry.Omni.Editor{
         private static void Setup(){
             regionalLayer=null;
             if(synthetic){
-                globalLayer=PlanetRasterLayer.CreateGlobal(SyntheticHeights(SyntheticWidth,SyntheticHeight),SyntheticWidth,SyntheticHeight);
+                globalLayer=RealMoonData.CreateSynthetic();
             }else{
-                string root=Path.GetDirectoryName(Application.dataPath);
-                string globalPath=Path.Combine(root,DataFolder,GlobalFile);
-                string regionalPath=Path.Combine(root,DataFolder,RegionalFile);
-                if(!File.Exists(globalPath)||!File.Exists(regionalPath)){
-                    throw new FileNotFoundException("実データがありません。Omni のデモ(Assets/Omni/Demos/PlanetSurface/Data)の "+GlobalFile+" と "+RegionalFile+" を "+DataFolder+" へコピーしてください(git 管理外)。合成データの検証は RunSynthetic。");
-                }
-                globalLayer=PlanetRasterLayer.CreateGlobal(PlanetRasterLayer.ReadFloat32(File.ReadAllBytes(globalPath),5760,2880),5760,2880);
-                // SLDEM: 344×344、512 画素/度、中心は 0N/0E。±9.5 km(約 ±(9.5km/59m)=161 画素)の内側を使う。端から 14 画素(約 0.8 km)の内側まで重み 0、そこから 26 画素(約 1.5 km)で 1。
-                regionalLayer=PlanetRasterLayer.CreateRegional(PlanetRasterLayer.ReadFloat32(File.ReadAllBytes(regionalPath),344,344),344,344,0.0,0.0,512.0,14f,26f);
+                RealMoonData.LoadReal(out globalLayer,out regionalLayer);
             }
 
             MoonBallSceneBuilder.UsePipeline();
@@ -168,38 +157,11 @@ namespace VirtualGeometry.Omni.Editor{
             RenderSettings.skybox=null;
         }
 
-        private const int SyntheticWidth=2880;
-        private const int SyntheticHeight=1440;
-        private const float SyntheticMinimum=-7300f;
-        private const float SyntheticMaximum=9000f;
-
         private static string DatasetName(){
             string suffix="";
             if(polar){suffix="+polar";}
-            if(synthetic){return "synthetic"+SyntheticWidth+"x"+SyntheticHeight+suffix;}
+            if(synthetic){return "synthetic"+RealMoonData.SyntheticWidth+"x"+RealMoonData.SyntheticHeight+suffix;}
             return "LOLA5760x2880+SLDEM344x344"+suffix;
-        }
-
-        // 合成の高さ(m)。方向 n=(sin λ cos φ, cos λ cos φ, sin φ) の滑らかな関数なので極で連続。−7,300 m と +9,000 m に格子の中で届くよう、最小・最大に合わせて線形に写す。
-        // 勾配は、k=60 で最大約 0.3(16,300 m × 78 / 1,737 km)。経度の周期 3 と緯度の変化を持つ(全球の格子の座標の規約は PlanetRasterLayer と同じ)。
-        private static float[] SyntheticHeights(int width,int height){
-            var raw=new double[width*height];
-            double minimum=double.MaxValue;double maximum=double.MinValue;
-            for(int y=0;y<height;y++){
-                double lat=(0.5-(y+0.5)/height)*Math.PI;
-                for(int x=0;x<width;x++){
-                    double lon=((x+0.5)/width-0.5)*2.0*Math.PI;
-                    double nx=Math.Sin(lon)*Math.Cos(lat);double ny=Math.Cos(lon)*Math.Cos(lat);double nz=Math.Sin(lat);
-                    double value=Math.Sin(60.0*nx+0.7)*Math.Cos(60.0*ny+0.3)+0.5*Math.Sin(37.0*nz+1.1);
-                    raw[y*width+x]=value;
-                    minimum=Math.Min(minimum,value);maximum=Math.Max(maximum,value);
-                }
-            }
-            var result=new float[width*height];
-            for(int i=0;i<result.Length;i++){
-                result[i]=(float)(SyntheticMinimum+(raw[i]-minimum)/(maximum-minimum)*(SyntheticMaximum-SyntheticMinimum));
-            }
-            return result;
         }
 
         // 検証の場所(経度、緯度。度)。実データは、SLDEM の中心、静かの海の周り、ティコの周り、南極エイトケン盆地の近く。
@@ -222,24 +184,7 @@ namespace VirtualGeometry.Omni.Editor{
                     new[]{-172.0,-70.0},       // 南極エイトケン盆地の近く(最も低い所の周り)
                 };
             }
-            int columnMin=0,rowMin=0,columnMax=0,rowMax=0;
-            double minimum=double.MaxValue;double maximum=double.MinValue;
-            for(int r=0;r<globalLayer.Height;r++){
-                for(int c=0;c<globalLayer.Width;c++){
-                    float value=globalLayer.Texel(c,r);
-                    if(value<minimum){minimum=value;columnMin=c;rowMin=r;}
-                    if(value>maximum){maximum=value;columnMax=c;rowMax=r;}
-                }
-            }
-            double LongitudeOf(int c){return ((c+0.5)/globalLayer.Width-0.5)*360.0;}
-            double LatitudeOf(int r){return (0.5-(r+0.5)/globalLayer.Height)*180.0;}
-            // 勾配が大きい所: 最大の位置から経度 1.5°、緯度 1° ずらした点(極から遠い)。
-            return new[]{
-                new[]{LongitudeOf(columnMax),LatitudeOf(rowMax)},
-                new[]{LongitudeOf(columnMin),LatitudeOf(rowMin)},
-                new[]{0.0,0.0},
-                new[]{LongitudeOf(columnMax)+1.5,Math.Max(-60.0,Math.Min(60.0,LatitudeOf(rowMax)-1.0))},
-            };
+            return RealMoonData.ExtremeSites(globalLayer);
         }
 
         // 月面の経度・緯度(度)の単位方向(Omni の規約: 経度 = atan2(x, y)、緯度 = atan2(z, √(x²+y²)))。
@@ -368,7 +313,7 @@ namespace VirtualGeometry.Omni.Editor{
                 "  max="+maximum.ToString("F0",CultureInfo.InvariantCulture)+"m at lon "+LongitudeOf(maxC).ToString("F1",CultureInfo.InvariantCulture)+" lat "+LatitudeOf(maxR).ToString("F1",CultureInfo.InvariantCulture)+
                 "  moon selection amplitude="+moon.RasterMaximumHeight.ToString("F0",CultureInfo.InvariantCulture)+"m");
             if(synthetic){
-                if(minimum>SyntheticMinimum+1||maximum<SyntheticMaximum-1){failures.Add("合成の格子の範囲が想定("+SyntheticMinimum+"〜"+SyntheticMaximum+")と違います: "+minimum+" 〜 "+maximum);}
+                if(minimum>RealMoonData.SyntheticMinimum+1||maximum<RealMoonData.SyntheticMaximum-1){failures.Add("合成の格子の範囲が想定("+RealMoonData.SyntheticMinimum+"〜"+RealMoonData.SyntheticMaximum+")と違います: "+minimum+" 〜 "+maximum);}
             }else if(minimum>-8000||maximum<9000){
                 failures.Add("LOLA の範囲が想定(約 −9 km〜+10.8 km)と違います: "+minimum+" 〜 "+maximum);
             }
