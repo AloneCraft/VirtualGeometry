@@ -12,7 +12,8 @@ float3 Surface(float a,float b,out float3 direction)
 {
     float3 sphere;
     SpherePoint(a,b,sphere,direction);
-    return sphere+direction*PlanetHeight(sphere,_QuadLength);
+    // PlanetHeight は「高さ − _HeightShift」を返す(Cell の原点を持ち上げた分を、丸めの前に引いてある)。
+    return PlanetCellVertex(sphere,direction,PlanetHeight(sphere,_QuadLength));
 }
 
 [numthreads(64,1,1)]

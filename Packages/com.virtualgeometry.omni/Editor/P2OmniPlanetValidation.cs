@@ -154,6 +154,7 @@ namespace VirtualGeometry.Omni.Editor{
             settings.ApplyModifiedPropertiesWithoutUndo();
             planet.Material=material;
             planet.Configure(Radius,Height,MaximumLevel,Target);
+            HeightShiftOverride.Apply(planet);
             offset=LogicalVector3.Zero;
             SetLogical(planetLogical,Vector3.zero,Quaternion.identity);
             holder.SetActive(true);

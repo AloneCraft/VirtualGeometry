@@ -19,6 +19,12 @@ namespace VirtualGeometry.World.Tests{
             public bool TryGetBounds(in PlanetCellKey key,out Vector3 offset,out float radius){offset=default;radius=0;return false;}
         }
 
+        private static double Length(in LogicalVector3 vector){
+            Assert.That(LogicalVector3.TryLength(in vector,out LogicalScalar length),Is.True);
+            Assert.That(length.TryToDouble(out double value),Is.True);
+            return value;
+        }
+
         private static PlanetCellSelector Create(int maximumLevel){
             return new PlanetCellSelector(Radius,Height,64,maximumLevel,2){TargetPixels=2,Hysteresis=0.1f};
         }
@@ -42,6 +48,43 @@ namespace VirtualGeometry.World.Tests{
         }
 
         [Test]
+        public void Frame(){
+            PlanetCellKey key=PlanetCellKey.Root(4).Child(0).Child(2).Child(1);
+            {
+                //高さの供給元があると、原点は半径 R+H の球面上の、Cell の中心の方向の点になる(SphereOrigin は半径 R)。同じ Cell には同じ値
+                int calls=0;bool receivedLifted=false;
+                var selector=new PlanetCellSelector(Radius,Height,64,10,2,(in PlanetCellFrame sphereFrame,out float shift)=>{
+                    calls++;
+                    // 供給元に渡るのは持ち上げる前の Cell の値
+                    if(sphereFrame.HeightShift!=0f||Length(sphereFrame.Origin)!=Length(sphereFrame.SphereOrigin)){receivedLifted=true;}
+                    shift=250f;return true;
+                });
+                PlanetCellFrame frame=selector.Frame(in key);
+                Assert.That(frame.HeightShift,Is.EqualTo(250f));
+                Assert.That(Length(frame.Origin),Is.EqualTo(Radius+250.0).Within(1e-6));
+                Assert.That(Length(frame.SphereOrigin),Is.EqualTo(Radius).Within(1e-6));
+                // 同じ Cell の値は覚えていて、供給元に聞き直さない
+                Assert.That(selector.Frame(in key).HeightShift,Is.EqualTo(250f));
+                Assert.That(calls,Is.EqualTo(1));
+                Assert.That(selector.Frame(key.Child(1)).HeightShift,Is.EqualTo(250f));
+                Assert.That(calls,Is.EqualTo(2));
+                Assert.That(receivedLifted,Is.False);
+            }
+            {
+                //供給元が失敗する、有限でない、|H| ≥ R、0 のときは持ち上げない
+                foreach(float bad in new[]{float.NaN,float.PositiveInfinity,-Radius,Radius*2f,0f}){
+                    float captured=bad;
+                    var selector=new PlanetCellSelector(Radius,Height,64,10,2,(in PlanetCellFrame sphereFrame,out float shift)=>{shift=captured;return true;});
+                    Assert.That(selector.Frame(in key).HeightShift,Is.EqualTo(0f),"shift="+bad);
+                    Assert.That(Length(selector.Frame(in key).Origin),Is.EqualTo(Radius).Within(1e-6));
+                }
+                var failing=new PlanetCellSelector(Radius,Height,64,10,2,(in PlanetCellFrame sphereFrame,out float shift)=>{shift=250f;return false;});
+                Assert.That(failing.Frame(in key).HeightShift,Is.EqualTo(0f));
+                Assert.That(Create(10).Frame(in key).HeightShift,Is.EqualTo(0f),"供給元が無ければ持ち上げない");
+            }
+        }
+
+        [Test]
         public void FromCamera(){
             {
                 //半径 6,371km の地表から 1.7m のカメラと、真下の深い階層の Cell の原点の距離が、float の刻み(約 0.5m)に潰れない
@@ -60,6 +103,19 @@ namespace VirtualGeometry.World.Tests{
                 // 真下の Cell は地平線の向こうにも視錐台の外にも無い。
                 selector.Bounds(in key,out Vector3 offset,out float radius);
                 Assert.That(selector.IsCulled(in view,selector.FromCamera(in view,in key,offset),radius),Is.False);
+            }
+            {
+                //原点を地表の高さまで持ち上げた Cell でも、カメラ(地表から 1.7m)との距離は 1.7m(持ち上げた原点からの差を、Logical で取る)
+                var selector=new PlanetCellSelector(6371000f,3000f,PlanetTerrainSource.CellQuads,PlanetCellFrame.MaximumLevel,2f,(in PlanetCellFrame sphereFrame,out float shift)=>{shift=2468.5f;return true;});
+                PlanetCellKey key=PlanetCellKey.Root(4);
+                for(int depth=0;depth<26;depth++){key=key.Child((depth*7)%4);}
+                PlanetCellFrame frame=selector.Frame(in key);
+                Assert.That(LogicalScalar.TryFromFloat(1.7f/(6371000f+2468.5f),out LogicalScalar ratio),Is.True);
+                Assert.That(LogicalVector3.TryScale(frame.Origin,in ratio,out LogicalVector3 lift),Is.True);
+                Assert.That(LogicalVector3.TryAdd(frame.Origin,lift,out LogicalVector3 camera),Is.True);
+                var view=new PlanetSelectionView(in camera,selector.LogicalRadius,Matrix4x4.identity,Vector3.zero,1,null,500,0.1f,false,true);
+                Assert.That(view.CameraAltitude,Is.EqualTo(2468.5f+1.7f).Within(1e-2f));
+                Assert.That(selector.FromCamera(in view,in key,Vector3.zero).magnitude,Is.EqualTo(1.7f).Within(1e-3f));
             }
         }
 
@@ -100,6 +156,34 @@ namespace VirtualGeometry.World.Tests{
                                 Vector3 direction=CubeSphere.Direction(key.Face,s0+size*i/4f,t0+size*j/4f);
                                 foreach(float r in new[]{Radius-selector.SkirtDepth(key.Level),Radius}){
                                     Assert.That((direction*r-center).magnitude,Is.LessThanOrEqualTo(radius*1.0001f),key.ToString());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            {
+                //原点を持ち上げた Cell(H=±250 m)でも、粗い階層(SampledBounds)と細かい階層(FrameBounds)の bounds が、半径 R±Hmax と skirt の底の点をすべて含む
+                foreach(float lift in new[]{250f,-250f}){
+                    float captured=lift;
+                    var selector=new PlanetCellSelector(Radius,Height,PlanetTerrainSource.CellQuads,PlanetCellFrame.MaximumLevel,2f,(in PlanetCellFrame sphereFrame,out float shift)=>{shift=captured;return true;});
+                    var keys=new List<PlanetCellKey>{PlanetCellKey.Root(2),PlanetCellKey.Root(2).Child(3),PlanetCellKey.Root(4).Child(0).Child(2).Child(1)};
+                    PlanetCellKey deep=PlanetCellKey.Root(1);
+                    for(int depth=0;depth<PlanetCellSelector.FrameBoundsLevel+2;depth++){
+                        deep=deep.Child(depth%4);
+                        if(deep.Level>=PlanetCellSelector.FrameBoundsLevel){keys.Add(deep);}
+                    }
+                    foreach(PlanetCellKey key in keys){
+                        selector.Bounds(in key,out Vector3 offset,out float radius);
+                        PlanetCellFrame frame=selector.Frame(in key);
+                        Assert.That(frame.HeightShift,Is.EqualTo(lift));
+                        Vector3 center=frame.ApproximateOrigin+offset;
+                        PlanetCellSelector.FaceRange(in key,out float s0,out float t0,out float size);
+                        for(int j=0;j<=4;j++){
+                            for(int i=0;i<=4;i++){
+                                Vector3 direction=CubeSphere.Direction(key.Face,s0+size*i/4f,t0+size*j/4f);
+                                foreach(float r in new[]{Radius-Height-selector.SkirtDepth(key.Level),Radius+Height}){
+                                    Assert.That((direction*r-center).magnitude,Is.LessThanOrEqualTo(radius*1.0001f),key+" lift="+lift);
                                 }
                             }
                         }

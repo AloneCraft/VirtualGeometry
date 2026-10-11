@@ -89,7 +89,7 @@ Shader "Omni/RadialMoonGrid"
             CBUFFER_END
 
             // Cell ごとの値(MaterialPropertyBlock、PlanetLayerSource.WriteCellProperties)。
-            // _PlanetCellUp: xyz=Cell の原点の外向きの単位方向(object 空間)、w=惑星の半径。
+            // _PlanetCellUp: xyz=Cell の原点の外向きの単位方向(object 空間)、w=Cell の原点の惑星の中心からの距離(半径 + 原点を持ち上げた距離)。
             // _PlanetCellRef: xyz=Cell の原点 − 基準点(Logical で引いたもの)、w=基準点があれば 1。
             float4 _PlanetCellUp;
             float4 _PlanetCellRef;

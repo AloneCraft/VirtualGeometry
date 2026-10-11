@@ -33,7 +33,7 @@ namespace VirtualGeometry.World{
         bool UsesProperties{get;}
 
         /// <summary>
-        /// Cell の draw の値。頂点は Cell の原点(cell.Origin、惑星のローカル座標、Logical 精度)からの相対位置で書かれている。
+        /// Cell の draw の値。頂点は Cell の原点(cell.Origin = 半径 R の球面上の点を cell.HeightShift だけ外向きに持ち上げた点、惑星のローカル座標、Logical 精度)からの相対位置で書かれている。
         /// properties は UsesProperties が true のときだけ渡る。値を作れないときは false(この Cell を描かない)。
         /// </summary>
         bool Describe(in PlanetPlacementFrame frame,in PlanetCellFrame cell,out Matrix4x4 objectToWorld,out Matrix4x4 objectToCull,MaterialPropertyBlock properties);

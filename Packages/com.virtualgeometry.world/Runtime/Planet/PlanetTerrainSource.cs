@@ -21,6 +21,8 @@ namespace VirtualGeometry.World{
         [SerializeField,Min(0.01f)] private float baseWavelength=4000;
         [SerializeField,Range(1,MaximumOctaves)] private int octaves=13;
         [SerializeField] private PlanetHeightSettings heightSettings=PlanetHeightSettings.Default;
+        // 中心の方向の地表の高さの絶対値がこれ以上の Cell は、原点を地表の高さまで持ち上げる(頂点の高さ方向の成分を小さく保つ)。0 なら高さが 0 でない全ての Cell。
+        [SerializeField,Min(0)] private float heightShiftThreshold=1024f;
 
         // 実データの高さの格子(0: 全球、1: 局所の Override)。ある間は、高さに足す(PlanetRaster.hlsl)。
         private PlanetRasterLayer[] rasters=new PlanetRasterLayer[0];
@@ -42,6 +44,21 @@ namespace VirtualGeometry.World{
         public override float Radius=>this.radius;
         public float HeightAmplitude=>this.heightAmplitude;
         public PlanetHeightSettings HeightSettings=>this.heightSettings;
+        /// <summary>原点を持ち上げる高さのしきい値(m)。Cell の生成の前に設定する(有効なまま変えるときは作り直す)。</summary>
+        public float HeightShiftThreshold{
+            get=>this.heightShiftThreshold;
+            set{
+                if(float.IsNaN(value)||value<0f){value=0f;}
+                if(value==this.heightShiftThreshold){return;}
+                this.heightShiftThreshold=value;
+                this.Rebuild();
+            }
+        }
+        /// <summary>原点の高さを求めた回数と、そのうち持ち上げた回数(診断用)。</summary>
+        public int HeightShiftEvaluations{get;private set;}
+        public int HeightShiftApplied{get;private set;}
+        /// <summary>原点の高さを求めるのにかかった CPU 時間の累計(ミリ秒、診断用)。</summary>
+        public float HeightShiftMilliseconds{get;private set;}
         protected override float SelectionAmplitude=>this.heightAmplitude+this.RasterMaximumHeight;
         /// <summary>実データの高さの |最大|(Cell の bounds に足す)。</summary>
         public float RasterMaximumHeight{
@@ -59,6 +76,21 @@ namespace VirtualGeometry.World{
             return this.rasters[0].MipFor(this.Selector.QuadArc(key.Level),this.radius);
         }
         protected override string GeneratorResource=>"VirtualGeometryWorld/PlanetTerrainGenerate";
+
+        // Cell の中心の地表の高さ(quad の長さで帯域制限した、頂点(中心)と同じ式の値)が大きいとき、その高さだけ原点を持ち上げる。
+        // 中心の頂点の高さは、原点を持ち上げたあとの高さ方向の成分 h−H がほぼ 0 になる値。float のまま使う(量子化しない)。
+        protected override bool TryCellHeightShift(in PlanetCellFrame sphereFrame,out float shift){
+            shift=0f;
+            if(this.Selector==null){return true;}
+            this.HeightShiftEvaluations++;
+            long start=System.Diagnostics.Stopwatch.GetTimestamp();
+            bool evaluated=this.TryHeight(in sphereFrame,Vector3.zero,this.Selector.QuadArc(sphereFrame.Key.Level),out float height);
+            this.HeightShiftMilliseconds+=(float)((System.Diagnostics.Stopwatch.GetTimestamp()-start)*1000.0/System.Diagnostics.Stopwatch.Frequency);
+            if(!evaluated||float.IsNaN(height)||float.IsInfinity(height)||Mathf.Abs(height)<this.heightShiftThreshold){return true;}
+            shift=height;
+            this.HeightShiftApplied++;
+            return true;
+        }
 
         /// <summary>検証用。形の設定を変える。有効なまま変えた場合は無効化して作り直す。</summary>
         public void Configure(float radius,float heightAmplitude,int maximumLevel,float targetPixels){
@@ -101,7 +133,7 @@ namespace VirtualGeometry.World{
 
         /// <summary>
         /// 惑星のローカル座標の点 point(Logical)の真下(中心からの方向)の地表の高さ(R からの高さ、帯域制限なし)と、point の地表からの高さを CPU で求める。
-        /// GPU の生成と同じ式(<see cref="PlanetHeightField"/>)で、点を含む Cell の原点からの相対位置で計算する。
+        /// GPU の生成と同じ式(<see cref="PlanetHeightField"/>)で、点を含む Cell の球面上の原点(<see cref="PlanetCellFrame.SphereOrigin"/>。持ち上げた Origin ではない)からの相対位置で計算する。
         /// </summary>
         public bool TrySampleSurface(in LogicalVector3 point,out float height,out float altitude){
             height=0;altitude=0;
@@ -110,8 +142,9 @@ namespace VirtualGeometry.World{
             if(direction==Vector3.zero){return false;}
             PlanetCellKey key=PlanetCellGeometry.KeyAt(direction,Mathf.Min(SampleLevel,this.MaximumLevel));
             PlanetCellFrame frame=this.Selector.Frame(in key);
-            if(!LogicalVector3.TrySubtract(in point,frame.Origin,out LogicalVector3 difference)||!difference.TryToFloat3(out Unity.Mathematics.float3 offset)){return false;}
-            Vector3 sphere=PlanetCellGeometry.SphereOffset(frame.ApproximateOrigin/this.radius,(Vector3)offset/this.radius,this.radius,out Vector3 _);
+            // 高さ場は半径 R の球面上の原点(SphereOrigin)から測る(持ち上げた原点ではない)。
+            if(!LogicalVector3.TrySubtract(in point,frame.SphereOrigin,out LogicalVector3 difference)||!difference.TryToFloat3(out Unity.Mathematics.float3 offset)){return false;}
+            Vector3 sphere=PlanetCellGeometry.SphereOffset(frame.ApproximateSphereOrigin/this.radius,(Vector3)offset/this.radius,this.radius,out Vector3 _);
             if(!this.TryProceduralHeight(in frame,sphere,0f,out height)){return false;}
             // 実データの高さは、点自身の方向から倍精度で直接求める(Cell の原点からの差 sphere は float で、大きな Cell では 2cm ほど誤差が出る)。
             if(this.rasters.Length>0){
@@ -140,12 +173,21 @@ namespace VirtualGeometry.World{
             return true;
         }
 
-        /// <summary>Cell の原点からの相対位置 sphere(球面上の点)の高さ(quadLength で帯域制限。0 なら全部)。</summary>
+        /// <summary>Cell の(球面上の)原点 <see cref="PlanetCellFrame.SphereOrigin"/> からの相対位置 sphere(球面上の点)の高さ(R からの高さ。quadLength で帯域制限。0 なら全部)。</summary>
         public bool TryHeight(in PlanetCellFrame frame,Vector3 sphere,float quadLength,out float height){
+            return this.TryHeight(in frame,sphere,quadLength,0f,out height);
+        }
+
+        /// <summary>
+        /// 同じで、高さから shift(Cell の原点を持ち上げた距離)を引いた値を返す(GPU の PlanetHeight と同じ式。実データは補間の前に引く)。
+        /// </summary>
+        public bool TryHeight(in PlanetCellFrame frame,Vector3 sphere,float quadLength,float shift,out float height){
             if(!this.TryProceduralHeight(in frame,sphere,quadLength,out height)){return false;}
             if(this.rasters.Length>0){
                 if(!this.TryRasterCells(in frame,quadLength)){return false;}
-                height+=this.RasterHeight(sphere);
+                height+=this.RasterHeight(sphere,shift);
+            }else{
+                height-=shift;
             }
             return true;
         }
@@ -163,32 +205,32 @@ namespace VirtualGeometry.World{
         private bool TryRasterCells(in PlanetCellFrame frame,float quadLength){
             if(this.rasterCacheValid&&this.rasterCacheKey.Equals(frame.Key)&&this.rasterCacheQuad==quadLength){return true;}
             for(int i=0;i<this.rasters.Length;i++){
-                if(!this.rasters[i].TryCell(frame.Origin,quadLength,this.radius,out this.rasterCells[i])){return false;}
+                if(!this.rasters[i].TryCell(frame.SphereOrigin,quadLength,this.radius,out this.rasterCells[i])){return false;}
             }
             this.rasterCacheKey=frame.Key;this.rasterCacheQuad=quadLength;this.rasterCacheValid=true;
             return true;
         }
 
-        // 実データの高さ(PlanetRaster.hlsl の PlanetRasterHeight と同じ式)。TryRasterCells の後に呼ぶ。
-        private float RasterHeight(Vector3 sphere){
-            float height=this.rasters[0].Sample(in this.rasterCells[0],sphere,this.radius,out float _);
+        // 実データの高さから shift を引いた値(PlanetRaster.hlsl の PlanetRasterHeight と同じ式)。TryRasterCells の後に呼ぶ。
+        private float RasterHeight(Vector3 sphere,float shift){
+            float height=this.rasters[0].Sample(in this.rasterCells[0],sphere,this.radius,shift,out float _);
             if(this.rasters.Length>1){
-                float regional=this.rasters[1].Sample(in this.rasterCells[1],sphere,this.radius,out float weight);
+                float regional=this.rasters[1].Sample(in this.rasterCells[1],sphere,this.radius,shift,out float weight);
                 height+=(regional-height)*weight;
             }
             return height;
         }
 
         /// <summary>
-        /// 検証用。GPU の生成(PlanetTerrainGenerate.compute)と同じ式で、Cell の格子の (i, j) の地表の点(Cell の原点からの相対位置、帯域制限あり)を CPU で求める。
+        /// 検証用。GPU の生成(PlanetTerrainGenerate.compute)と同じ式で、Cell の格子の (i, j) の地表の点(持ち上げた Cell の原点からの相対位置、帯域制限あり)を CPU で求める。
         /// </summary>
         public bool TryEvaluateVertexForDiagnostics(in PlanetCellKey key,int i,int j,out Vector3 position){
             position=default;
             if(this.Selector==null){return false;}
             PlanetCellFrame frame=this.Selector.Frame(in key);
             Vector3 sphere=PlanetCellGeometry.SpherePoint(in frame,CellQuads,i,j,this.radius,out Vector3 direction);
-            if(!this.TryHeight(in frame,sphere,this.Selector.QuadArc(key.Level),out float height)){return false;}
-            position=sphere+direction*height;
+            if(!this.TryHeight(in frame,sphere,this.Selector.QuadArc(key.Level),frame.HeightShift,out float height)){return false;}
+            position=PlanetCellGeometry.VertexPosition(sphere,direction,height,frame.HeightShift,this.radius);
             return true;
         }
 
@@ -221,7 +263,7 @@ namespace VirtualGeometry.World{
             commands.SetComputeVectorParam(shader,"_HeightBands",new Vector4(height.MountainOctave,height.MountainAmplitude,height.DetailOctave,height.DetailAmplitude));
         }
 
-        /// <summary>PlanetHeight.hlsl の Cell ごとの値(octave の格子の基点)を設定する。</summary>
+        /// <summary>PlanetHeight.hlsl の Cell ごとの値(octave の格子の基点。高さ 0 の球面上の原点 SphereOrigin から求める)を設定する。_HeightShift は基底の生成が設定する。</summary>
         public void BindHeightCell(CommandBuffer commands,ComputeShader shader,in PlanetCellFrame frame){
             if(this.rasters.Length>0&&this.TryRasterCells(in frame,this.Selector.QuadArc(frame.Key.Level))){
                 for(int i=0;i<this.rasters.Length;i++){

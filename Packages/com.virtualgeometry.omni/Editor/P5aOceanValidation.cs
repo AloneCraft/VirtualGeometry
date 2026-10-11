@@ -142,6 +142,7 @@ namespace VirtualGeometry.Omni.Editor{
             terrainSettings.ApplyModifiedPropertiesWithoutUndo();
             terrain.Material=land;
             terrain.Configure(Radius,Height,PlanetLayerSource.GpuMaximumLevel,Target);
+            HeightShiftOverride.Apply(terrain);
             var oceanSettings=new SerializedObject(ocean);
             oceanSettings.FindProperty("poolCapacity").intValue=2048;
             oceanSettings.FindProperty("maximumDrawSlots").intValue=2048;

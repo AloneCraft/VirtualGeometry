@@ -88,7 +88,7 @@ Shader "Omni/RadialBall"
             CBUFFER_END
 
             // Cell ごとの値(MaterialPropertyBlock、PlanetLayerSource.WriteCellProperties)。
-            // _PlanetCellUp: xyz=Cell の原点の外向きの単位方向(object 空間)、w=惑星の半径。
+            // _PlanetCellUp: xyz=Cell の原点の外向きの単位方向(object 空間)、w=Cell の原点の惑星の中心からの距離(半径 + 原点を持ち上げた距離)。
             // _PlanetCellRef: xyz=Cell の原点 − 基準点(Logical で引いたもの)、w=基準点があれば 1。
             float4 _PlanetCellUp;
             float4 _PlanetCellRef;
@@ -199,7 +199,7 @@ Shader "Omni/RadialBall"
                     return;
                 }
 
-                // ボールの中心からの方向(ボールの object 空間 = ボールと一緒に回る)。Cell の原点の方向 × 半径 + Cell の原点からの相対位置。
+                // ボールの中心からの方向(ボールの object 空間 = ボールと一緒に回る)。Cell の原点の方向 × Cell の原点の中心からの距離(半径 + 持ち上げた距離)+ Cell の原点からの相対位置。
                 float3 position = input.positionOS.xyz / max(input.positionOS.w, 1.0e-30f);
                 float3 dir = normalize(_PlanetCellUp.xyz * _PlanetCellUp.w + position);
                 float pentagon;

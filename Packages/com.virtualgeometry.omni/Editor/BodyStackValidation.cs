@@ -109,6 +109,7 @@ namespace VirtualGeometry.Omni.Editor{
             MoonBallSceneBuilder.UsePipeline();
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);
             objects=BodyStackSceneBuilder.Populate(BodyStackSettings.Default);
+            HeightShiftOverride.ApplyToScene();
             camera=objects.Camera;camera.backgroundColor=new Color(1,0,1,1);
             cameraLogical=objects.CameraObject.GetComponent<global::Omni.Logical.Transform>();
             demo=objects.Demo;sources=objects.Sources;
@@ -499,7 +500,7 @@ namespace VirtualGeometry.Omni.Editor{
                 if(!source.TryReadbackCellForDiagnostics(in key,out VirtualGeometryPackedVertex[] vertices,out PlanetCellFrame frame)){continue;}
                 if(!LogicalVector3.TryAdd(transform.LocalPosition,frame.Origin,out LogicalVector3 originWorld)||
                     !LogicalVector3.TrySubtract(in originWorld,in contactWorld,out LogicalVector3 d)||!d.TryToFloat3(out float3 o)){continue;}
-                // Cell の原点は半径 R の球面上の点で、高さは頂点の位置に入っている。接点との距離は、接平面の向き(u、v)だけで測る。
+                // Cell の原点は地表の高さまで持ち上げた点(持ち上げない Cell は半径 R の球面上の点)で、起伏は頂点の位置に入っている。接点との距離は、接平面の向き(u、v)だけで測る。
                 float distance=new Vector2(Vector3.Dot(o,u),Vector3.Dot(o,v)).magnitude;
                 if(distance>0.3f+cellSize){continue;}
                 cells++;

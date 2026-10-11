@@ -97,7 +97,7 @@ Shader "Omni/RadialOcean"
             CBUFFER_END
 
             // Cell ごとの値(MaterialPropertyBlock、PlanetLayerSource.WriteCellProperties)。
-            // _PlanetCellUp: xyz=Cell の原点の外向きの単位方向(object 空間)、w=惑星の半径。_PlanetCellQuad: x=quad の弧長。
+            // _PlanetCellUp: xyz=Cell の原点の外向きの単位方向(object 空間)、w=Cell の原点の惑星の中心からの距離(海の Cell は持ち上げないので半径)。_PlanetCellQuad: x=quad の弧長。
             float4 _PlanetCellUp;
             float4 _PlanetCellQuad;
 

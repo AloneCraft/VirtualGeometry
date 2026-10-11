@@ -5,7 +5,8 @@
 // 頂点の位置は「Cell の原点の緯度経度 + 原点からの差」で表す。原点の画素の位置は CPU が倍精度で整数部(_RasterIndex)と端数(_RasterFraction)に分けて渡し、
 // 頂点ごとの緯度経度の差は、桁落ちしない式で求めた単位方向の差 eps = sphere/R から求める(緯度経度を float の方向から求めると、半径 10^6 m で約 0.1 m に量子化される)。
 // 帯域制限: quad の長さが画素より大きい Cell は、CPU が選んだ mip(_RasterIndex.z)を使う。
-// PlanetCell.hlsl の _Radius を使う(PlanetCell.hlsl を先に include する)。
+// 高さは「高さ − _HeightShift」を返す。texel の値から先に _HeightShift を引いてから補間する(補間した後で引くと、補間結果の float の丸めが高さの桁で残る)。
+// PlanetCell.hlsl の _Radius、_HeightShift を使う(PlanetCell.hlsl を先に include する)。
 
 #define PLANET_RASTER_LAYERS 2
 
@@ -114,19 +115,19 @@ float PlanetRasterLayerSample(int layer,float2 delta,out float weight)
     }
     y0=clamp(y0,0,h-1);
     y1=clamp(y1,0,h-1);
-    float h00=PlanetRasterLoad(layer,x0,y0,index.z);
-    float h10=PlanetRasterLoad(layer,x1,y0,index.z);
-    float h01=PlanetRasterLoad(layer,x0,y1,index.z);
-    float h11=PlanetRasterLoad(layer,x1,y1,index.z);
+    float h00=PlanetRasterLoad(layer,x0,y0,index.z)-_HeightShift;
+    float h10=PlanetRasterLoad(layer,x1,y0,index.z)-_HeightShift;
+    float h01=PlanetRasterLoad(layer,x0,y1,index.z)-_HeightShift;
+    float h11=PlanetRasterLoad(layer,x1,y1,index.z)-_HeightShift;
     return lerp(lerp(h00,h10,fx),lerp(h01,h11,fx),fy);
 }
 
-// 実データの高さ(半径 R からの高さ)。sphere は Cell の原点からの球面上の点の相対位置。
+// 実データの高さ(半径 R からの高さ)から _HeightShift を引いた値。sphere は Cell の(球面上の)原点からの球面上の点の相対位置。
 float PlanetRasterHeight(float3 sphere)
 {
     if(_RasterLayerCount<=0)
     {
-        return 0.0;
+        return -_HeightShift;
     }
     float3 eps=sphere/_Radius;
     float2 delta=PlanetLonLatDelta(_RasterDirection,eps);

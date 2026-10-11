@@ -100,6 +100,64 @@ namespace VirtualGeometry.World.Tests{
         }
 
         [Test]
+        public void TryWithHeightShift(){
+            PlanetCellKey key=PlanetCellKey.Root(2).Child(1).Child(3).Child(0).Child(2);
+            {
+                //半径 1・持ち上げ 0.25 で、|Origin| = 1.25(|Origin|²−1.5625 が 2^-80 未満)。SphereOrigin は持ち上げ前の Origin とビット単位で同じ
+                Assert.That(PlanetCellFrame.TryCreate(in key,LogicalScalar.One,out PlanetCellFrame frame),Is.True);
+                Assert.That(frame.HeightShift,Is.EqualTo(0f));
+                Assert.That(frame.TryWithHeightShift(0.25f,out PlanetCellFrame lifted),Is.True);
+                Assert.That(lifted.HeightShift,Is.EqualTo(0.25f));
+                Assert.That(LogicalVector3.TrySqrLength(lifted.Origin,out LogicalScalar square),Is.True);
+                Assert.That(LogicalScalar.TrySubtract(in square,Scalar(1.5625f),out LogicalScalar error),Is.True);
+                Assert.That(error.TryToDouble(out double value),Is.True);
+                Assert.That(System.Math.Abs(value),Is.LessThan(System.Math.Pow(2,-80)));
+                Assert.That(Distance(lifted.SphereOrigin,frame.Origin),Is.EqualTo(0.0));
+                Assert.That(Distance(frame.SphereOrigin,frame.Origin),Is.EqualTo(0.0),"持ち上げない Cell は Origin == SphereOrigin");
+            }
+            {
+                //月(R=1,737.4km)の起伏 +9 km と −7.3 km、半径 10^20 m の +9 km で、持ち上げた距離が float の値のまま Logical に入り、向きは変わらない
+                foreach(float radius in new[]{1737400f,1e20f}){
+                    foreach(float shift in new[]{9000.0009765625f,-7304.3779296875f,0.001f}){
+                        Assert.That(PlanetCellFrame.TryCreate(in key,Scalar(radius),out PlanetCellFrame frame),Is.True);
+                        Assert.That(frame.TryWithHeightShift(shift,out PlanetCellFrame lifted),Is.True);
+                        // 単位方向 × shift で作るので、R によらず 2^-96 の桁で一致する(Origin·(shift/R) の比で作ると、R=10^20 m で 1e-9 m の誤差が出る)
+                        Assert.That(Distance(lifted.Origin,lifted.SphereOrigin),Is.EqualTo(System.Math.Abs((double)shift)).Within(5e-12),"R="+radius+" shift="+shift);
+                        Assert.That(Distance(lifted.SphereOrigin,frame.SphereOrigin),Is.EqualTo(0.0));
+                        Assert.That(lifted.ApproximateSphereOrigin,Is.EqualTo(frame.ApproximateOrigin));
+                        Assert.That(((lifted.ApproximateOrigin/radius).normalized-(frame.ApproximateOrigin/radius).normalized).magnitude,Is.LessThan(1e-6f),"向きは変わらない");
+                        Assert.That(lifted.HeightShift,Is.EqualTo(shift));
+                        Assert.That(lifted.Key,Is.EqualTo(frame.Key));
+                        Assert.That(lifted.ApproximateTangent,Is.EqualTo(frame.ApproximateTangent));
+                    }
+                }
+            }
+            {
+                //ノイズの格子と波の位相は、高さ 0 の球面の原点で決まる(持ち上げの有無で同じ。持ち上げた原点から求めると、持ち上げが違う隣の Cell と食い違う)
+                Assert.That(PlanetCellFrame.TryCreate(in key,Scalar(1737400f),out PlanetCellFrame frame),Is.True);
+                Assert.That(frame.TryWithHeightShift(8123.5f,out PlanetCellFrame lifted),Is.True);
+                Assert.That(LogicalScalar.TryReciprocal(Scalar(4000f),out LogicalScalar inverse),Is.True);
+                for(int octave=0;octave<20;octave++){
+                    Assert.That(frame.TryNoiseLattice(in inverse,octave,out Vector3Int latticeA,out Vector3 fractionA),Is.True);
+                    Assert.That(lifted.TryNoiseLattice(in inverse,octave,out Vector3Int latticeB,out Vector3 fractionB),Is.True);
+                    Assert.That(latticeB,Is.EqualTo(latticeA),"octave "+octave);
+                    Assert.That(fractionB,Is.EqualTo(fractionA),"octave "+octave);
+                }
+                Assert.That(LogicalScalar.TryReciprocal(Scalar(30f),out LogicalScalar inverseWavelength),Is.True);
+                Assert.That(frame.TryWavePhase(in frame.Direction,in inverseWavelength,out float phaseA),Is.True);
+                Assert.That(lifted.TryWavePhase(in frame.Direction,in inverseWavelength,out float phaseB),Is.True);
+                Assert.That(phaseB,Is.EqualTo(phaseA));
+            }
+            {
+                //有限でない距離は受け付けない
+                Assert.That(PlanetCellFrame.TryCreate(in key,LogicalScalar.One,out PlanetCellFrame frame),Is.True);
+                Assert.That(frame.TryWithHeightShift(float.NaN,out PlanetCellFrame _),Is.False);
+                Assert.That(frame.TryWithHeightShift(float.PositiveInfinity,out PlanetCellFrame _),Is.False);
+                Assert.That(frame.TryWithHeightShift(float.NegativeInfinity,out PlanetCellFrame _),Is.False);
+            }
+        }
+
+        [Test]
         public void TryNoiseLattice(){
             {
                 //格子番号 + 端数は、原点 × 波長の逆数 × 2^octave(小さな惑星では float で確かめられる)
@@ -116,6 +174,14 @@ namespace VirtualGeometry.World.Tests{
                     Assert.That(fraction.x,Is.InRange(0f,1f));Assert.That(fraction.y,Is.InRange(0f,1f));Assert.That(fraction.z,Is.InRange(0f,1f));
                 }
             }
+        }
+
+        // 2 点の距離(m)。
+        private static double Distance(in LogicalVector3 a,in LogicalVector3 b){
+            Assert.That(LogicalVector3.TrySubtract(in a,in b,out LogicalVector3 difference),Is.True);
+            Assert.That(LogicalVector3.TryLength(in difference,out LogicalScalar length),Is.True);
+            Assert.That(length.TryToDouble(out double value),Is.True);
+            return value;
         }
 
         private static LogicalScalar Scalar(float value){

@@ -11,7 +11,7 @@ namespace VirtualGeometry.World{
     /// 惑星の Layer(地形、海など)を、cube-sphere の Cell の実行時生成 cluster で描く共通部分。惑星の中心はこの GameObject の原点。
     /// Cell の選択は <see cref="PlanetCellSelector"/>、頂点の生成は派生クラスの compute(<see cref="GeneratorResource"/>)が行う。
     /// Cell と pool の slot の対応を持ち、pool が足りないときは使っていない Cell を下(葉)から退避する。
-    /// 頂点は Cell の原点(Cell の中心の方向の半径 R の点、惑星のローカル座標)からの相対位置で持ち、Cell ごとに draw する。
+    /// 頂点は Cell の原点(Cell の中心の方向の地表の高さの点、惑星のローカル座標。<see cref="PlanetCellFrame.Origin"/>)からの相対位置で持ち、Cell ごとに draw する。
     /// 惑星を置く空間は <see cref="IPlanetPlacement"/> が決める(OnEnable の時に同じ GameObject にある実装。無い、または無効なら Unity の world 空間)。
     /// Cell の原点と GPU に渡す値は Logical 精度で求める(<see cref="PlanetCellFrame"/>)。頂点の誤差は惑星の大きさではなく Cell の大きさに比例する。
     /// </summary>
@@ -41,6 +41,8 @@ namespace VirtualGeometry.World{
         private Vector4[] actualBounds;
         private bool[] actualValid;
         private int[] slotVersion;
+        // slot の version を世代をまたいで一意にする(OnEnable で作り直しても戻さない)。作り直しの前に発行した readback が、新しい世代の同じ slot の bounds として採用されない。
+        private int versionCounter;
         // slot の Cell の中心の値(原点は惑星のローカル座標、Logical 精度)。頂点は原点からの相対位置。
         private PlanetCellFrame[] cellFrames;
         private LogicalVector3 referencePoint;
@@ -57,7 +59,7 @@ namespace VirtualGeometry.World{
         private readonly List<PlanetCellKey> output=new List<PlanetCellKey>();
         private HashSet<PlanetCellKey> refinedScratch=new HashSet<PlanetCellKey>();
 
-        /// <summary>惑星の半径 R(Cell の原点はこの半径の球面上)。</summary>
+        /// <summary>惑星の半径 R(高さ 0 の球面。Cell の原点はこの球面から <see cref="PlanetCellFrame.HeightShift"/> だけ持ち上げた点)。</summary>
         public abstract float Radius{get;}
         /// <summary>頂点が半径 R から離れうる最大の距離(選択の bounds に含める)。</summary>
         protected abstract float SelectionAmplitude{get;}
@@ -103,7 +105,7 @@ namespace VirtualGeometry.World{
         protected override void OnEnable(){
             base.OnEnable();
             if(this.Layout==null){return;}
-            this.selector=new PlanetCellSelector(this.Radius,this.SelectionAmplitude,CellQuads,Mathf.Min(this.maximumLevel,GpuMaximumLevel),this.skirtQuads){
+            this.selector=new PlanetCellSelector(this.Radius,this.SelectionAmplitude,CellQuads,Mathf.Min(this.maximumLevel,GpuMaximumLevel),this.skirtQuads,this.ProvideHeightShift){
                 TargetPixels=this.targetPixels,Hysteresis=this.hysteresis,
             };
             this.keyBySlot=new PlanetCellKey[this.PoolCapacity];this.used=new bool[this.PoolCapacity];this.touchedFrame=new int[this.PoolCapacity];
@@ -179,6 +181,24 @@ namespace VirtualGeometry.World{
             this.LastPropertiesMilliseconds=(float)(propertyTicks*toMilliseconds);
         }
 
+        // 生成済みの Cell は、生成に使った値を返す(選択の frame と slot の frame が、常に同じ原点になる)。まだなら派生クラスに聞く。
+        private bool ProvideHeightShift(in PlanetCellFrame sphereFrame,out float shift){
+            if(this.slotByKey.TryGetValue(sphereFrame.Key,out int slot)){
+                shift=this.cellFrames[slot].HeightShift;
+                return true;
+            }
+            return this.TryCellHeightShift(in sphereFrame,out shift);
+        }
+
+        /// <summary>
+        /// Cell の原点を半径 R の球面から外向きに持ち上げる高さ(m)。頂点は持ち上げた原点からの相対位置になり、起伏の大きな天体でも高さ方向の成分が小さく保たれる。
+        /// 同じ Cell には常に同じ値を返すこと。既定は 0(持ち上げない)。sphereFrame は持ち上げていない Cell の値(<see cref="PlanetCellFrame.SphereOrigin"/> など)。
+        /// </summary>
+        protected virtual bool TryCellHeightShift(in PlanetCellFrame sphereFrame,out float shift){
+            shift=0f;
+            return true;
+        }
+
         /// <summary>
         /// Cell ごとの MaterialPropertyBlock を作るか(配置が MaterialPropertyBlock を使わなくても作る)。既定は true。
         /// fragment の shader が使う値は <see cref="WriteCellProperties"/> が書く。
@@ -187,14 +207,14 @@ namespace VirtualGeometry.World{
 
         /// <summary>
         /// Cell の draw の MaterialPropertyBlock に、この Layer の shader が使う値を書く(配置が書く値の後に呼ぶ)。
-        /// _PlanetCellUp: xyz=Cell の原点の外向きの単位方向(object 空間)、w=惑星の半径。
+        /// _PlanetCellUp: xyz=Cell の原点の外向きの単位方向(object 空間)、w=Cell の原点の惑星の中心からの距離(R+HeightShift)。
         /// _PlanetCellQuad: x=この階層の quad の弧長。
         /// _PlanetCellRef: xyz=Cell の原点 − 基準点(<see cref="SetReferencePoint"/>)を Logical で引いてから float にしたもの(object 空間)、w=基準点があれば 1。
         /// 派生クラスは base を呼んでから、自分の値を足す。
         /// </summary>
         protected virtual void WriteCellProperties(MaterialPropertyBlock block,int slot,in PlanetCellFrame frame){
             Vector3 up=frame.ApproximateOrigin.normalized;
-            block.SetVector(PlanetCellUpId,new Vector4(up.x,up.y,up.z,this.Radius));
+            block.SetVector(PlanetCellUpId,new Vector4(up.x,up.y,up.z,this.Radius+frame.HeightShift));
             block.SetVector(PlanetCellQuadId,new Vector4(this.selector.QuadArc(frame.Key.Level),0,0,0));
             Vector4 reference=Vector4.zero;
             if(this.hasReference&&LogicalVector3.TrySubtract(frame.Origin,this.referencePoint,out LogicalVector3 difference)&&difference.TryToFloat3(out Unity.Mathematics.float3 value)){
@@ -342,7 +362,7 @@ namespace VirtualGeometry.World{
                     }
                 }
                 this.slotByKey.Add(key,slot);this.keyBySlot[slot]=key;this.used[slot]=true;this.touchedFrame[slot]=Time.frameCount;
-                this.actualValid[slot]=false;this.slotVersion[slot]++;
+                this.actualValid[slot]=false;this.slotVersion[slot]=++this.versionCounter;
                 this.cellFrames[slot]=frame;
                 this.RequestGeneration(slot);
             }
@@ -401,6 +421,7 @@ namespace VirtualGeometry.World{
                 commands.SetComputeIntParam(shader,"_Face",key.Face);
                 commands.SetComputeFloatParam(shader,"_QuadAngle",Mathf.PI*0.5f*MathF.Pow(2f,-key.Level)/layout.CellQuads);
                 commands.SetComputeVectorParam(shader,"_CenterTangent",frame.ApproximateTangent);
+                commands.SetComputeFloatParam(shader,"_HeightShift",frame.HeightShift);
                 commands.SetComputeVectorParam(shader,"_FaceRange",new Vector4(s0,t0,size,0));
                 commands.SetComputeFloatParam(shader,"_SkirtDepth",this.selector.SkirtDepth(key.Level));
                 commands.SetComputeFloatParam(shader,"_QuadLength",this.selector.QuadArc(key.Level));

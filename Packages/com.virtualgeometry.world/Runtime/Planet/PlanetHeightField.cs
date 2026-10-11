@@ -39,7 +39,7 @@ namespace VirtualGeometry.World{
 
     /// <summary>
     /// 手続き生成の惑星の高さの Field。GPU の PlanetHeight.hlsl と同じ式(片方を変えたらもう片方も変える)。
-    /// 位置は Cell の原点からの相対位置 sphere(球面上の点)。高さ = Hmax·clamp(大陸 + 山 + 細部, −1, 1)。
+    /// 位置は Cell の球面上の原点(<see cref="PlanetCellFrame.SphereOrigin"/>)からの相対位置 sphere(球面上の点)。高さ = Hmax·clamp(大陸 + 山 + 細部, −1, 1)。
     /// 帯域制限: 波長が 2·quadLength より短い octave は足さない(quadLength=0 なら全部)。
     /// 落とす octave の振幅は波長に比例して小さい(振幅÷波長が一定)ので、階層をまたぐ差は quad の数 % にとどまる。
     /// </summary>

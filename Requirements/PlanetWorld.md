@@ -404,7 +404,7 @@ cull は供給元が決めた空間(`VirtualGeometryClusterCullSpace`。既定�
 
 ### 惑星の配置
 
-`PlanetTerrainSource` は Cell の頂点を、Cell の原点(Cell の中心の方向の半径 R の点、惑星のローカル座標)からの相対位置で生成し、Cell ごとに draw する。
+`PlanetTerrainSource` は Cell の頂点を、Cell の原点(Cell の中心の方向の地表の高さの点 = 半径 R の球面上の点を `HeightShift` だけ外向きに持ち上げた点、惑星のローカル座標。§19)からの相対位置で生成し、Cell ごとに draw する。
 
 惑星を置く空間は `IPlanetPlacement` が決める。
 
@@ -459,7 +459,8 @@ Cell の中心の値を CPU が Logical 精度で求め(`PlanetCellFrame`)、GPU
   **最後の割り算は Omni の `Scalar.TryDivide` を使わず、BigInteger で割る**(`PlanetCellFrame.TryDivideExact`)。Omni の除算は、被除数の上位 2 語が除数の上位語の 2^32 倍以上になる(Knuth の D の推定商がクランプされる)とき、
   補正ループの比較 `(estimateRemainder << 32)` が溢れて商の桁を 1 つ小さくし、結果が最大で 2^-64 ほど小さくなる(再現: 被除数の raw = 22766045805726834331774088019、除数の raw = 75886816336951627176545601601 で、商が 4,484,077,516 raw 小さい)。
   深い階層では隣り合う Cell の正接の差が 2^-64 に近く、この条件が繰り返し当たるので、半径 10^19 m で隣の Cell が 0.5m、10^20 m で 5m ずれて、地面に穴と重なりができた
-- Cell の原点 = R·p0/|p0|(p0=n+x0·u+y0·v)。R を掛けるのは正規化の後(R² を作らない)
+- 球面上の原点 `SphereOrigin` = R·p0/|p0|(p0=n+x0·u+y0·v)。R を掛けるのは正規化の後(R² を作らない)。
+  Cell の原点 `Origin` は、これを地表の高さ `HeightShift` だけ外向きに持ち上げた点(§19。持ち上げない Cell は `Origin == SphereOrigin`)
 - ノイズの格子は octave ごとに、原点の格子番号(2^32 で巡回)と端数を CPU が求め、GPU は端数 + 相対位置の格子だけを float で扱う
 - GPU は、頂点の正接の差 tan(a0+δ)−tan(a0) を x0 と δ から差だけで求め(小さな δ は級数)、球面上の点の差 R·(p/|p|−p0/|p0|) を、大きな値どうしの引き算をしない形で求める
 - 選択の解析的な bounds は、階層 14 以上では中心の方向を `PlanetCellFrame` で求める(`PlanetCellSelector.FrameBounds`)。
@@ -505,7 +506,7 @@ Cell の中心の値を CPU が Logical 精度で求め(`PlanetCellFrame`)、GPU
 
 `PlanetSelectionView` はカメラの位置を惑星のローカル座標の Logical で持つ。
 
-Cell の bounds の中心は Cell の原点(`PlanetCellFrame.Origin`)からの相対位置で持ち、カメラとの差を Logical で取ってから float にする(`PlanetCellSelector.FromCamera`)。
+Cell の bounds の中心は Cell の原点(`PlanetCellFrame.Origin`、持ち上げた原点。§19)からの相対位置で持ち、カメラとの差を Logical で取ってから float にする(`PlanetCellSelector.FromCamera`)。
 
 地平線の判定に使うカメラの高さ(|カメラ|−R)も Logical で求める(`PlanetSelectionView.CameraAltitude`)。
 
@@ -795,16 +796,68 @@ Omni の COSMIC-PRECISION-001(月の面がボールの縁を越える)に当た�
 - 格子の範囲: LOLA の最小 −8,982 m(経度 −172.5°、緯度 −70.3°)、最大 +10,686 m(経度 −158.7°、緯度 +5.4°)。1 画素 1,895 m、mip 7 段。SLDEM は 1 画素 59.2 m
 - CPU の地表の高さと、方向から直接求めた双線形補間(全球 + 局所の重み付き)の差: 3,000 点(局所の範囲の中 1,000 点を含む)で最大 0.24 mm(局所 0.03 mm)
 - GPU が生成した頂点と、CPU の式の差(camera に近い 12 Cell、4 か所: SLDEM の中心、静かの海の周り、ティコの周り、南極エイトケン盆地の近く):
-  階層 14〜26 で最大 1.6 mm(高さ −7 km 付近の float の刻み約 1 mm)、SLDEM の中心では最大 0.18 mm。粗い Cell(階層 2、一辺約 680 km)は 3.4 m(Cell の大きさの 5×10^-6。原点からの差の float の丸めが位置に約 1 m の誤差を作る。許す差は 2 mm + Cell の大きさの 1.5×10^-5)
-- 1 quad が約 1 mm の Cell(地表 0.17m の視点で最も近い Cell)の頂点の高さの 2 階差分: 最大 1.5 mm(0.06 mm〜1.5 mm、高さが大きい所ほど大きい)で、方向の量子化の階段(傾き 0.1 で 1e-2 m 以上)は無い
+  階層 14〜26 で最大 0.18 mm(SLDEM の中心。高さ約 −720 m で原点を持ち上げない Cell なので、float の刻み 61 µm の数倍)、原点を持ち上げた他の 3 か所(高さ −1.9〜−7.3 km)は最大 43 µm(§19)。
+  粗い Cell(階層 2、一辺約 680 km)は 3.4 m(Cell の大きさの 5×10^-6。原点からの差の float の丸めが位置に約 1 m の誤差を作る。許す差は階層 13 以下で 2 mm + Cell の大きさの 1.5×10^-5、階層 14 以上で 0.3 mm + Cell の大きさの 10^-6)
+- 1 quad が約 1 mm の Cell(地表 0.17m の視点の真下の Cell)の頂点の高さの 2 階差分: 最大 0.061 mm(SLDEM の中心。他の 3 か所は 0.003〜0.036 mm)で、方向の量子化の階段(傾き 0.1 で 1e-2 m 以上)は無い。許すのは 0.2 mm
 - 月全体の画像(高さ 2.5R)で穴 0。上空 150 km から斜めに見て、クレーターの地形が出る(`TestResults/Planet/RealMoon` の画像で確認)
-- 世界パッケージのテスト 25 本(`PlanetRasterLayerTests` を含む)合格。テストは、格子の座標の規約、緯度経度の差、Cell の原点 + 差の補間と方向からの直接の補間の一致(粗い Cell から 1mm まで)、1mm 間隔の点列の高さの差(傾きの大きい格子)、mip の平均、局所の重みを見る
+- 世界パッケージのテスト 27 本(`PlanetRasterLayerTests`、`PlanetCellFrameTests.TryWithHeightShift`、`PlanetCellSelectorTests.Frame` を含む)合格。テストは、格子の座標の規約、緯度経度の差、Cell の原点 + 差の補間と方向からの直接の補間の一致(粗い Cell から 1mm まで)、1mm 間隔の点列の高さの差(傾きの大きい格子)、mip の平均、局所の重みを見る
 
 ### 限界
 
 - **緯度経度の格子の極の特異性は直していない**。極の近く(|緯度| > 75°)は、経度が不安定で、GPU と CPU の高さが大きいときで約 90 m 違う。粗い Cell の GPU/CPU の照合から外してある。緯度 ±90° の真上の画像と、極の近くの 1 mm の確認はしていない(極では、極座標の格子が要る)
-- **頂点の位置の float の刻み**: Cell の原点は半径 R の球面上で、頂点は原点から高さ方向に h だけ離れた float の位置なので、|h| が 4 km で刻み 0.5 mm、9 km で 1 mm。`1mm の精度` の限界に当たる。直すには、Cell の原点を、その点の地表の高さ h0 だけ持ち上げた点にし、頂点を h − h0 で持つ(Cell の frame・選択の bounds・配置を変える)
+- 頂点の位置の float の刻みは、Cell の原点の持ち上げ(§19)で解消した。残る限界は §19
 - 手続きの項による「データの帯域より上の増幅」(§2)は、この検証では使っていない(手続きの高さ 0、実データだけ)。仕組みは既存の octave の帯域制限で、実データの Nyquist より上の波長だけを足す設定にするだけ。実データ + 増幅の確認と、増幅の振幅を実データの粗さから決める方法は未実施
 - 「Field の供給元の interface」(格子以外の供給元)は作っていない。いまは全球 + 局所の 2 枚の格子だけ
 - 色(LROC のアルベド)は未実施。近くで色を 4,096 画素の画像から求めると、色の位置も同じ量子化(約 0.1 m)の問題が出るので、高さと同じ原点 + 差の方式が要る
 - 視点の高さの降下(高度 150 km → 0.17 m)で、pool(4096)の退避が 17,554 回起きた(`starved` 0、設定エラーなし)
+
+## 19. Cell の原点の持ち上げ(起伏の大きな天体の頂点の精度)
+
+### 方式
+
+頂点の高さ方向の成分が地形の高さ h そのものだと、float の刻みは |h| が 4 km で 0.5 mm、9 km で 1 mm になり、実データの月(高さ −9.0 km〜+10.7 km)で `1mm の精度` を超えた。
+Cell の原点を、Cell の中心の方向の地表の高さ H だけ半径 R の球面から持ち上げ、頂点を (h − H) で持つ。Cell の中の起伏だけが残るので、高さ方向の成分は Cell の大きさと勾配のぶんになる。
+
+- `PlanetCellFrame`:
+  - `Origin` = `SphereOrigin` + `HeightShift`·`Direction`(Logical。単位方向 × H で作り、`Origin·(H/R)` の比は使わない。R=10^20 m でも固定小数点の絶対精度 2^-96 のまま足せる)
+  - `SphereOrigin`: 高さ 0 の球面上の点(持ち上げる前の値)
+  - `HeightShift`: float の H。GPU にも同じ値を渡す(float は Logical に正確に変換でき、CPU と GPU で同じ値になる)。持ち上げない Cell は 0 で、`Origin == SphereOrigin`
+- **`SphereOrigin` から求めるもの**(高さ 0 の球面で定義される値): ノイズの格子の基点(`TryNoiseLattice`)、波の位相(`TryWavePhase`)、実データの方向(`PlanetRasterLayer.TryCell`)、`TrySampleSurface` の点との差。
+  持ち上げた原点から求めると、持ち上げ量が違う隣の Cell と高さ場が食い違い、継ぎ目が割れる(テスト `PlanetCellFrameTests.TryWithHeightShift` が、持ち上げの有無で格子・位相が同じことを見る)
+- **`Origin` から求めるもの**(頂点の基準): カメラとの差(`FromCamera`)、bounds の中心、`IPlanetPlacement.Describe`(描画行列、Omni の物体の位置)、`_PlanetCellRef`、頂点を読み戻して絶対位置を作る検証
+- **H の決め方**: `PlanetTerrainSource.TryCellHeightShift` が Cell の中心の頂点の高さ(quad の長さで帯域制限した高さ。手続き + 実データ)を評価し、|高さ| ≥ `HeightShiftThreshold`(既定 1,024 m)のとき H = その高さ。float のまま使う(量子化しない)。
+  有限でない、|H| ≥ R は 0。H は Selector の frame が最初に作られるとき(Cell の割り当て、または `TrySampleSurface` などの問い合わせ)に決めて覚える。`TryCellHeightShift` は同じ Cell に同じ値を返す前提。
+  `PlanetLayerSource` は生成済みの Cell には slot の frame の値を返すので、Selector の frame の cache を捨てても、選択の frame と slot の frame は常に同じ原点になる。海の Cell は 0
+- **頂点**: position = sphere + sphere·(H/R) + direction·(h − H)(`PlanetCellGeometry.VertexPosition`、GPU は `PlanetCellVertex`)。sphere は `SphereOrigin` からの球面上の相対位置、direction は頂点の単位方向。
+  (R+h)n − (R+H)u = (R+H)(n−u) + (h−H)n から導いた恒等式で、H によらず P = Origin + position = (R+h)·n
+- **h − H は丸めの前に引く**: 実データは texel の段階で引き(`PlanetRaster.hlsl`。補間した後で引くと、補間結果の float の丸めが高さの桁で残る)、実データが無いときは `−H` を返す。手続きの項は `clamp(total)·A` に足す。CPU は `PlanetRasterLayer.Sample(…, shift, …)` が、GPU と同じく texel から先に(倍精度で)引いてから補間し、float にする
+- 選択の bounds: `FrameBounds` の offset は direction·(−skirt/2 − H)。`SampledBounds` は `ApproximateOrigin` との差。読み戻した bounds は頂点の基準(持ち上げた原点)のまま
+- `_PlanetCellUp.w` = R + H(`RadialBall` は dir = normalize(up·w + position) で使う)
+- 海(`PlanetOceanSource`)は H = 0。水深は絶対の高さで、`PlanetOceanGenerate.compute` は `_HeightShift` = 0 の Cell で `PlanetHeight` を呼ぶ
+- 検証のコマンドライン: `-heightShiftThreshold <m>`(`HeightShiftOverride`)。0 は高さが 0 でない全ての Cell を持ち上げ(持ち上げの読み手の直し忘れを、振幅の小さい検証でも H≠0 で通して見つける)、1e9 は持ち上げない(持ち上げ前の挙動の再現)
+
+### 確認(2026-10-11)
+
+- 世界パッケージのテスト 27 本合格。
+- `RealMoonValidation.Run`、持ち上げなし(`-heightShiftThreshold 1e9`): 読み戻した全頂点(位置・法線)の FNV ハッシュ 17 件が、持ち上げを入れる前(基準)とビット単位で同じ。evictions も同じ 17,554 回。GPU・CPU・shader の変更が、H = 0 のとき挙動を変えない
+- 同、持ち上げあり(既定):
+  - GPU と CPU の頂点の差(階層 14〜26、camera に近い 12 Cell): −7.3 km の地点 1.64 mm → 2.3 µm(地表 0.17 m)、−2.9 km の地点 0.55 mm → 14 µm、−1.9 km の地点 0.41 mm → 1.5 µm。上空 1 km の視点でも最大 43 µm
+  - 1 quad が約 1 mm の Cell の頂点の高さの 2 階差分: −7.3 km で 1.46 mm → 0.0068 mm、−2.8 km で 0.98 mm → 0.036 mm、−1.9 km で 0.37 mm → 0.003 mm
+  - 高さ約 −720 m の SLDEM の中心は H = 0(しきい値未満)のまま不変(0.061 mm は float の刻み 61 µm)
+- 検証の許容値を実測の 2〜10 倍へ締めた(`CheckGpu` は階層 14 以上で 0.3 mm + Cell の大きさの 10^-6、`CheckMillimeter` は 2 階差分 0.2 mm)。持ち上げなしの実行は、この許容値で失敗する(修正前の挙動で不合格、修正後に合格)
+- 回帰: `P2`、`P2Large`、`P4b`、`P4bEarth`、`P5a`、`MoonBall`、`GiantBall`、`BodyStack`、`BodyStackCells` を、既定と `-heightShiftThreshold 0`(全 Cell を持ち上げる)の両方で実行し、すべて PASSED。
+  既定では、振幅が 1,024 m 未満の検証は H = 0 のままで、`P2`・`P5a`・`MoonBall` の報告は持ち上げ前と同じ。
+  振幅 3,000 m の `P4b`、`P4bEarth`、`P2Large` は一部の Cell で H ≠ 0 になり、`P4b` の `maxErrorPerAllowed` が 0.262 → 0.147(`P4bEarth` は 0.548 → 0.46)に下がり、`P2Large` は Standard との色の差の画素数が数 % 動いた(輪郭の差は 0 のまま)。
+  全 Cell を持ち上げた実行では、画素数・接点の隙間などが ±1 画素・数 µm 動く(float の丸めの違い)が、合否の基準は全て満たす
+
+### 限界
+
+- **手続きだけの大振幅の項** `clamp(total)·A` の float の丸めは、H を引いても残る(A = 8 km で 0.25〜0.5 mm)。実データの月のように、振幅を実データに任せる使い方では出ない
+- **CPU の地表の高さ**(`TrySampleSurface`。降下カメラの地面の制限、ボールの接点)は float の高さを返す(9 km で 0.98 mm に量子化)。頂点が直っても、高起伏の地点の接点の置き方は、float の刻みから見積もって最大 0.5 mm 残る(未測定)。高さを double か Logical でも返す経路は未実施
+- 粗い Cell(階層 2 で 3.4 m)の GPU・CPU の差(原点からの差 eps の float の丸め)、極の近く(|緯度| > 75°)、float の `_CenterTangent` は別の原因で残る
+- 持ち上げ量の評価の時間(`RealMoonValidation` の report の `height shift:` の行): 高度 150 km から 0.17 m までの降下 4 か所で、評価 23,967 回(持ち上げた Cell は 17,782 回)、累計 330 ms、1 回 13.7 µs(Editor、batchmode)。
+  `BodyStack` の timing は、持ち上げ前後の差を比べていない(振幅が小さく H = 0 のままの検証で、機械の負荷により ±数十 % 揺れた)
+- `TryCellHeightShift` の評価結果は Cell ごとに frame に入れて覚える(Selector の frame の cache は 65,536 件で捨てるが、生成済みの Cell は slot の frame の値を返すので変わらない)。`HeightShiftThreshold` を有効なまま変えると作り直す
+- 高起伏の検証は `LocalData/OmniDemo`(git 管理外)の実データを使う。データが無い環境では走らない(合成の高起伏の検証は未作成)
+- 頂点の FNV ハッシュ(`RealMoonValidation` の report の `vertexHash=`)は、持ち上げ前と持ち上げなし(`-heightShiftThreshold 1e9`)を、report を並べて手で比べた。基準値を記録して自動で比べる仕組みは無い(ハッシュは GPU とドライバーで変わる)
+- `RadialBall` の `_PlanetCellUp.w = R + H` は、起伏のあるボールで H ≠ 0 になる経路を通した検証が無い(検証のボールは起伏 0 で、H = 0)。月の頂点と描画行列・`_PlanetCellRef` は H ≠ 0 で通した(`MoonBall`、`BodyStack` を `-heightShiftThreshold 0` で実行)

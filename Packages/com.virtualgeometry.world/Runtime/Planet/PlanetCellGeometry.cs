@@ -2,7 +2,8 @@ using UnityEngine;
 
 namespace VirtualGeometry.World{
     /// <summary>
-    /// Cell の格子の、Cell の原点からの相対位置を求める CPU の部品。GPU の PlanetCell.hlsl と同じ式(片方を変えたらもう片方も変える)。
+    /// Cell の格子の、Cell の球面上の原点(<see cref="PlanetCellFrame.SphereOrigin"/>)からの相対位置を求める CPU の部品。GPU の PlanetCell.hlsl と同じ式(片方を変えたらもう片方も変える)。
+    /// 頂点の位置は、持ち上げた原点(<see cref="PlanetCellFrame.Origin"/>)からの相対位置で、<see cref="VertexPosition"/> が求める。
     /// </summary>
     public static class PlanetCellGeometry{
         /// <summary>tan(a0+δ)−tan(a0) を、tan(a0)=x0 と δ から差だけで求める。小さな δ は級数。</summary>
@@ -25,7 +26,7 @@ namespace VirtualGeometry.World{
             return (d/l-p0*((2f*Vector3.Dot(p0,d)+Vector3.Dot(d,d))/(l*l0*(l0+l))))*radius;
         }
 
-        /// <summary>Cell の格子の (a, b) の、半径 radius の球面上の点(Cell の原点からの相対位置)と単位方向(GPU の SpherePoint)。</summary>
+        /// <summary>Cell の格子の (a, b) の、半径 radius の球面上の点(球面上の原点 SphereOrigin からの相対位置。持ち上げた Origin からではない)と単位方向(GPU の SpherePoint)。</summary>
         public static Vector3 SpherePoint(in PlanetCellFrame frame,int cellQuads,float a,float b,float radius,out Vector3 direction){
             PlanetCellKey key=frame.Key;
             float quadAngle=Mathf.PI*0.5f*System.MathF.Pow(2f,-key.Level)/cellQuads;
@@ -36,6 +37,14 @@ namespace VirtualGeometry.World{
             Vector3 n=CubeSphere.Normal(key.Face);Vector3 u=CubeSphere.U(key.Face);Vector3 v=CubeSphere.V(key.Face);
             Vector3 p0=n+tangent.x*u+tangent.y*v;
             return SphereOffset(p0,dx*u+dy*v,radius,out direction);
+        }
+
+        /// <summary>
+        /// 頂点の位置(持ち上げた Cell の原点からの相対位置)。sphere は SpherePoint の出力、height は「高さ − shift」(丸めの前に引いた値)。GPU の PlanetCellVertex と同じ式。
+        /// (R+h)n − (R+H)u = sphere·(1+H/R) + (h−H)·n。shift=0 なら sphere + direction·height。
+        /// </summary>
+        public static Vector3 VertexPosition(Vector3 sphere,Vector3 direction,float height,float shift,float radius){
+            return sphere+sphere*(shift/radius)+direction*height;
         }
 
         /// <summary>単位方向 direction を含む、階層 level の Cell(面の座標の float で探すので、level は 20 程度まで)。</summary>

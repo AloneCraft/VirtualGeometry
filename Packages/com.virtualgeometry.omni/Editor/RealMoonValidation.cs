@@ -17,7 +17,7 @@ using LogicalVector3=Omni.Logical.Vector3;
 namespace VirtualGeometry.Omni.Editor{
     /// <summary>
     /// 月の実データ(LOLA 全球標高と、0N/0E の SLDEM2015 の局所標高。Omni のデモのデータをコピーした LocalData/OmniDemo、git 管理外)で月を描く検証。
-    /// - 格子の統計と、CPU の高さ(Cell の原点 + 差)が、方向から直接求めた双線形補間と一致すること(全球と、局所の重み付きの両方)
+    /// - 格子の統計と、CPU の高さ(Cell の球面上の原点 + 差)が、方向から直接求めた双線形補間と一致すること(全球と、局所の重み付きの両方)
     /// - GPU が生成した頂点が、CPU の式(PlanetRasterLayer.Sample)と一致すること
     /// - 1mm の Cell の頂点の高さの 2 階差分が、方向の量子化(約 0.1 m)の階段を持たないこと
     /// - 画像(月全体、地表の近く、SLDEM の中心の地上)と、月全体で穴が無いこと
@@ -31,6 +31,8 @@ namespace VirtualGeometry.Omni.Editor{
         private const int Width=640;
         private const int ImageHeight=480;
         private const int ConvergeLimit=900;
+        // この階層以上の Cell を、頂点の精度の厳しい許容値で比べる(原点を持ち上げた Cell。持ち上げない |高さ| < 1 km の Cell も、float の刻みは 61 µm 以下)。
+        private const int LiftedLevel=14;
         private static readonly Color32 Background=new Color32(255,0,255,255);
 
         private static string results;
@@ -107,6 +109,8 @@ namespace VirtualGeometry.Omni.Editor{
             body.AddComponent<OmniPlanetPlacement>();
             // 手続きの高さは 0(実データだけ)。階層は 1 quad が 1mm になる 28 まで。
             MoonBallSceneBuilder.Configure(moon,(float)MoonRadius,0f,3800f,1,32,4096,64,true);
+            HeightShiftOverride.Apply(moon);
+            report.Add("heightShiftThreshold: "+HeightShiftOverride.Describe()+" (component "+moon.HeightShiftThreshold.ToString("G",CultureInfo.InvariantCulture)+")");
             moon.Material=AssetDatabase.LoadAssetAtPath<Material>(MoonBallSceneBuilder.MoonMaterialPath);
             moon.SetRasters(globalLayer,regionalLayer);
             body.SetActive(true);
@@ -215,6 +219,10 @@ namespace VirtualGeometry.Omni.Editor{
                 CheckMillimeter(name,site[0],site[1]);
             }
             report.Add("pool: used="+moon.UsedSlots+"/"+moon.PoolCapacity+" evictions="+moon.Evictions+" starved="+moon.StarvedRequests+" lastError="+(moon.LastError??"(none)"));
+            float averageMicroseconds=0f;
+            if(moon.HeightShiftEvaluations>0){averageMicroseconds=moon.HeightShiftMilliseconds*1000f/moon.HeightShiftEvaluations;}
+            report.Add("height shift: evaluations="+moon.HeightShiftEvaluations+" applied="+moon.HeightShiftApplied+" totalMilliseconds="+moon.HeightShiftMilliseconds.ToString("F1",CultureInfo.InvariantCulture)+
+                " average="+averageMicroseconds.ToString("F1",CultureInfo.InvariantCulture)+"us/evaluation");
             if(moon.LastError!=null){failures.Add("設定エラー: "+moon.LastError);}
         }
 
@@ -282,6 +290,8 @@ namespace VirtualGeometry.Omni.Editor{
         private static void CheckGpu(string name,float nearLimit){
             int cells=0;double worst=0;PlanetCellKey worstKey=default;int side=PlanetLayerSource.CellQuads+1;
             double worstVertexError=0;string worstDetail="";
+            // 読み戻した全頂点(位置・法線)の FNV ハッシュ。頂点の生成を変えない変更で、ビット単位で変わっていないことを確かめる。
+            uint hash=2166136261u;
             var byLevel=new SortedDictionary<int,double>();
             var order=new List<KeyValuePair<float,PlanetCellKey>>();
             foreach(PlanetCellKey key in moon.LastSelected){
@@ -300,6 +310,7 @@ namespace VirtualGeometry.Omni.Editor{
                 PlanetCellKey key=order[n].Value;
                 if(!moon.TryReadbackCellForDiagnostics(in key,out VirtualGeometryPackedVertex[] vertices,out PlanetCellFrame _)){continue;}
                 cells++;
+                hash=HashVertices(hash,vertices);
                 double cellWorst=0;
                 // 頂点は 65×65 のうち、間引いて(各 4 つおき)比べる。
                 for(int j=0;j<side;j+=4){
@@ -313,29 +324,46 @@ namespace VirtualGeometry.Omni.Editor{
                             Vector3 delta=vertices[j*side+i].Position-expected;
                             PlanetCellFrame detailFrame=moon.Selector.Frame(in key);
                             Vector3 sphereOnly=PlanetCellGeometry.SpherePoint(in detailFrame,PlanetLayerSource.CellQuads,i,j,(float)MoonRadius,out Vector3 vertexDirection);
-                            float gpuHeight=Vector3.Dot(vertices[j*side+i].Position-sphereOnly,vertexDirection);
-                            float cpuHeight=Vector3.Dot(expected-sphereOnly,vertexDirection);
-                            Vector3 absolute=(Vector3)(float3)(new float3((float)(detailFrame.ApproximateOrigin.x),(float)detailFrame.ApproximateOrigin.y,(float)detailFrame.ApproximateOrigin.z))+sphereOnly;
+                            // 頂点 = sphere·(1+H/R) + direction·(h−H)(H = 原点を持ち上げた距離)。高さ h = 高さ方向の成分 + H。
+                            float shift=detailFrame.HeightShift;
+                            Vector3 sphereLifted=sphereOnly+sphereOnly*(shift/(float)MoonRadius);
+                            float gpuHeight=Vector3.Dot(vertices[j*side+i].Position-sphereLifted,vertexDirection)+shift;
+                            float cpuHeight=Vector3.Dot(expected-sphereLifted,vertexDirection)+shift;
+                            Vector3 absolute=detailFrame.ApproximateSphereOrigin+sphereOnly;
                             double directHeight=globalLayer.SampleDirection(absolute.x,absolute.y,absolute.z);
                             worstDetail="heights gpu="+gpuHeight.ToString("G7",CultureInfo.InvariantCulture)+" cpu="+cpuHeight.ToString("G7",CultureInfo.InvariantCulture)+" directMip0="+directHeight.ToString("G7",CultureInfo.InvariantCulture)+" mip="+moon.RasterMip(in key)+" vertex("+i+","+j+") gpu="+vertices[j*side+i].Position.ToString("G6")+" cpu="+expected.ToString("G6")+" diff(radial)="+Vector3.Dot(delta,upDirection).ToString("G3",CultureInfo.InvariantCulture)+" diff(lateral)="+(delta-upDirection*Vector3.Dot(delta,upDirection)).magnitude.ToString("G3",CultureInfo.InvariantCulture)+" radial="+Vector3.Dot(expected,upDirection).ToString("G6",CultureInfo.InvariantCulture);
                         }
                     }
                 }
                 byLevel.TryGetValue(key.Level,out double levelWorst);if(cellWorst>levelWorst){byLevel[key.Level]=cellWorst;}
-                // 許す差: 頂点の位置の float の刻み(約 2 mm)+ Cell の大きさの 1.5×10^-5(粗い Cell では、原点からの差 eps の float の丸めが、緯度経度の差に 1 m ほどの位置の誤差を作る)。
+                // 許す差。階層 14 以上は、原点を地表の高さまで持ち上げた頂点(高さ方向の成分が小さい)なので、float の刻みは高さによらず数 µm〜数十 µm
+                // (持ち上げない |高さ| < 1 km の Cell は刻み 61 µm 以下)。0.3 mm + Cell の大きさの 10^-6。
+                // 粗い Cell(階層 13 以下)は、原点からの差 eps の float の丸めが、緯度経度の差に 1 m ほどの位置の誤差を作る(Cell の大きさの 1.5×10^-5 + 2 mm)。
                 double cellSize=moon.Selector.QuadArc(key.Level)*PlanetLayerSource.CellQuads;
                 double allowed=2e-3+1.5e-5*cellSize;
+                if(key.Level>=LiftedLevel){allowed=3e-4+1e-6*cellSize;}
                 if(cellWorst>allowed){failures.Add("GPU の頂点が CPU の式と "+cellWorst+"m 違います(許す差 "+allowed+"m、"+name+"、"+key+")。");}
                 if(cellWorst>worst){worst=cellWorst;worstKey=key;}
             }
             string levels="";
             foreach(KeyValuePair<int,double> pair in byLevel){levels+=pair.Key+":"+pair.Value.ToString("G3",CultureInfo.InvariantCulture)+" ";}
-            report.Add("GPU vs CPU "+name+": cells="+cells+" worst="+worst.ToString("G3",CultureInfo.InvariantCulture)+"m at "+worstKey+" worstByLevel: "+levels+" | "+worstDetail);
+            report.Add("GPU vs CPU "+name+": cells="+cells+" worst="+worst.ToString("G3",CultureInfo.InvariantCulture)+"m at "+worstKey+" worstByLevel: "+levels+" vertexHash="+hash.ToString("X8")+" | "+worstDetail);
+        }
+
+        private static uint HashVertices(uint hash,VirtualGeometryPackedVertex[] vertices){
+            unchecked{
+                for(int i=0;i<vertices.Length;i++){
+                    Vector3 p=vertices[i].Position;Vector3 n=vertices[i].Normal;
+                    hash=(hash^(uint)BitConverter.SingleToInt32Bits(p.x))*16777619u;hash=(hash^(uint)BitConverter.SingleToInt32Bits(p.y))*16777619u;hash=(hash^(uint)BitConverter.SingleToInt32Bits(p.z))*16777619u;
+                    hash=(hash^(uint)BitConverter.SingleToInt32Bits(n.x))*16777619u;hash=(hash^(uint)BitConverter.SingleToInt32Bits(n.y))*16777619u;hash=(hash^(uint)BitConverter.SingleToInt32Bits(n.z))*16777619u;
+                }
+            }
+            return hash;
         }
 
         // 地表 0.17m の視点で、camera に最も近い(最も細かい)Cell の頂点の高さ(Cell の原点からの up 方向の成分)の、格子に沿った 2 階差分を測る。
         // 緯度経度を float の方向から求めると、半径 1.7×10^6 m では約 0.1 m に量子化されて、傾きの大きい所で高さに階段(数 mm 以上)が出る。
-        // 頂点の位置は float(高さ約 1e3〜1e4 m で刻み 1e-4〜1e-3 m)なので、その刻みの数倍までを許す。
+        // 頂点の位置は、原点を地表の高さまで持ち上げた float(高さ方向の成分が小さいので、起伏が 9 km あっても刻みは µm の桁。持ち上げない |高さ| < 1 km でも 61 µm 以下)。
         private static void CheckMillimeter(string name,double longitude,double latitude){
             PlaceCamera(longitude,latitude,0.17,0.0,35.0);
             int side=PlanetLayerSource.CellQuads+1;
@@ -360,8 +388,9 @@ namespace VirtualGeometry.Omni.Editor{
             }
             float quad=moon.Selector.QuadArc(nearest.Level);
             report.Add("millimeter "+name+": nearest "+nearest+" quad="+(quad*1000f).ToString("G3",CultureInfo.InvariantCulture)+"mm distance="+nearestDistance.ToString("G3",CultureInfo.InvariantCulture)+"m maxSecondDifference="+(worst*1e3).ToString("G3",CultureInfo.InvariantCulture)+"mm maxStep="+(slope*1e3).ToString("G3",CultureInfo.InvariantCulture)+"mm");
-            // 2 階差分は float の丸め(高さ 1e4 m で 1e-3 m)の数倍以内。方向の量子化があれば、傾き 0.1 で 1e-2 m 以上の階段になる。
-            if(worst>5e-3){failures.Add(name+": 最も細かい Cell の頂点の高さの 2 階差分が "+worst+"m あります(量子化の階段の疑い)。");}
+            // 2 階差分は float の丸め(持ち上げない |高さ| < 1 km で 61 µm)の数倍以内。方向の量子化があれば、傾き 0.1 で 1e-2 m 以上の階段になる。
+            // 持ち上げが無いと、高さ −7 km で 1.46 mm、−2.8 km で 0.98 mm(float の刻み)。
+            if(worst>2e-4){failures.Add(name+": 最も細かい Cell の頂点の高さの 2 階差分が "+worst+"m あります(量子化の階段の疑い)。");}
         }
 
         private static IEnumerable<object> Converge(string name){

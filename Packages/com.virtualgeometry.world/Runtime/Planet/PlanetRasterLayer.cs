@@ -168,6 +168,14 @@ namespace VirtualGeometry.World{
         /// 局所の格子で、範囲の外または重み 0 のときは、weight に 0 を返す(高さは 0)。
         /// </summary>
         public float Sample(in PlanetRasterCell cell,Vector3 sphere,double radius,out float weight){
+            return this.Sample(in cell,sphere,radius,0f,out weight);
+        }
+
+        /// <summary>
+        /// 同じで、高さから shift(Cell の原点を持ち上げた距離)を引いた値を返す(GPU と同じく、texel から先に引いてから補間する。ここは倍精度なので、float にする前に引く)。
+        /// 局所の格子で重みが 0 のときは、shift によらず 0(その格子は高さに寄与しない)。
+        /// </summary>
+        public float Sample(in PlanetRasterCell cell,Vector3 sphere,double radius,float shift,out float weight){
             Vector3 eps=sphere/(float)radius;
             Delta(cell.Direction,eps,out double dLongitude,out double dLatitude);
             double column=cell.ColumnFraction+dLongitude*cell.ColumnsPerRadian;
@@ -192,7 +200,7 @@ namespace VirtualGeometry.World{
             if(this.WrapLongitude){x0=((x0%w)+w)%w;x1=((x1%w)+w)%w;}
             else{x0=Math.Max(0,Math.Min(w-1,x0));x1=Math.Max(0,Math.Min(w-1,x1));}
             y0=Math.Max(0,Math.Min(h-1,y0));y1=Math.Max(0,Math.Min(h-1,y1));
-            double h00=data[y0*w+x0],h10=data[y0*w+x1],h01=data[y1*w+x0],h11=data[y1*w+x1];
+            double h00=data[y0*w+x0]-(double)shift,h10=data[y0*w+x1]-(double)shift,h01=data[y1*w+x0]-(double)shift,h11=data[y1*w+x1]-(double)shift;
             double top=h00+(h10-h00)*fx;double bottom=h01+(h11-h01)*fx;
             return (float)(top+(bottom-top)*fy);
         }

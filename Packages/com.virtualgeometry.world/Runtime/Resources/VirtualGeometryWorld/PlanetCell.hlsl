@@ -1,7 +1,7 @@
 #ifndef VIRTUAL_GEOMETRY_PLANET_CELL_INCLUDED
 #define VIRTUAL_GEOMETRY_PLANET_CELL_INCLUDED
 
-// 惑星の Cell 1つ分の格子の、Cell の原点(PlanetCellFrame.Origin)からの相対位置を求める部品。C# の PlanetCellGeometry と同じ式。
+// 惑星の Cell 1つ分の格子の、Cell の原点(PlanetCellFrame.Origin = 半径 R の球面から _HeightShift だけ持ち上げた点)からの相対位置を求める部品。C# の PlanetCellGeometry と同じ式。
 // 面の表と等角写像は CubeSphere.cs と同じ。大きな値(Cell の原点、中心の正接)は CPU が Logical 精度で求めて渡し、
 // ここでは Cell の中心からの相対量だけを float で計算する(誤差は惑星の大きさではなく Cell の大きさに比例する)。
 
@@ -19,6 +19,9 @@ int _GridVertexCount;
 int _Slot;
 int _Face;
 float _Radius;
+// Cell の原点を、半径 _Radius の球面から外向きに持ち上げた距離(PlanetCellFrame.HeightShift)。0 なら原点は球面上。
+// 球面上の点 sphere(SpherePoint の出力)は常に「球面上の原点」からの相対位置で、頂点の位置は PlanetCellVertex で持ち上げた原点からの相対位置にする。
+float _HeightShift;
 float _SkirtDepth;
 // 1 quad の、面の角度での大きさ (π/2)/(N·2^L)。
 float _QuadAngle;
@@ -49,7 +52,7 @@ float TangentOffset(float x0,float delta)
     return t*(1.0+x0*x0)/(1.0-x0*t);
 }
 
-// Cell の中心から格子の番号で (a, b) の位置の、半径 _Radius の球面上の点(原点からの相対位置)と単位方向。a、b は −1〜N+1。
+// Cell の中心から格子の番号で (a, b) の位置の、半径 _Radius の球面上の点(球面上の原点 SphereOrigin = 持ち上げる前の原点からの相対位置)と単位方向。a、b は −1〜N+1。
 // R·(p/|p| − p0/|p0|) = R·(d/|p| − p0·(2p0·d + d·d)/(|p|·|p0|·(|p0|+|p|)))、p = p0 + d。
 void SpherePoint(float a,float b,out float3 sphere,out float3 direction)
 {
@@ -66,6 +69,13 @@ void SpherePoint(float a,float b,out float3 sphere,out float3 direction)
     float3 relative=d/l-p0*((2.0*dot(p0,d)+dot(d,d))/(l*l0*(l0+l)));
     sphere=relative*_Radius;
     direction=p/l;
+}
+
+// 持ち上げた原点からの頂点の位置。height は PlanetHeight の戻り値(= 高さ − _HeightShift。丸めの前に引いてある)。
+// (R+h)n − (R+H)u = (R+H)(n−u) + (h−H)n = sphere·(1+H/R) + (h−H)·n(sphere = R(n−u))。H=0 なら sphere + direction·height。
+float3 PlanetCellVertex(float3 sphere,float3 direction,float height)
+{
+    return sphere+sphere*(_HeightShift/_Radius)+direction*height;
 }
 
 // slot の中の頂点の番号から、格子の (i, j) と skirt かどうか。

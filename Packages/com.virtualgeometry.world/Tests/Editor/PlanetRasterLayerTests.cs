@@ -122,7 +122,37 @@ namespace VirtualGeometry.World.Tests{
                 // float の高さ(約 1e3、刻み 1.2e-4 m)の丸めが 2 回入った差の誤差
                 Assert.That(maximumError,Is.LessThan(5e-4));
             }
+            {
+                // 高さから shift(Cell の原点を持ち上げた距離)を引いた値を返す。float にする前に引くので、|高さ| が数 km でも 1 µm の桁で一致する
+                PlanetRasterLayer steep=CreateGlobal(2880,1440,100.0);
+                double[] o=Normalize(0.3,1.0,0.2);
+                Assert.That(steep.TryCell(Origin(o[0],o[1],o[2]),0f,Radius,out PlanetRasterCell cell),Is.True);
+                float shift=(float)steep.SampleDirection(o[0],o[1],o[2]);
+                Assert.That(Math.Abs(shift),Is.GreaterThan(500f),"持ち上げた距離が大きい場所で確かめること");
+                double[] east=Normalize(o[1],-o[0],0.0);
+                double maximumShiftedError=0;double maximumUnshiftedError=0;double maximumSecondDifference=0;
+                float previous=0;float beforePrevious=0;
+                for(int k=0;k<200;k++){
+                    double d=k*0.001;
+                    double[] t={east[0]*d,east[1]*d,east[2]*d};
+                    Vector3 sphere=Sphere(o,t,out double[] n);
+                    float shifted=steep.Sample(in cell,sphere,Radius,shift,out float weight);
+                    float unshifted=steep.Sample(in cell,sphere,Radius,out float _);
+                    Assert.That(weight,Is.EqualTo(1f));
+                    double expected=steep.SampleDirection(n[0],n[1],n[2]);
+                    maximumShiftedError=Math.Max(maximumShiftedError,Math.Abs(shifted-(expected-shift)));
+                    maximumUnshiftedError=Math.Max(maximumUnshiftedError,Math.Abs(unshifted-expected));
+                    if(k>=2){maximumSecondDifference=Math.Max(maximumSecondDifference,Math.Abs(shifted-2*previous+beforePrevious));}
+                    beforePrevious=previous;previous=shifted;
+                }
+                // shift を引いた値は 1 m 以下(float の刻み 1e-7 m)なので、方向から直接求めた値 − shift と 2e-5 m 以内で一致する(shift を引かない float の高さは約 3,000 m で刻み 2.4e-4 m)
+                Assert.That(maximumShiftedError,Is.LessThan(2e-5));
+                // 1mm 間隔の点列の 2 階差分(傾きが一定なら 0)は、float の丸めの桁に収まる
+                Assert.That(maximumSecondDifference,Is.LessThan(1e-5));
+                Assert.That(maximumUnshiftedError,Is.LessThan(5e-4));
+            }
         }
+
 
         [Test]
         public void SampleMip(){

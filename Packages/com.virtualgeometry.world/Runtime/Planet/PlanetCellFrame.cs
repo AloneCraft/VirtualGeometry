@@ -8,9 +8,12 @@ using LogicalVector3=Omni.Logical.Vector3;
 namespace VirtualGeometry.World{
     /// <summary>
     /// Cell の中心の値を Logical 精度(Omni の Q95.96 固定小数点)で持つ。
-    /// GPU は Cell の中心からの相対量だけを float で計算し(PlanetTerrainGenerate.compute)、
+    /// GPU は Cell の原点からの相対量だけを float で計算し(PlanetTerrainGenerate.compute)、
     /// float にすると精度が足りない値(中心の正接、Cell の原点、ノイズの格子の基点)はここで求める。
     /// 中心の角度は π·n/2^(L+2)(n=2x+1−2^L)で、n/2^(L+2) を固定小数点で正確に作るので、階層は <see cref="MaximumLevel"/> までに限る。
+    /// Cell の原点(<see cref="Origin"/>)は、中心の方向の地表の高さ(<see cref="HeightShift"/>)だけ半径 R の球面から持ち上げた点。
+    /// 頂点の高さ方向の成分が地形の起伏ぶんの大きさになるので、起伏が数 km あっても float の刻みが mm を超えない。
+    /// ノイズの格子・波の位相・実データの方向など、高さ 0 の球面で定義する値は <see cref="SphereOrigin"/> から求める(持ち上げた原点から求めると、隣の Cell と食い違う)。
     /// </summary>
     public readonly struct PlanetCellFrame{
         /// <summary>中心の角度の分数 n/2^(L+2) を小数部 96 ビットで正確に表せる最大の階層。</summary>
@@ -22,16 +25,26 @@ namespace VirtualGeometry.World{
         /// <summary>中心の面の座標の正接(等角写像の x0、y0)。</summary>
         public readonly LogicalScalar TangentU;
         public readonly LogicalScalar TangentV;
-        /// <summary>惑星のローカル座標での Cell の原点 R·p0/|p0|(p0=n+x0·u+y0·v)。頂点はここからの相対位置。</summary>
+        /// <summary>惑星のローカル座標での Cell の原点 = SphereOrigin + HeightShift·Direction(Cell の中心の方向の地表の高さの点)。頂点はここからの相対位置。</summary>
         public readonly LogicalVector3 Origin;
         /// <summary>Origin の float の近似(選択・bounds・Unity の world 空間での配置用)。</summary>
         public readonly Vector3 ApproximateOrigin;
+        /// <summary>Cell の中心の方向の、半径 R の球面(高さ 0)上の点 R·p0/|p0|(p0=n+x0·u+y0·v)。ノイズの格子・波の位相・実データの方向の基点。</summary>
+        public readonly LogicalVector3 SphereOrigin;
+        /// <summary>SphereOrigin の float の近似。</summary>
+        public readonly Vector3 ApproximateSphereOrigin;
+        /// <summary>Cell の中心の外向きの単位方向(Logical)。</summary>
+        public readonly LogicalVector3 Direction;
+        /// <summary>Origin を SphereOrigin から外向きに持ち上げた距離(m、float)。GPU にも同じ値を渡す。持ち上げない Cell は 0。</summary>
+        public readonly float HeightShift;
         /// <summary>TangentU、TangentV の float の近似(GPU の生成用)。</summary>
         public readonly Vector2 ApproximateTangent;
 
-        private PlanetCellFrame(in PlanetCellKey key,in LogicalScalar tangentU,in LogicalScalar tangentV,in LogicalVector3 origin,Vector3 approximateOrigin,Vector2 approximateTangent){
+        private PlanetCellFrame(in PlanetCellKey key,in LogicalScalar tangentU,in LogicalScalar tangentV,in LogicalVector3 origin,Vector3 approximateOrigin,
+            in LogicalVector3 sphereOrigin,Vector3 approximateSphereOrigin,in LogicalVector3 direction,float heightShift,Vector2 approximateTangent){
             this.Key=key;this.TangentU=tangentU;this.TangentV=tangentV;this.Origin=origin;
-            this.ApproximateOrigin=approximateOrigin;this.ApproximateTangent=approximateTangent;
+            this.ApproximateOrigin=approximateOrigin;this.SphereOrigin=sphereOrigin;this.ApproximateSphereOrigin=approximateSphereOrigin;
+            this.Direction=direction;this.HeightShift=heightShift;this.ApproximateTangent=approximateTangent;
         }
 
         public static bool TryCreate(in PlanetCellKey key,in LogicalScalar radius,out PlanetCellFrame frame){
@@ -50,13 +63,34 @@ namespace VirtualGeometry.World{
                 !LogicalScalar.TryReciprocalSqrt(in lengthSquared,out LogicalScalar inverseLength)){
                 return false;
             }
-            if(!TryScale(in px,in inverseLength,in radius,out LogicalScalar ox)||!TryScale(in py,in inverseLength,in radius,out LogicalScalar oy)||
-                !TryScale(in pz,in inverseLength,in radius,out LogicalScalar oz)){
+            if(!LogicalScalar.TryMultiply(in px,in inverseLength,out LogicalScalar ux)||!LogicalScalar.TryMultiply(in py,in inverseLength,out LogicalScalar uy)||
+                !LogicalScalar.TryMultiply(in pz,in inverseLength,out LogicalScalar uz)){
                 return false;
             }
+            if(!LogicalScalar.TryMultiply(in ux,in radius,out LogicalScalar ox)||!LogicalScalar.TryMultiply(in uy,in radius,out LogicalScalar oy)||
+                !LogicalScalar.TryMultiply(in uz,in radius,out LogicalScalar oz)){
+                return false;
+            }
+            var direction=new LogicalVector3(in ux,in uy,in uz);
             var origin=new LogicalVector3(in ox,in oy,in oz);
             if(!origin.TryToFloat3(out Unity.Mathematics.float3 approximate)||!x0.TryToFloat(out float tangentU)||!y0.TryToFloat(out float tangentV)){return false;}
-            frame=new PlanetCellFrame(in key,in x0,in y0,in origin,approximate,new Vector2(tangentU,tangentV));
+            frame=new PlanetCellFrame(in key,in x0,in y0,in origin,approximate,in origin,approximate,in direction,0f,new Vector2(tangentU,tangentV));
+            return true;
+        }
+
+        /// <summary>
+        /// Origin を SphereOrigin から外向きに heightShift(m)だけ持ち上げた Cell の値を返す。
+        /// Origin·(shift/R) の比ではなく、単位方向 × shift で作る(R=10^20 m でも、固定小数点の絶対精度 2^-96 のまま足せる)。
+        /// heightShift は float のまま使う(float は Logical に正確に変換でき、GPU にも同じ値を渡せる)。有限でないときは false。
+        /// </summary>
+        public bool TryWithHeightShift(float heightShift,out PlanetCellFrame shifted){
+            shifted=default;
+            if(float.IsNaN(heightShift)||float.IsInfinity(heightShift)){return false;}
+            if(!LogicalScalar.TryFromFloat(heightShift,out LogicalScalar shift)||!LogicalVector3.TryScale(in this.Direction,in shift,out LogicalVector3 lift)||
+                !LogicalVector3.TryAdd(in this.SphereOrigin,in lift,out LogicalVector3 origin)||!origin.TryToFloat3(out Unity.Mathematics.float3 approximate)){
+                return false;
+            }
+            shifted=new PlanetCellFrame(in this.Key,in this.TangentU,in this.TangentV,in origin,approximate,in this.SphereOrigin,this.ApproximateSphereOrigin,in this.Direction,heightShift,this.ApproximateTangent);
             return true;
         }
 
@@ -66,9 +100,9 @@ namespace VirtualGeometry.World{
         /// </summary>
         public bool TryNoiseLattice(in LogicalScalar inverseWavelength,int octave,out Vector3Int lattice,out Vector3 fraction){
             lattice=default;fraction=default;
-            if(!TryLattice(this.Origin.X,in inverseWavelength,octave,out int lx,out float fx)||
-                !TryLattice(this.Origin.Y,in inverseWavelength,octave,out int ly,out float fy)||
-                !TryLattice(this.Origin.Z,in inverseWavelength,octave,out int lz,out float fz)){
+            if(!TryLattice(this.SphereOrigin.X,in inverseWavelength,octave,out int lx,out float fx)||
+                !TryLattice(this.SphereOrigin.Y,in inverseWavelength,octave,out int ly,out float fy)||
+                !TryLattice(this.SphereOrigin.Z,in inverseWavelength,octave,out int lz,out float fz)){
                 return false;
             }
             lattice=new Vector3Int(lx,ly,lz);fraction=new Vector3(fx,fy,fz);
@@ -81,7 +115,7 @@ namespace VirtualGeometry.World{
         /// </summary>
         public bool TryWavePhase(in LogicalVector3 direction,in LogicalScalar inverseWavelength,out float fraction){
             fraction=0;
-            if(!LogicalVector3.TryDot(in direction,this.Origin,out LogicalScalar along)||!LogicalScalar.TryMultiply(in along,in inverseWavelength,out LogicalScalar cycles)){
+            if(!LogicalVector3.TryDot(in direction,this.SphereOrigin,out LogicalScalar along)||!LogicalScalar.TryMultiply(in along,in inverseWavelength,out LogicalScalar cycles)){
                 return false;
             }
             // 2 の補数の raw の Limb1 の下位 32 ビットが、負の無限大方向へ切り捨てた後の端数の上位 32 ビット。
@@ -202,11 +236,6 @@ namespace VirtualGeometry.World{
             if(sign<0){return LogicalScalar.TrySubtract(in total,in value,out result);}
             result=total;
             return true;
-        }
-
-        private static bool TryScale(in LogicalScalar component,in LogicalScalar inverseLength,in LogicalScalar radius,out LogicalScalar result){
-            result=default;
-            return LogicalScalar.TryMultiply(in component,in inverseLength,out LogicalScalar unit)&&LogicalScalar.TryMultiply(in unit,in radius,out result);
         }
     }
 }

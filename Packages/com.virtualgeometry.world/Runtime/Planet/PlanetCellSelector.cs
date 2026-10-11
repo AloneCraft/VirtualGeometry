@@ -5,6 +5,12 @@ using LogicalScalar=Omni.Logical.Scalar;
 using LogicalVector3=Omni.Logical.Vector3;
 
 namespace VirtualGeometry.World{
+    /// <summary>
+    /// Cell の原点を半径 R の球面から外向きに持ち上げる高さ(m)を返す。sphereFrame は持ち上げていない Cell の値。
+    /// 同じ Cell には常に同じ値を返すこと(選択の bounds と、生成した頂点の基準が一致する前提)。false または 0 なら持ち上げない。
+    /// </summary>
+    public delegate bool PlanetHeightShiftProvider(in PlanetCellFrame sphereFrame,out float shift);
+
     /// <summary>Cell の生成と描画の状態を、選択から問い合わせる口。</summary>
     public interface IPlanetCellResidency{
         /// <summary>頂点が生成済みで描けるか。</summary>
@@ -14,7 +20,7 @@ namespace VirtualGeometry.World{
         /// <summary>この frame で使った(退避しない)。</summary>
         void Touch(in PlanetCellKey key);
         /// <summary>
-        /// 生成した頂点から求めた実際の bounds。中心は Cell の原点(<see cref="PlanetCellFrame.Origin"/>)からの相対位置。
+        /// 生成した頂点から求めた実際の bounds。中心は Cell の原点(<see cref="PlanetCellFrame.Origin"/>、地表の高さまで持ち上げた点)からの相対位置。
         /// まだ無ければ false(解析的な bounds を使う)。
         /// </summary>
         bool TryGetBounds(in PlanetCellKey key,out Vector3 offset,out float radius);
@@ -72,6 +78,7 @@ namespace VirtualGeometry.World{
         private readonly HashSet<PlanetCellKey> selected=new HashSet<PlanetCellKey>();
         private readonly List<PlanetCellKey> scratch=new List<PlanetCellKey>();
         private readonly LogicalScalar logicalRadius;
+        private readonly PlanetHeightShiftProvider heightShift;
 
         public float Radius{get;}
         public LogicalScalar LogicalRadius=>this.logicalRadius;
@@ -84,13 +91,15 @@ namespace VirtualGeometry.World{
         public float TargetPixels{get;set;}=2f;
         public float Hysteresis{get;set;}=0.1f;
 
-        public PlanetCellSelector(float radius,float heightAmplitude,int cellQuads,int maximumLevel,float skirtQuads){
+        /// <param name="heightShift">Cell の原点を持ち上げる高さの供給元。null なら持ち上げない(原点は半径 R の球面上)。</param>
+        public PlanetCellSelector(float radius,float heightAmplitude,int cellQuads,int maximumLevel,float skirtQuads,PlanetHeightShiftProvider heightShift=null){
             if(!(radius>0)||float.IsInfinity(radius)){throw new ArgumentOutOfRangeException(nameof(radius));}
             if(!(heightAmplitude>=0)||heightAmplitude>=radius){throw new ArgumentOutOfRangeException(nameof(heightAmplitude));}
             if(cellQuads<1){throw new ArgumentOutOfRangeException(nameof(cellQuads));}
             if(maximumLevel<0||maximumLevel>PlanetCellFrame.MaximumLevel){throw new ArgumentOutOfRangeException(nameof(maximumLevel));}
             if(!LogicalScalar.TryFromFloat(radius,out this.logicalRadius)){throw new ArgumentOutOfRangeException(nameof(radius));}
             this.Radius=radius;this.HeightAmplitude=heightAmplitude;this.CellQuads=cellQuads;this.MaximumLevel=maximumLevel;this.SkirtQuads=skirtQuads;
+            this.heightShift=heightShift;
         }
 
         /// <summary>この階層の1 quad の弧長(面の中央の値。等角写像なので面の中でほぼ一定)。親の半分。</summary>
@@ -109,16 +118,22 @@ namespace VirtualGeometry.World{
             s0=key.X.Fraction(key.Level);t0=key.Y.Fraction(key.Level);
         }
 
-        /// <summary>Cell の中心の値(半径 R)。求めた値は覚えておく。</summary>
+        /// <summary>
+        /// Cell の中心の値。原点は、高さの供給元があれば地表の高さまで持ち上げた点、無ければ半径 R の球面上の点。求めた値は覚えておく。
+        /// 持ち上げる高さが有限でない、または |高さ| ≥ R のときは持ち上げない。
+        /// </summary>
         public PlanetCellFrame Frame(in PlanetCellKey key){
             if(this.frames.TryGetValue(key,out PlanetCellFrame frame)){return frame;}
             if(!PlanetCellFrame.TryCreate(in key,in this.logicalRadius,out frame)){throw new InvalidOperationException("Cell の中心を求められません: "+key);}
+            if(this.heightShift!=null&&this.heightShift(in frame,out float shift)&&shift!=0f&&Mathf.Abs(shift)<this.Radius&&frame.TryWithHeightShift(shift,out PlanetCellFrame lifted)){
+                frame=lifted;
+            }
             if(this.frames.Count>=FrameCacheLimit){this.frames.Clear();}
             this.frames.Add(key,frame);
             return frame;
         }
 
-        /// <summary>Cell の原点からの相対位置 offset の点の、カメラからの相対位置(惑星のローカル座標の向き)。</summary>
+        /// <summary>Cell の原点(地表の高さまで持ち上げた点)からの相対位置 offset の点の、カメラからの相対位置(惑星のローカル座標の向き)。</summary>
         public Vector3 FromCamera(in PlanetSelectionView view,in PlanetCellKey key,Vector3 offset){
             PlanetCellFrame frame=this.Frame(in key);
             if(!LogicalVector3.TrySubtract(frame.Origin,view.CameraLocal,out LogicalVector3 difference)||!difference.TryToFloat3(out Unity.Mathematics.float3 relative)){
@@ -172,8 +187,8 @@ namespace VirtualGeometry.World{
             Vector3 direction=frame.ApproximateOrigin.normalized;
             float inner=this.Radius-this.HeightAmplitude-this.SkirtDepth(key.Level);
             float outer=this.Radius+this.HeightAmplitude;
-            // 中心の半径 (inner+outer)/2 = R−skirt/2 と、原点(半径 R の点)との差だけを足す。
-            offset=direction*(-0.5f*this.SkirtDepth(key.Level));
+            // 中心の半径 (inner+outer)/2 = R−skirt/2 と、原点(半径 R+HeightShift の点)との差だけを足す。
+            offset=direction*(-0.5f*this.SkirtDepth(key.Level)-frame.HeightShift);
             float angle=Mathf.PI*0.5f*MathF.Pow(2f,-key.Level)*0.85f;
             radius=outer*angle+0.5f*(outer-inner)+outer*(1f-Mathf.Cos(angle));
         }

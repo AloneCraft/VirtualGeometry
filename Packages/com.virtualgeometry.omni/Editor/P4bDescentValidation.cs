@@ -141,6 +141,7 @@ namespace VirtualGeometry.Omni.Editor{
             settings.ApplyModifiedPropertiesWithoutUndo();
             planet.Material=material;
             planet.Configure(radius,height,PlanetTerrainSource.GpuMaximumLevel,Target);
+            HeightShiftOverride.Apply(planet);
             holder.SetActive(true);
             // 惑星の中心に置くと上方向が決まらないので、宇宙に置いてから Teleport する。
             if(!LogicalVector3.TryFromFloat3(new float3(0,radius*3f,0),out LogicalVector3 far)){throw new InvalidOperationException("far");}
