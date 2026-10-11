@@ -33,6 +33,7 @@ namespace VirtualGeometry.Omni.Editor{
         private const string Root="Assets/Development/PlanetWorld/P5a";
         private const string Results="TestResults/Planet/P5a";
         private const string ShaderPath="Packages/com.virtualgeometry.omni/Shaders/RadialGlobalLit.vgshader";
+        private const string OceanShaderPath="Packages/com.virtualgeometry.omni/Shaders/RadialOcean.vgshader";
         private const float Radius=600000;
         private const float Height=3000;
         private const float Target=2;
@@ -49,6 +50,7 @@ namespace VirtualGeometry.Omni.Editor{
         private static PlanetTerrainSource terrain;
         private static PlanetOceanSource ocean;
         private static PlanetDescentCamera descent;
+        private static Material sea;
         private static IEnumerator steps;
         private static double started;
         private static readonly List<string> report=new List<string>();
@@ -122,7 +124,10 @@ namespace VirtualGeometry.Omni.Editor{
             Light sun=new GameObject("P5a Sun").AddComponent<Light>();sun.type=LightType.Directional;sun.transform.rotation=Quaternion.Euler(40,-30,0);
             // 地形は緑、海は青。海と陸の判定は色(青が緑より強いか)で行う。
             Material land=new Material(shader);land.SetColor("_BaseColor",new Color(0.35f,0.55f,0.25f,1));land.SetFloat("_Smoothness",0.2f);
-            Material sea=new Material(shader);sea.SetColor("_BaseColor",new Color(0.05f,0.2f,0.6f,1));sea.SetFloat("_Smoothness",0.85f);
+            Shader oceanShader=AssetDatabase.LoadAssetAtPath<Shader>(OceanShaderPath);
+            if(oceanShader==null){throw new InvalidOperationException("Shader not found: "+OceanShaderPath);}
+            // 海岸線と LOD の検証は色で海と陸を分けるので、単色(照明・泡なし)で撮る。見た目の検証は SetFlat(false)。
+            sea=new Material(oceanShader);sea.SetFloat("_FlatColor",1);
             GameObject holder=new GameObject("P5a Planet");holder.SetActive(false);
             planetLogical=holder.AddComponent<LogicalTransform>();
             terrain=holder.AddComponent<PlanetTerrainSource>();
@@ -149,6 +154,12 @@ namespace VirtualGeometry.Omni.Editor{
             holder.SetActive(true);
             descent=camera.gameObject.AddComponent<PlanetDescentCamera>();
             descent.Planet=terrain;descent.Ocean=ocean;descent.EyeHeight=Eye;descent.ReadInput=false;
+        }
+
+        private static void SetFlat(bool flat){
+            float value=0;
+            if(flat){value=1;}
+            sea.SetFloat("_FlatColor",value);
         }
 
         private static IEnumerator Steps(){
@@ -188,8 +199,16 @@ namespace VirtualGeometry.Omni.Editor{
                 Texture2D fine=Capture();
                 Save(view.Name+"Fine",fine);
                 CompareClasses(view.Name,image,fine);
+                // 見た目(照明・法線・泡あり)。細かい描画と粗い描画の、海の明るさの違いを測る(8×8 の平均)。
+                SetFlat(false);
+                Texture2D fineShaded=Capture();
+                Save(view.Name+"ShadedFine",fineShaded);
                 terrain.TargetPixels=Target;ocean.TargetPixels=Target;
                 foreach(object step in Converge(view.Name+"Restore")){yield return step;}
+                Texture2D shaded=Capture();
+                Save(view.Name+"Shaded",shaded);
+                CompareShading(view.Name,shaded,fineShaded,image,fine);
+                SetFlat(true);
             }
             // 波が動く: 時刻を進めると海の画素が変わる。
             var last=views[0];
@@ -197,6 +216,7 @@ namespace VirtualGeometry.Omni.Editor{
             foreach(object step in Teleport(eyeDirection,last.Altitude)){yield return step;}
             LookToward(seaward,last.Pitch);
             foreach(object step in Converge("Animation")){yield return step;}
+            SetFlat(false);
             Texture2D before=Capture();
             Save("AnimationBefore",before);
             // 海の作り直しは 1 frame に 1 回(次の frame の描画の前)なので、時刻を変えた後に frame を進めてから撮る。
@@ -211,6 +231,7 @@ namespace VirtualGeometry.Omni.Editor{
             report.Add("animation: changedSeaPixels="+changed);
             if(changed==0){failures.Add("時刻を変えても海の画素が変わりませんでした。");}
             ocean.WaveTime=FrozenTime;
+            SetFlat(true);
             report.Add("pool: terrain used="+terrain.UsedSlots+" ocean used="+ocean.UsedSlots+" lastError="+(terrain.LastError??"(none)")+"/"+(ocean.LastError??"(none)"));
             if(terrain.LastError!=null||ocean.LastError!=null){failures.Add("設定エラー: "+terrain.LastError+" "+ocean.LastError);}
         }
@@ -420,6 +441,41 @@ namespace VirtualGeometry.Omni.Editor{
                 }
             }
             return band;
+        }
+
+        // 8×8 の block の平均の明るさの差。flatA、flatB(単色で撮った同じ視点)で、どちらも海の block だけを使う。
+        private static void CompareShading(string name,Texture2D a,Texture2D b,Texture2D flatA,Texture2D flatB){
+            Color32[] pa=a.GetPixels32();Color32[] pb=b.GetPixels32();
+            Color32[] fa=flatA.GetPixels32();Color32[] fb=flatB.GetPixels32();
+            int width=a.width;int height=a.height;
+            const int block=8;
+            double sum=0;float maximum=0;int blocks=0;
+            for(int by=0;by+block<=height;by+=block){
+                for(int bx=0;bx+block<=width;bx+=block){
+                    bool sea=true;
+                    float la=0;float lb=0;
+                    for(int y=by;y<by+block&&sea;y++){
+                        for(int x=bx;x<bx+block;x++){
+                            int i=y*width+x;
+                            if(Classify(fa[i])!=1||Classify(fb[i])!=1){sea=false;break;}
+                            la+=Luminance(pa[i]);lb+=Luminance(pb[i]);
+                        }
+                    }
+                    if(!sea){continue;}
+                    float difference=Mathf.Abs(la-lb)/(block*block);
+                    sum+=difference;maximum=Mathf.Max(maximum,difference);blocks++;
+                }
+            }
+            float mean=0;
+            if(blocks>0){mean=(float)(sum/blocks);}
+            report.Add(name+": shading blocks="+blocks+" meanBlockDifference="+mean.ToString("G3",CultureInfo.InvariantCulture)+" maxBlockDifference="+maximum.ToString("G3",CultureInfo.InvariantCulture));
+            if(blocks==0){failures.Add(name+": 明るさを比べる海の block がありません。");}
+            if(mean>0.03f){failures.Add(name+": 細かい描画と粗い描画で、海の明るさの平均の差が "+mean+" ありました(0.03 以内のはず)。");}
+        }
+
+        // 0〜1 の明るさ(sRGB の値のまま)。
+        private static float Luminance(Color32 pixel){
+            return (0.2126f*pixel.r+0.7152f*pixel.g+0.0722f*pixel.b)/255f;
         }
 
         private static int CountChangedSea(Texture2D a,Texture2D b){

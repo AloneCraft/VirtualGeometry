@@ -2,41 +2,18 @@
 #pragma target 5.0
 
 // 惑星の海の Cell 1つ分の頂点を、VirtualGeometryGridLayout の配置で pool の slot へ書く。C# の PlanetOceanSource.TryEvaluateVertexForDiagnostics と同じ式。
-// 海面は半径 _Radius の球(PlanetCell.hlsl、Cell の原点からの相対位置)を Gerstner 波で動かしたもの。
-// 波の位相 = 2π·(Cell の原点での端数 + d·(相対位置)/λ) − ω·t。原点での端数は CPU が Logical で求める(大きな座標を float にしない)。
-// 帯域制限: 波長が 2·_QuadLength より短い成分は変位に入れない。
+// 海面は半径 _Radius の球(PlanetCell.hlsl、Cell の原点からの相対位置)を Gerstner 波(PlanetOcean.hlsl)で動かしたもの。
+// 波の位相の端数は CPU が Logical で求める(大きな座標を float にしない)。帯域制限: 波長が 2·_QuadLength より短い成分は変位に入れない。
 // UV の x は水深(海面からの地形の深さ。PlanetHeight.hlsl の地形の高さの符号を変えたもの)。
 
 #include "PlanetCell.hlsl"
 #include "PlanetHeight.hlsl"
-
-#define MAXIMUM_WAVES 32
-
-int _WaveCount;
-// xyz: 波の進む方向(3 次元の単位ベクトル)、w: 波長の逆数
-float4 _WaveDirection[MAXIMUM_WAVES];
-// x: 振幅、y: Gerstner の尖り、z: 時刻の位相 ω·t(2π で巻いたもの)、w: 波長
-float4 _WaveShape[MAXIMUM_WAVES];
-// x: Cell の原点での位相の端数(0〜1)
-float4 _WavePhase[MAXIMUM_WAVES];
+#include "PlanetOcean.hlsl"
 
 float3 Ocean(float a,float b,out float3 direction,out float3 sphere)
 {
     SpherePoint(a,b,sphere,direction);
-    float3 offset=0;
-    for(int k=0;k<_WaveCount;k++)
-    {
-        float wavelength=_WaveShape[k].w;
-        if(wavelength<2.0*_QuadLength) { continue; }
-        float3 d=_WaveDirection[k].xyz;
-        float theta=6.28318530718*(_WavePhase[k].x+dot(d,sphere)*_WaveDirection[k].w)-_WaveShape[k].z;
-        float s;
-        float c;
-        sincos(theta,s,c);
-        float3 along=d-direction*dot(d,direction);
-        offset+=direction*(_WaveShape[k].x*s)+along*(_WaveShape[k].y*_WaveShape[k].x*c);
-    }
-    return sphere+offset;
+    return sphere+OceanOffset(sphere,direction,_QuadLength);
 }
 
 [numthreads(64,1,1)]

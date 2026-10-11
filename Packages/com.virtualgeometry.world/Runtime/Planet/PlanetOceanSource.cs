@@ -36,6 +36,10 @@ namespace VirtualGeometry.World{
         private readonly Vector4[] waveDirection=new Vector4[MaximumWaves];
         private readonly Vector4[] waveShape=new Vector4[MaximumWaves];
         private readonly Vector4[] wavePhase=new Vector4[MaximumWaves];
+        // slot ごとの、波の位相の端数(Cell の原点での値)。Cell が変わったときだけ求め直す(Logical の演算が波の数だけ要る)。
+        private float[] slotPhases;
+        private PlanetCellKey[] slotPhaseKeys;
+        private bool[] slotPhaseValid;
 
         private struct Wave{
             public Vector3 Direction;
@@ -56,6 +60,7 @@ namespace VirtualGeometry.World{
         public float WaveTime{get;set;}
         public bool AdvanceTime{get=>this.advanceTime;set=>this.advanceTime=value;}
         protected override float SelectionAmplitude=>this.amplitude;
+        protected override bool UsesCellProperties=>true;
         protected override string GeneratorResource=>"VirtualGeometryWorld/PlanetOceanGenerate";
 
         /// <summary>検証用。波と選択の設定を変える。有効なまま変えた場合は無効化して作り直す。</summary>
@@ -72,6 +77,15 @@ namespace VirtualGeometry.World{
             }
             this.BuildWaves();
             base.OnEnable();
+            int capacity=this.PoolCapacity;
+            this.slotPhases=new float[capacity*MaximumWaves];
+            this.slotPhaseKeys=new PlanetCellKey[capacity];
+            this.slotPhaseValid=new bool[capacity];
+        }
+
+        protected override void OnDisable(){
+            this.slotPhases=null;this.slotPhaseKeys=null;this.slotPhaseValid=null;
+            base.OnDisable();
         }
 
         private void Update(){
@@ -136,8 +150,8 @@ namespace VirtualGeometry.World{
             if(this.IsAnimated(frame.Key.Level)){this.RequestRegeneration(slot);}
         }
 
-        protected override void BindGeneration(CommandBuffer commands,ComputeShader shader,int kernel){
-            this.terrain.BindHeightField(commands,shader);
+        // 波の方向・形・時刻の位相(全 Cell 共通)を、配列に書く。
+        private void FillWaveArrays(){
             for(int i=0;i<this.waves.Length;i++){
                 Wave wave=this.waves[i];
                 this.waveDirection[i]=new Vector4(wave.Direction.x,wave.Direction.y,wave.Direction.z,1f/wave.Wavelength);
@@ -145,18 +159,45 @@ namespace VirtualGeometry.World{
                 float timePhase=Mathf.Repeat(wave.AngularFrequency*this.WaveTime,2f*Mathf.PI);
                 this.waveShape[i]=new Vector4(wave.Amplitude,wave.Sharpness,timePhase,wave.Wavelength);
             }
-            commands.SetComputeIntParam(shader,"_WaveCount",this.waves.Length);
+        }
+
+        // slot の Cell の、波の位相の端数を waves の数だけ wavePhase に書く(slot ごとに cache)。
+        private void FillWavePhases(int slot,in PlanetCellFrame frame){
+            if(!this.slotPhaseValid[slot]||!this.slotPhaseKeys[slot].Equals(frame.Key)){
+                for(int i=0;i<this.waves.Length;i++){
+                    frame.TryWavePhase(in this.waves[i].LogicalDirection,in this.waves[i].InverseWavelength,out float fraction);
+                    this.slotPhases[slot*MaximumWaves+i]=fraction;
+                }
+                this.slotPhaseKeys[slot]=frame.Key;this.slotPhaseValid[slot]=true;
+            }
+            for(int i=0;i<this.waves.Length;i++){this.wavePhase[i]=new Vector4(this.slotPhases[slot*MaximumWaves+i],0,0,0);}
+        }
+
+        protected override void BindGeneration(CommandBuffer commands,ComputeShader shader,int kernel){
+            this.terrain.BindHeightField(commands,shader);
+            this.FillWaveArrays();
+            commands.SetComputeFloatParam(shader,"_WaveCount",this.waves.Length);
             commands.SetComputeVectorArrayParam(shader,"_WaveDirection",this.waveDirection);
             commands.SetComputeVectorArrayParam(shader,"_WaveShape",this.waveShape);
         }
 
-        protected override void BindCell(CommandBuffer commands,ComputeShader shader,in PlanetCellFrame frame){
+        protected override void BindCell(CommandBuffer commands,ComputeShader shader,int slot,in PlanetCellFrame frame){
             this.terrain.BindHeightCell(commands,shader,in frame);
-            for(int i=0;i<this.waves.Length;i++){
-                frame.TryWavePhase(in this.waves[i].LogicalDirection,in this.waves[i].InverseWavelength,out float fraction);
-                this.wavePhase[i]=new Vector4(fraction,0,0,0);
-            }
+            this.FillWavePhases(slot,in frame);
             commands.SetComputeVectorArrayParam(shader,"_WavePhase",this.wavePhase);
+        }
+
+        /// <summary>fragment の RadialOcean.shader が使う値(波、Cell の向きと quad の大きさ)を書く。</summary>
+        protected override void WriteCellProperties(MaterialPropertyBlock block,int slot,in PlanetCellFrame frame){
+            this.FillWaveArrays();
+            this.FillWavePhases(slot,in frame);
+            block.SetFloat("_WaveCount",this.waves.Length);
+            block.SetVectorArray("_WaveDirection",this.waveDirection);
+            block.SetVectorArray("_WaveShape",this.waveShape);
+            block.SetVectorArray("_WavePhase",this.wavePhase);
+            Vector3 up=frame.ApproximateOrigin.normalized;
+            block.SetVector("_OceanUp",new Vector4(up.x,up.y,up.z,this.Radius));
+            block.SetVector("_OceanCell",new Vector4(this.Selector.QuadArc(frame.Key.Level),0,0,0));
         }
 
         /// <summary>

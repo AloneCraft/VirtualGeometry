@@ -124,7 +124,7 @@ namespace VirtualGeometry.World{
             this.history[view.Camera]=this.refinedScratch;this.refinedScratch=previous;
             this.FlushRequests();
             List<MaterialPropertyBlock> blocks=null;
-            if(current.UsesProperties&&!this.drawProperties.TryGetValue(view.Camera,out blocks)){
+            if((current.UsesProperties||this.UsesCellProperties)&&!this.drawProperties.TryGetValue(view.Camera,out blocks)){
                 blocks=new List<MaterialPropertyBlock>();this.drawProperties.Add(view.Camera,blocks);
             }
             int used=0;
@@ -136,10 +136,18 @@ namespace VirtualGeometry.World{
                     block=blocks[used++];
                 }
                 if(!current.Describe(in frame,in this.cellFrames[slot],out Matrix4x4 objectToWorld,out Matrix4x4 objectToCull,block)){continue;}
+                if(block!=null){this.WriteCellProperties(block,slot,in this.cellFrames[slot]);}
                 draws.Begin(objectToWorld,objectToCull,block);
                 draws.Add(slot);
                 this.OnCellDrawn(slot,in this.cellFrames[slot]);
             }
+        }
+
+        /// <summary>fragment の shader に Cell ごとの値を渡す Layer は true(配置が MaterialPropertyBlock を使わなくても、Cell ごとに作る)。</summary>
+        protected virtual bool UsesCellProperties=>false;
+
+        /// <summary>Cell の draw の MaterialPropertyBlock に、この Layer の shader が使う値を書く(配置が書く値の後に呼ぶ)。既定では何もしない。</summary>
+        protected virtual void WriteCellProperties(MaterialPropertyBlock block,int slot,in PlanetCellFrame frame){
         }
 
         /// <summary>この frame に描く Cell ごとに呼ぶ(時間で動く Layer が作り直しを予約するなど)。既定では何もしない。</summary>
@@ -297,7 +305,7 @@ namespace VirtualGeometry.World{
         protected abstract void BindGeneration(CommandBuffer commands,ComputeShader shader,int kernel);
 
         /// <summary>Cell ごとの値を設定する(PlanetCell.hlsl の Cell ごとの値は設定済み)。</summary>
-        protected abstract void BindCell(CommandBuffer commands,ComputeShader shader,in PlanetCellFrame frame);
+        protected abstract void BindCell(CommandBuffer commands,ComputeShader shader,int slot,in PlanetCellFrame frame);
 
         protected override void RecordGeneration(CommandBuffer commands,GraphicsBuffer poolVertices,IReadOnlyList<int> slots){
             if(this.generator==null){
@@ -325,7 +333,7 @@ namespace VirtualGeometry.World{
                 commands.SetComputeVectorParam(shader,"_FaceRange",new Vector4(s0,t0,size,0));
                 commands.SetComputeFloatParam(shader,"_SkirtDepth",this.selector.SkirtDepth(key.Level));
                 commands.SetComputeFloatParam(shader,"_QuadLength",this.selector.QuadArc(key.Level));
-                this.BindCell(commands,shader,in frame);
+                this.BindCell(commands,shader,slot,in frame);
                 commands.DispatchCompute(shader,this.kernel,(layout.SlotVertexCount+63)/64,1,1);
             }
         }

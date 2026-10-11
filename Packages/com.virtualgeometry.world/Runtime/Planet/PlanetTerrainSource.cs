@@ -95,7 +95,7 @@ namespace VirtualGeometry.World{
             this.BindHeightField(commands,shader);
         }
 
-        protected override void BindCell(CommandBuffer commands,ComputeShader shader,in PlanetCellFrame frame){
+        protected override void BindCell(CommandBuffer commands,ComputeShader shader,int slot,in PlanetCellFrame frame){
             this.BindHeightCell(commands,shader,in frame);
         }
 
