@@ -133,7 +133,9 @@ namespace VirtualGeometry.Omni.Editor{
             moon=body.AddComponent<PlanetTerrainSource>();
             body.AddComponent<OmniPlanetPlacement>();
             // 手続きの高さは 0(実データだけ)。階層は 1 quad が 1mm になる 28 まで。
-            MoonBallSceneBuilder.Configure(moon,(float)MoonRadius,0f,3800f,1,32,4096,64,true);
+            int pool=RealMoonData.PoolCapacity(4096);
+            report.Add("poolCapacity: "+pool);
+            MoonBallSceneBuilder.Configure(moon,(float)MoonRadius,0f,3800f,1,32,pool,64,true);
             HeightShiftOverride.Apply(moon);
             VertexHashBaseline.Begin("gpu="+SystemInfo.graphicsDeviceName+";api="+SystemInfo.graphicsDeviceType+";unity="+Application.unityVersion+";shift="+HeightShiftOverride.Describe()+";data="+DatasetName());
             report.Add("heightShiftThreshold: "+HeightShiftOverride.Describe()+" (component "+moon.HeightShiftThreshold.ToString("G",CultureInfo.InvariantCulture)+")");

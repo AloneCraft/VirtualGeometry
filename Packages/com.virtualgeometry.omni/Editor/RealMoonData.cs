@@ -18,6 +18,15 @@ namespace VirtualGeometry.Omni.Editor{
         public const float SyntheticMinimum=-7300f;
         public const float SyntheticMaximum=9000f;
 
+        /// <summary>コマンドラインの <c>-poolCapacity N</c>(cluster の pool と描画 slot の数)。無ければ fallback。pool の大きさと Cell 数の関係を測るための上書き。</summary>
+        public static int PoolCapacity(int fallback){
+            string[] arguments=Environment.GetCommandLineArgs();
+            for(int i=0;i<arguments.Length-1;i++){
+                if(arguments[i]=="-poolCapacity"&&int.TryParse(arguments[i+1],System.Globalization.NumberStyles.Integer,System.Globalization.CultureInfo.InvariantCulture,out int value)&&value>0){return value;}
+            }
+            return fallback;
+        }
+
         /// <summary>実データを読む。無いときは、コピーする場所を示して例外にする。</summary>
         public static void LoadReal(out PlanetRasterLayer global,out PlanetRasterLayer regional){
             string root=Path.GetDirectoryName(Application.dataPath);

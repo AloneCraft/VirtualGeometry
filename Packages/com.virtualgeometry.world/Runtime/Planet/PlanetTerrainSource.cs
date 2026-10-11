@@ -21,6 +21,10 @@ namespace VirtualGeometry.World{
         [SerializeField,Min(0.01f)] private float baseWavelength=4000;
         [SerializeField,Range(1,MaximumOctaves)] private int octaves=13;
         [SerializeField] private PlanetHeightSettings heightSettings=PlanetHeightSettings.Default;
+        // 実データの帯域より上の細部の増幅(実データがあるときだけ働く)。0 なら無効。遮断波長(実データの 2 画素の波長)での octave の振幅(m)と、Hurst 指数(波長が半分になるごとに振幅が 2^−H 倍)。
+        private const double CutoffTexels=0.5;
+        [SerializeField,Min(0)] private float amplifyAmplitude=0f;
+        [SerializeField,Range(0.3f,1f)] private float amplifyHurst=0.87f;
         // 中心の方向の地表の高さの絶対値がこれ以上の Cell は、原点を地表の高さまで持ち上げる(頂点の高さ方向の成分を小さく保つ)。0 なら高さが 0 でない全ての Cell。
         [SerializeField,Min(0)] private float heightShiftThreshold=1024f;
 
@@ -33,6 +37,9 @@ namespace VirtualGeometry.World{
         private readonly int[] rasterSize=new int[8];
         private readonly Vector4[] rasterRegional=new Vector4[2];
         private readonly Vector4[] rasterPole=new Vector4[2];
+        // 実データの格子の遮断波長(CutoffTexels × 1 画素の波長)の log2(m)。全球と局所。SetRasters と Configure で求め直す。
+        private float cutoffGlobalLog2;
+        private float cutoffRegionalLog2;
         private PlanetCellKey rasterCacheKey;
         private float rasterCacheQuad=-1f;
         private bool rasterCacheValid;
@@ -60,7 +67,36 @@ namespace VirtualGeometry.World{
         public int HeightShiftApplied{get;private set;}
         /// <summary>原点の高さを求めるのにかかった CPU 時間の累計(ミリ秒、診断用)。</summary>
         public float HeightShiftMilliseconds{get;private set;}
-        protected override float SelectionAmplitude=>this.heightAmplitude+this.RasterMaximumHeight;
+        protected override float SelectionAmplitude=>this.heightAmplitude+this.RasterMaximumHeight+this.AmplifyMaximum;
+        /// <summary>
+        /// 実データの帯域より上の細部の増幅の振幅(遮断波長での octave の振幅、m。0 で無効。実データがあるときだけ働く)。変えると作り直す。
+        /// 実データの 1/2 画素の波長より短い波長の octave を、Hurst 指数(<see cref="AmplifyHurst"/>)で振幅を減らしながら足す。
+        /// </summary>
+        public float AmplifyAmplitude{
+            get=>this.amplifyAmplitude;
+            set{
+                if(float.IsNaN(value)||value<0f){value=0f;}
+                if(value==this.amplifyAmplitude){return;}
+                this.amplifyAmplitude=value;
+                this.Rebuild();
+            }
+        }
+        public float AmplifyHurst{
+            get=>this.amplifyHurst;
+            set{
+                value=Mathf.Clamp(value,0.3f,1f);
+                if(value==this.amplifyHurst){return;}
+                this.amplifyHurst=value;
+                this.Rebuild();
+            }
+        }
+        /// <summary>増幅の項の絶対値の上界(選択の bounds に足す)。実データが無いか振幅が 0 なら 0。</summary>
+        public float AmplifyMaximum{
+            get{
+                if(this.rasters.Length==0){return 0f;}
+                return PlanetHeightField.AmplifiedMaximum(this.amplifyAmplitude,this.amplifyHurst);
+            }
+        }
         /// <summary>実データの高さの |最大|(Cell の bounds に足す)。</summary>
         public float RasterMaximumHeight{
             get{
@@ -96,8 +132,19 @@ namespace VirtualGeometry.World{
         /// <summary>検証用。形の設定を変える。有効なまま変えた場合は無効化して作り直す。</summary>
         public void Configure(float radius,float heightAmplitude,int maximumLevel,float targetPixels){
             this.radius=radius;this.heightAmplitude=heightAmplitude;
+            this.RefreshCutoffs();
             this.ConfigureSelection(maximumLevel,targetPixels);
             this.Rebuild();
+        }
+
+        // 実データの格子の遮断波長の log2。波長 = CutoffTexels × 南北の 1 画素の間隔。実データの Nyquist の波長は 2 画素だが、1 画素に近い波長の octave を足すと、1 画素ごとの平均が 0 にならず、遠景(データそのもの)と近景がずれる。
+        // 遮断波長を 2 画素にすると、1 画素ごとの平均の二乗平均の平方根が全体の 0.70 倍、1 画素にすると 0.50 倍、1/2 画素にすると 0.34 倍、1/4 画素にすると 0.26 倍(gradient noise は低い周波数にも広がる)。
+        // 平均を 0 に近づける効果は 1/2 画素より先で小さいので、1/2 画素にした。
+        private void RefreshCutoffs(){
+            this.cutoffGlobalLog2=0f;this.cutoffRegionalLog2=0f;
+            if(this.rasters.Length>0){this.cutoffGlobalLog2=(float)(Math.Log(CutoffTexels*this.rasters[0].TexelMeters(this.radius))/Math.Log(2.0));}
+            this.cutoffRegionalLog2=this.cutoffGlobalLog2;
+            if(this.rasters.Length>1){this.cutoffRegionalLog2=(float)(Math.Log(CutoffTexels*this.rasters[1].TexelMeters(this.radius))/Math.Log(2.0));}
         }
 
         /// <summary>
@@ -114,10 +161,12 @@ namespace VirtualGeometry.World{
             }
             this.rasters=list.ToArray();
             this.rasterCacheValid=false;
+            this.RefreshCutoffs();
             this.Rebuild();
         }
 
         protected override void OnEnable(){
+            this.RefreshCutoffs();
             if(!LogicalScalar.TryFromFloat(this.baseWavelength,out LogicalScalar wavelength)||!LogicalScalar.TryReciprocal(in wavelength,out this.inverseWavelength)){
                 Debug.LogError("PlanetTerrainSource: 波長を Logical にできません。",this);
             }
@@ -163,8 +212,9 @@ namespace VirtualGeometry.World{
             double total=procedural;
             // 実データの高さは、点自身の方向から倍精度で直接求める(Cell の原点からの差 sphere は float で、大きな Cell では 2cm ほど誤差が出る)。
             if(this.rasters.Length>0){
-                if(!this.TryRasterHeightAt(in point,out double raster)){return false;}
+                if(!this.TryRasterHeightAt(in point,out double raster,out float regionalWeight)){return false;}
                 total+=raster;
+                total+=this.AmplifiedHeight(sphere,0f,regionalWeight);
             }
             if(!LogicalScalar.TryFromDouble(total,out height)||!LogicalVector3.TryLength(in point,out LogicalScalar distance)||
                 !LogicalScalar.TrySubtract(in distance,this.Selector.LogicalRadius,out LogicalScalar aboveRadius)||!LogicalScalar.TrySubtract(in aboveRadius,in height,out altitude)){
@@ -174,17 +224,46 @@ namespace VirtualGeometry.World{
         }
 
         // 点(惑星のローカル座標、Logical)の方向の実データの高さ(mip 0、倍精度の直接の補間)。
-        private bool TryRasterHeightAt(in LogicalVector3 point,out double height){
-            height=0;
+        private bool TryRasterHeightAt(in LogicalVector3 point,out double height,out float regionalWeight){
+            height=0;regionalWeight=0f;
             if(!point.X.TryToDouble(out double x)||!point.Y.TryToDouble(out double y)||!point.Z.TryToDouble(out double z)){return false;}
             double global=this.rasters[0].SampleDirection(x,y,z);
             double result=global;
             if(this.rasters.Length>1){
                 double regional=this.rasters[1].SampleDirection(x,y,z,out double weight);
                 result=global+(regional-global)*weight;
+                regionalWeight=(float)weight;
             }
             height=result;
             return true;
+        }
+
+        /// <summary>
+        /// 惑星のローカル座標の点 point(Logical)の方向の、実データの帯域より上の細部(増幅)の項だけ(R からの高さ、m)。増幅が無効か、実データが無いなら 0。検証と、増幅を除いた高さを求めるのに使う。
+        /// </summary>
+        public bool TryAmplifiedHeight(in LogicalVector3 point,out float height){
+            height=0f;
+            if(this.Selector==null||!point.TryToFloat3(out Unity.Mathematics.float3 approximate)){return false;}
+            if(this.rasters.Length==0||!(this.amplifyAmplitude>0f)){return true;}
+            Vector3 direction=((Vector3)approximate).normalized;
+            if(direction==Vector3.zero){return false;}
+            PlanetCellKey key=PlanetCellGeometry.KeyAt(direction,Mathf.Min(SampleLevel,this.MaximumLevel));
+            PlanetCellFrame frame=this.Selector.Frame(in key);
+            if(!LogicalVector3.TrySubtract(in point,frame.SphereOrigin,out LogicalVector3 difference)||!difference.TryToFloat3(out Unity.Mathematics.float3 offset)){return false;}
+            Vector3 sphere=PlanetCellGeometry.SphereOffset(frame.ApproximateSphereOrigin/this.radius,(Vector3)offset/this.radius,this.radius,out Vector3 _);
+            int count=Mathf.Clamp(this.octaves,1,MaximumOctaves);
+            if(!this.sampleLattice.TryFill(in frame,in this.inverseWavelength,count)){return false;}
+            if(!this.TryRasterHeightAt(in point,out double _,out float regionalWeight)){return false;}
+            height=this.AmplifiedHeight(sphere,0f,regionalWeight);
+            return true;
+        }
+
+        // 増幅の項(sampleLattice が Cell の格子の基点で埋まっているとき)。GPU の PlanetAmplifiedHeight と同じ式。
+        private float AmplifiedHeight(Vector3 sphere,float quadLength,float regionalWeight){
+            if(this.rasters.Length==0||!(this.amplifyAmplitude>0f)){return 0f;}
+            float cutoff=this.cutoffGlobalLog2+(this.cutoffRegionalLog2-this.cutoffGlobalLog2)*regionalWeight;
+            int count=Mathf.Clamp(this.octaves,1,MaximumOctaves);
+            return PlanetHeightField.Amplified(this.amplifyAmplitude,this.amplifyHurst,cutoff,1f/this.baseWavelength,count,this.sampleLattice,sphere,quadLength);
         }
 
         /// <summary>Cell の(球面上の)原点 <see cref="PlanetCellFrame.SphereOrigin"/> からの相対位置 sphere(球面上の点)の高さ(R からの高さ。quadLength で帯域制限。0 なら全部)。</summary>
@@ -199,7 +278,8 @@ namespace VirtualGeometry.World{
             if(!this.TryProceduralHeight(in frame,sphere,quadLength,out height)){return false;}
             if(this.rasters.Length>0){
                 if(!this.TryRasterCells(in frame,quadLength)){return false;}
-                height+=this.RasterHeight(sphere,shift);
+                height+=this.RasterHeight(sphere,shift,out float regionalWeight);
+                height+=this.AmplifiedHeight(sphere,quadLength,regionalWeight);
             }else{
                 height-=shift;
             }
@@ -226,11 +306,13 @@ namespace VirtualGeometry.World{
         }
 
         // 実データの高さから shift を引いた値(PlanetRaster.hlsl の PlanetRasterHeight と同じ式)。TryRasterCells の後に呼ぶ。
-        private float RasterHeight(Vector3 sphere,float shift){
+        private float RasterHeight(Vector3 sphere,float shift,out float regionalWeight){
+            regionalWeight=0f;
             float height=this.rasters[0].Sample(in this.rasterCells[0],sphere,this.radius,shift,out float _);
             if(this.rasters.Length>1){
                 float regional=this.rasters[1].Sample(in this.rasterCells[1],sphere,this.radius,shift,out float weight);
                 height+=(regional-height)*weight;
+                regionalWeight=weight;
             }
             return height;
         }
@@ -275,6 +357,9 @@ namespace VirtualGeometry.World{
             PlanetHeightSettings height=this.heightSettings;
             commands.SetComputeVectorParam(shader,"_HeightShape",new Vector4(height.SeaLevel,height.ShoreWidth,height.OceanDepth,height.PlainsHeight));
             commands.SetComputeVectorParam(shader,"_HeightBands",new Vector4(height.MountainOctave,height.MountainAmplitude,height.DetailOctave,height.DetailAmplitude));
+            float amplify=this.amplifyAmplitude;
+            if(this.rasters.Length==0){amplify=0f;}
+            commands.SetComputeVectorParam(shader,"_HeightAmplify",new Vector4(amplify,this.amplifyHurst,this.cutoffGlobalLog2,this.cutoffRegionalLog2));
         }
 
         /// <summary>PlanetHeight.hlsl の Cell ごとの値(octave の格子の基点。高さ 0 の球面上の原点 SphereOrigin から求める)を設定する。_HeightShift は基底の生成が設定する。</summary>

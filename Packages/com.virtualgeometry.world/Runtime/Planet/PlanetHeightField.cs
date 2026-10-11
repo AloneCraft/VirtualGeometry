@@ -80,6 +80,29 @@ namespace VirtualGeometry.World{
             return Mathf.Clamp(total,-1f,1f)*heightAmplitude;
         }
 
+        /// <summary>
+        /// 実データの帯域より上の細部(増幅)。GPU の PlanetHeight.hlsl の PlanetAmplifiedHeight と同じ式。
+        /// 遮断波長の log2(cutoffLog2)より短い波長の octave を、重み saturate(x)・振幅 amplitude·2^(−hurst·x)(x = log2(遮断波長/octave の波長))で足す。
+        /// quadLength で帯域制限する(波長が 2·quadLength より短い octave は足さない)ので、遮断波長の半分より粗い Cell には入らない。
+        /// </summary>
+        public static float Amplified(float amplitude,float hurst,float cutoffLog2,float inverseWavelength,int octaves,PlanetHeightLattice lattice,Vector3 sphere,float quadLength){
+            if(!(amplitude>0f)){return 0f;}
+            float baseLog2=-MathF.Log(inverseWavelength)/MathF.Log(2f);
+            float sum=0;
+            for(int d=0;d<octaves;d++){
+                float x=cutoffLog2-(baseLog2-d);
+                if(x<=0f||!Resolved(d,quadLength,inverseWavelength)){continue;}
+                sum+=Mathf.Clamp01(x)*amplitude*MathF.Pow(2f,-hurst*x)*OctaveNoise(lattice,sphere,inverseWavelength,d,3u);
+            }
+            return sum;
+        }
+
+        /// <summary>増幅の項の絶対値の上界(gradient noise の範囲 ±1.5 に、octave の振幅の和 A/(1−2^−H) を掛ける)。選択の bounds に足す。</summary>
+        public static float AmplifiedMaximum(float amplitude,float hurst){
+            if(!(amplitude>0f)){return 0f;}
+            return 1.5f*amplitude/(1f-MathF.Pow(2f,-hurst));
+        }
+
         // HLSL の smoothstep と同じ(Mathf.SmoothStep は別の式)。
         private static float SmoothStep(float low,float high,float value){
             float t=Mathf.Clamp01((value-low)/(high-low));

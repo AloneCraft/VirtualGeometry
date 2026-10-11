@@ -7,6 +7,9 @@
 // 高さ = Hmax·clamp(大陸 + 山 + 細部, −1, 1)。各項の振幅は Hmax に対する割合。
 // 帯域制限: 波長が 2·quadLength より短い octave は足さない(頂点の間隔で表せない帯域。粗い Cell の折り返しを防ぐ)。
 // 実データの格子(PlanetRaster.hlsl)の高さを、手続きの高さの後ろに足す(PlanetCell.hlsl の _Radius、_HeightShift が先に必要)。
+// 実データの帯域より上の細部の増幅: 実データがあるとき、遮断波長(実データの 1/2 画素の波長)より短い波長の octave を足す。
+// octave d の波長を λd、遮断波長を λc(局所の格子の重みで全球と局所の値を混ぜる)として x = log2(λc/λd)。x > 0 の octave を、重み saturate(x)(1 octave かけて入る)、
+// 振幅 A·2^(−H·x)(Hurst 指数 H。遮断波長で A、波長が半分になるごとに 2^−H 倍)で足す。平均 0 の gradient noise なので、帯域制限で落としても低い周波数は変わらない。
 // 戻り値は「高さ − _HeightShift」(Cell の原点を持ち上げた分。頂点の高さ方向の成分を小さく保つため、実データは texel の段階で引く)。
 // _HeightShift が 0 でない Cell は、地形の生成だけ。海の水深(PlanetOceanGenerate.compute)は _HeightShift=0 の Cell で、絶対の高さを使う。
 
@@ -25,6 +28,8 @@ float _HeightAmplitude;
 float4 _HeightShape;
 // x: 山の最初の octave、y: 山の振幅、z: 細部の最初の octave、w: 細部の振幅
 float4 _HeightBands;
+// x: 増幅の振幅 A(m。0 で無効)、y: Hurst 指数 H、z: 全球の格子の遮断波長の log2(m)、w: 局所の格子の遮断波長の log2(m)
+float4 _HeightAmplify;
 
 uint3 PlanetPcg3d(uint3 v)
 {
@@ -72,6 +77,28 @@ bool PlanetOctaveResolved(int octave,float quadLength)
     return exp2(-(float)octave)>=2.0*quadLength*_InverseWavelength;
 }
 
+// 実データの帯域より上の細部(増幅)。regionalWeight は局所の格子の重み。
+float PlanetAmplifiedHeight(float3 sphere,float quadLength,float regionalWeight)
+{
+    if(_HeightAmplify.x<=0.0||_RasterLayerCount<=0)
+    {
+        return 0.0;
+    }
+    float cutoff=lerp(_HeightAmplify.z,_HeightAmplify.w,regionalWeight);
+    float baseLog2=-log2(_InverseWavelength);
+    float sum=0;
+    for(int d=0;d<_Octaves;d++)
+    {
+        float x=cutoff-(baseLog2-(float)d);
+        if(x<=0.0||!PlanetOctaveResolved(d,quadLength))
+        {
+            continue;
+        }
+        sum+=saturate(x)*_HeightAmplify.x*exp2(-_HeightAmplify.y*x)*PlanetOctaveNoise(sphere,d,3u);
+    }
+    return sum;
+}
+
 float PlanetHeight(float3 sphere,float quadLength)
 {
     // 大陸: 低い周波数の fBm を海面のしきい値で陸と海に分ける。
@@ -114,7 +141,9 @@ float PlanetHeight(float3 sphere,float quadLength)
         amplitude*=0.5;
     }
     // 実データの高さ(PlanetRaster.hlsl)を足す。実データがあるときは、手続きの項は実データの帯域より上の細部に使う(PlanetTerrainSource の設定)。
-    return clamp(total,-1.0,1.0)*_HeightAmplitude+PlanetRasterHeight(sphere);
+    float regionalWeight;
+    float raster=PlanetRasterHeightWeighted(sphere,regionalWeight);
+    return clamp(total,-1.0,1.0)*_HeightAmplitude+raster+PlanetAmplifiedHeight(sphere,quadLength,regionalWeight);
 }
 
 #endif

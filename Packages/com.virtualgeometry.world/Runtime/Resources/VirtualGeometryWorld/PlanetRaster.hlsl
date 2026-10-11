@@ -229,8 +229,10 @@ float PlanetRasterLayerSample(int layer,float2 delta,out float weight)
 }
 
 // 実データの高さ(半径 R からの高さ)から _HeightShift を引いた値。sphere は Cell の(球面上の)原点からの球面上の点の相対位置。
-float PlanetRasterHeight(float3 sphere)
+// regionalWeight は局所の格子の重み(0〜1。局所の格子が無いときは 0)。実データの帯域より上の細部の増幅(PlanetHeight.hlsl)が、遮断波長を重みで混ぜるために使う。
+float PlanetRasterHeightWeighted(float3 sphere,out float regionalWeight)
 {
+    regionalWeight=0.0;
     if(_RasterLayerCount<=0)
     {
         return -_HeightShift;
@@ -244,8 +246,15 @@ float PlanetRasterHeight(float3 sphere)
         float weight1;
         float regional=PlanetRasterLayerSample(1,delta,weight1);
         height=lerp(height,regional,weight1);
+        regionalWeight=weight1;
     }
     return height;
+}
+
+float PlanetRasterHeight(float3 sphere)
+{
+    float regionalWeight;
+    return PlanetRasterHeightWeighted(sphere,regionalWeight);
 }
 
 #endif

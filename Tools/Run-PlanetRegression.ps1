@@ -22,7 +22,9 @@ param(
     [switch]$Tests,
     # A recorded vertex-hash baseline file. When given, the RealMoon run in mode "on" compares its vertex hashes against it
     # (-vertexHashMode compare). The baseline is per machine/GPU/driver, so it is not kept in the repository; a different environment is reported as "not compared".
-    [string]$HashBaseline = ""
+    [string]$HashBaseline = "",
+    # Extra Unity arguments for every run, as one space separated string (for example "-poolCapacity 2048").
+    [string]$Extra = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,6 +50,7 @@ $table = @(
     @("DepthResolution", "DepthResolutionValidation.Run", "DepthResolution", @("on")),
     @("CameraStateRelease", "CameraStateReleaseValidation.Run", "CameraStateRelease", @("on")),
     @("PlayStopLeak", "PlayStopLeakValidation.Run", "PlayStopLeak", @("on")),
+    @("Amplification", "AmplificationValidation.Run", "Amplification", @("on")),
     @("RealMoon", "RealMoonValidation.Run", "RealMoon", @("on", "off")),
     @("SyntheticRelief", "RealMoonValidation.RunSynthetic", "SyntheticRelief", @("on", "off")),
     @("RealMoonPolar", "RealMoonValidation.RunPolar", "RealMoonPolar", @("on")),
@@ -96,6 +99,7 @@ foreach ($row in $table) {
         $arguments = @("-batchmode", "-force-d3d12", "-projectPath", $project, "-executeMethod", ($prefix + $row[1]), "-logFile", (Join-Path $logs ($row[0] + "-" + $mode + ".log")))
         if ($mode -eq "forced") { $arguments += @("-heightShiftThreshold", "0") }
         if ($mode -eq "off") { $arguments += @("-heightShiftThreshold", "1e9") }
+        if ($Extra -ne "") { $arguments += @($Extra -split " " | Where-Object { $_ -ne "" }) }
         if ($HashBaseline -ne "" -and $row[0] -eq "RealMoon" -and $mode -eq "on") { $arguments += @("-vertexHashBaseline", $HashBaseline, "-vertexHashMode", "compare") }
         $report = Join-Path $dir "Report.txt"
         if (Test-Path $report) { Remove-Item $report -Force }
