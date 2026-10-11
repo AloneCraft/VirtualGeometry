@@ -136,6 +136,14 @@ namespace VirtualGeometry.Omni.Editor{
             int pool=RealMoonData.PoolCapacity(4096);
             report.Add("poolCapacity: "+pool);
             MoonBallSceneBuilder.Configure(moon,(float)MoonRadius,0f,3800f,1,32,pool,64,true);
+            // 描画 slot は pool と分けて指定できる(-maxDrawSlots N。既定は pool と同じ)。
+            int drawSlots=RealMoonData.MaximumDrawSlots(pool);
+            if(drawSlots!=pool){
+                var drawSettings=new SerializedObject(moon);
+                drawSettings.FindProperty("maximumDrawSlots").intValue=drawSlots;
+                drawSettings.ApplyModifiedPropertiesWithoutUndo();
+            }
+            report.Add("maximumDrawSlots: "+drawSlots);
             HeightShiftOverride.Apply(moon);
             // 環境: GPU・API・Unity の版・持ち上げの設定・データ。pool が既定(4096)でないときは pool も入れる(starved で粗い Cell になると頂点が変わるため)。
             string hashEnvironment="gpu="+SystemInfo.graphicsDeviceName+";api="+SystemInfo.graphicsDeviceType+";unity="+Application.unityVersion+";shift="+HeightShiftOverride.Describe()+";data="+DatasetName();
@@ -278,6 +286,7 @@ namespace VirtualGeometry.Omni.Editor{
                 }
                 CheckMillimeter(name,site[0],site[1]);
             }
+            report.Add("gpuMemory(driver): "+(UnityEngine.Profiling.Profiler.GetAllocatedMemoryForGraphicsDriver()/(1024*1024))+" MiB maximumDrawSlots="+moon.MaximumDrawSlots);
             report.Add("pool: used="+moon.UsedSlots+"/"+moon.PoolCapacity+" evictions="+moon.Evictions+" starved="+moon.StarvedRequests+" lastError="+(moon.LastError??"(none)")+" invalidBounds="+moon.InvalidBounds);
             if(polar&&moon.InvalidBounds>0){failures.Add("極の近くで、非有限の頂点を持つ Cell が "+moon.InvalidBounds+" 件ありました。");}
             float averageMicroseconds=0f;

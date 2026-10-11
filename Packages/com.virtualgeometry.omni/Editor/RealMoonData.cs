@@ -27,6 +27,15 @@ namespace VirtualGeometry.Omni.Editor{
             return fallback;
         }
 
+        /// <summary>コマンドラインの <c>-maxDrawSlots N</c>(camera ごとの描画 slot の数。pool と分けて小さくできる)。無ければ fallback。</summary>
+        public static int MaximumDrawSlots(int fallback){
+            string[] arguments=Environment.GetCommandLineArgs();
+            for(int i=0;i<arguments.Length-1;i++){
+                if(arguments[i]=="-maxDrawSlots"&&int.TryParse(arguments[i+1],System.Globalization.NumberStyles.Integer,System.Globalization.CultureInfo.InvariantCulture,out int value)&&value>0){return value;}
+            }
+            return fallback;
+        }
+
         /// <summary>実データを読む。無いときは、コピーする場所を示して例外にする。</summary>
         public static void LoadReal(out PlanetRasterLayer global,out PlanetRasterLayer regional){
             string root=Path.GetDirectoryName(Application.dataPath);

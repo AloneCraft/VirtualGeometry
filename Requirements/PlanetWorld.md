@@ -915,7 +915,10 @@ slot が足りないと、細分化に必要な Cell を確保できず(`starved
 | 512 | 8,316 | 2,194 | 10〜41,642 mm(穴は月全体では 0。近くは粗いまま) | FAILED |
 
 - 選ぶ Cell の約 3 倍が pool の目安(選んだ Cell に、その親・兄弟など、細分化の途中で使う Cell が加わる)。1 mm の細かさを地面で保つには、このシナリオで 4096 が要る(2048 は 1 階層足りない)
-- 描画 slot(`maximumDrawSlots`)と pool を分けて、描画 slot を選ぶ Cell の数(約 1,400 → 2,048)に絞ると、camera ごとの buffer(月の source で 1 camera あたり約 490 MiB)を半分にできる見込みだが、確かめていない
+- **描画 slot(`maximumDrawSlots`)は pool と分けて小さくできる**(2026-10-12、`-maxDrawSlots N`。`MoonBallValidation` の月は pool 4096)。camera ごとの buffer は描画 slot の数に比例する(約 0.1 MiB/slot)。
+  GPU memory(`Profiler.GetAllocatedMemoryForGraphicsDriver`、プロセス全体)は、描画 slot 4096 / 2048 / 1024 / 256 で 1,464 / 1,248 / 1,140 / 1,059 MiB(camera 1 台、月の source だけの違い)。
+  この scene の月は、描画 slot 2048 と 1024 でも MoonBall が合格した(選ぶ Cell が約 800 以内)。**描画 slot が選ぶ Cell の数より少ないとあふれる**: 256 では、core が `LastError`(「描くslotが上限(256)を超え、541個を描けませんでした。」)を出し、高さ 0.17 m の視点で穴が 46,057 画素になって不合格(あふれは検出される)。
+  描画 slot は、選ぶ Cell の最大(視点を動かす間のピーク)に余裕(目安 1.25 倍)を見て決める。既定(pool と同じ)は変えていない
 - 目標を 2 px より粗くする(`targetPixels` を上げる)と、必要な Cell が減るので、pool を小さくできる。この測定は目標 2 px だけ
 
 ### 限界

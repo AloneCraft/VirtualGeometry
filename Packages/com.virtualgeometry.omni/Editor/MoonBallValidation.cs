@@ -155,6 +155,13 @@ namespace VirtualGeometry.Omni.Editor{
             MoonBallSceneBuilder.UsePipeline();
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);
             objects=MoonBallSceneBuilder.Populate(settings);
+            // 月の描画 slot の数は pool と分けて指定できる(-maxDrawSlots N。camera ごとの buffer の大きさが変わる)。足りないと core が LastError を出す(設定エラーで不合格)。
+            int drawSlots=RealMoonData.MaximumDrawSlots(0);
+            if(drawSlots>0){
+                var drawSettings=new SerializedObject(objects.MoonSource);
+                drawSettings.FindProperty("maximumDrawSlots").intValue=drawSlots;
+                drawSettings.ApplyModifiedPropertiesWithoutUndo();
+            }
             if(mode==Mode.Raster){
                 PlanetRasterLayer regional=null;
                 if(realData){RealMoonData.LoadReal(out rasterGlobal,out regional);}else{rasterGlobal=RealMoonData.CreateSynthetic();}
@@ -1215,6 +1222,7 @@ namespace VirtualGeometry.Omni.Editor{
             if(sceneView!=null){UnityEngine.Object.DestroyImmediate(sceneView);sceneView=null;}
             if(error!=null){failures.Add(error.ToString());}
             foreach(string message in errors){failures.Add("Unity logged error: "+message);}
+            if(moon!=null){report.Add("gpuMemory(driver): "+(UnityEngine.Profiling.Profiler.GetAllocatedMemoryForGraphicsDriver()/(1024*1024))+" MiB moon maximumDrawSlots="+moon.MaximumDrawSlots+" poolCapacity="+moon.PoolCapacity);}
             report.Add("UTC="+DateTime.UtcNow.ToString("O",CultureInfo.InvariantCulture)+" Unity="+Application.unityVersion+" GPU="+SystemInfo.graphicsDeviceName+" API="+SystemInfo.graphicsDeviceType);
             if(failures.Count==0){report.Add("PASSED");}else{report.Add("FAILED");report.AddRange(failures);}
             Directory.CreateDirectory(results);
