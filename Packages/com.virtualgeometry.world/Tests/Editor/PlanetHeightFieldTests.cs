@@ -34,7 +34,7 @@ namespace VirtualGeometry.World.Tests{
 
         [Test]
         public void Amplified(){
-            // 遮断波長 = 画素 2 つ(ここでは 1,000 m)。
+            // 遮断波長 = 1,000 m(画素の大きさとは無関係に、cutoffLog2 で直接指定する)。
             float cutoffLog2=(float)Log2(1000.0);
             {
                 // 振幅 0 なら 0。

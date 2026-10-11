@@ -193,7 +193,7 @@ namespace VirtualGeometry.Omni.Editor{
             report.Add("amplification: amplitude="+AmplifyAmplitude+"m hurst="+AmplifyHurst+" data texel="+globalLayer.TexelMeters(MoonRadius).ToString("F0",CultureInfo.InvariantCulture)+"m cutoff wavelength="+cutoffWavelength.ToString("F0",CultureInfo.InvariantCulture)+
                 "m bound="+moon.AmplifyMaximum.ToString("G4",CultureInfo.InvariantCulture)+"m (amplitude set later)");
 
-            // 場所: 合成の格子の最大の位置(勾配の小さい山頂)、経度・緯度 0。
+            // 場所: 経度・緯度 0(ExtremeSites の [2]。合成の格子の最大の位置([0])ではない)。
             double[][] sites=RealMoonData.ExtremeSites(globalLayer);
             double[] site=sites[2];
             string siteName="Site"+site[0].ToString("F1",CultureInfo.InvariantCulture)+"_"+site[1].ToString("F1",CultureInfo.InvariantCulture);
@@ -262,7 +262,8 @@ namespace VirtualGeometry.Omni.Editor{
         private static bool SameVertices(VirtualGeometryPackedVertex[] a,VirtualGeometryPackedVertex[] b){
             if(a.Length!=b.Length){return false;}
             for(int i=0;i<a.Length;i++){
-                if(a[i].Position!=b[i].Position){return false;}
+                // Vector3 の != は近似(差の二乗が 1e-10 未満を等しいとみなす)なので、成分を厳密に比べる。
+                if(a[i].Position.x!=b[i].Position.x||a[i].Position.y!=b[i].Position.y||a[i].Position.z!=b[i].Position.z){return false;}
             }
             return true;
         }
@@ -276,7 +277,7 @@ namespace VirtualGeometry.Omni.Editor{
             }
             order.Sort((a,b)=>a.Key.CompareTo(b.Key));
             int side=PlanetLayerSource.CellQuads+1;
-            int cells=0;double worst=0;
+            int cells=0;int points=0;double worst=0;
             for(int n=0;n<order.Count&&n<12;n++){
                 PlanetCellKey key=order[n].Value;
                 if(!moon.TryReadbackCellForDiagnostics(in key,out VirtualGeometryPackedVertex[] vertices,out PlanetCellFrame _)){continue;}
@@ -286,6 +287,7 @@ namespace VirtualGeometry.Omni.Editor{
                     for(int i=0;i<side;i+=4){
                         if(!moon.TryEvaluateVertexForDiagnostics(in key,i,j,out Vector3 expected)){continue;}
                         cellWorst=Math.Max(cellWorst,(vertices[j*side+i].Position-expected).magnitude);
+                        points++;
                     }
                 }
                 double cellSize=moon.Selector.QuadArc(key.Level)*PlanetLayerSource.CellQuads;
@@ -295,8 +297,8 @@ namespace VirtualGeometry.Omni.Editor{
                 if(!(cellWorst<=allowed)){failures.Add("GPU の頂点が CPU の式と "+cellWorst+"m 違います(許す差 "+allowed+"m、"+name+"、"+key+")。");}
                 worst=Math.Max(worst,cellWorst);
             }
-            report.Add("GPU vs CPU "+name+": cells="+cells+" worst="+worst.ToString("G3",CultureInfo.InvariantCulture)+"m");
-            if(cells==0){failures.Add(name+": GPU と CPU を比べる Cell がありません。");}
+            report.Add("GPU vs CPU "+name+": cells="+cells+" points="+points+" worst="+worst.ToString("G3",CultureInfo.InvariantCulture)+"m");
+            if(cells==0||points==0){failures.Add(name+": GPU と CPU を比べる頂点がありません(Cell "+cells+"、頂点 "+points+")。");}
         }
 
         // 地表 0.17 m の視点の真下の Cell で、CPU の地表の高さ(増幅を含む)と、描画の頂点の高さ(|原点 + 相対位置| − R)を比べる。

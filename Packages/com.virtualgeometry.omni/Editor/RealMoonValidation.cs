@@ -137,7 +137,10 @@ namespace VirtualGeometry.Omni.Editor{
             report.Add("poolCapacity: "+pool);
             MoonBallSceneBuilder.Configure(moon,(float)MoonRadius,0f,3800f,1,32,pool,64,true);
             HeightShiftOverride.Apply(moon);
-            VertexHashBaseline.Begin("gpu="+SystemInfo.graphicsDeviceName+";api="+SystemInfo.graphicsDeviceType+";unity="+Application.unityVersion+";shift="+HeightShiftOverride.Describe()+";data="+DatasetName());
+            // 環境: GPU・API・Unity の版・持ち上げの設定・データ。pool が既定(4096)でないときは pool も入れる(starved で粗い Cell になると頂点が変わるため)。
+            string hashEnvironment="gpu="+SystemInfo.graphicsDeviceName+";api="+SystemInfo.graphicsDeviceType+";unity="+Application.unityVersion+";shift="+HeightShiftOverride.Describe()+";data="+DatasetName();
+            if(pool!=4096){hashEnvironment+=";pool="+pool;}
+            VertexHashBaseline.Begin(hashEnvironment);
             report.Add("heightShiftThreshold: "+HeightShiftOverride.Describe()+" (component "+moon.HeightShiftThreshold.ToString("G",CultureInfo.InvariantCulture)+")");
             moon.Material=AssetDatabase.LoadAssetAtPath<Material>(MoonBallSceneBuilder.MoonMaterialPath);
             moon.SetRasters(globalLayer,regionalLayer);

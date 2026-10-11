@@ -11,7 +11,7 @@ namespace VirtualGeometry.Omni.Editor{
     /// - record: 今回の値でファイルを書く
     /// - compare: ファイルと比べる(ファイルが無ければ失敗)
     /// - auto: ファイルがあれば比べ、無ければ書く
-    /// ハッシュは GPU とドライバーで変わるので、ファイルの先頭の環境(GPU 名、API、Unity の版、持ち上げの設定)が違うときは、比べずに「環境違いのため未比較」と report に書く(失敗にはしない)。
+    /// ハッシュは GPU とドライバーで変わるので、ファイルの先頭の環境(GPU 名、API、Unity の版、持ち上げの設定、データ、既定でない pool の大きさ)が違うときは、比べずに「環境違いのため未比較」と report に書く(失敗にはしない)。
     /// 指定が無ければ何もしない。
     /// </summary>
     internal static class VertexHashBaseline{

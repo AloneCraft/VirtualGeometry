@@ -21,8 +21,9 @@ namespace VirtualGeometry.World{
         [SerializeField,Min(0.01f)] private float baseWavelength=4000;
         [SerializeField,Range(1,MaximumOctaves)] private int octaves=13;
         [SerializeField] private PlanetHeightSettings heightSettings=PlanetHeightSettings.Default;
-        // 実データの帯域より上の細部の増幅(実データがあるときだけ働く)。0 なら無効。遮断波長(実データの 2 画素の波長)での octave の振幅(m)と、Hurst 指数(波長が半分になるごとに振幅が 2^−H 倍)。
+        // 増幅の遮断波長は、実データの 1 画素の波長の何倍か(1/2 画素)。
         private const double CutoffTexels=0.5;
+        // 実データの帯域より上の細部の増幅(実データがあるときだけ働く)。0 なら無効。遮断波長(実データの 1/2 画素の波長。CutoffTexels)での octave の振幅(m)と、Hurst 指数(波長が半分になるごとに振幅が 2^−H 倍)。
         [SerializeField,Min(0)] private float amplifyAmplitude=0f;
         [SerializeField,Range(0.3f,1f)] private float amplifyHurst=0.87f;
         // 中心の方向の地表の高さの絶対値がこれ以上の Cell は、原点を地表の高さまで持ち上げる(頂点の高さ方向の成分を小さく保つ)。0 なら高さが 0 でない全ての Cell。
@@ -40,6 +41,15 @@ namespace VirtualGeometry.World{
         // 実データの格子の遮断波長(CutoffTexels × 1 画素の波長)の log2(m)。全球と局所。SetRasters と Configure で求め直す。
         private float cutoffGlobalLog2;
         private float cutoffRegionalLog2;
+        // 色(アルベド)の格子(任意)。Cell ごとの値(原点の画素の位置)は slot ごとに覚える(Cell が変わったときだけ求め直す)。
+        private PlanetColorLayer colorLayer;
+        private PlanetColorCell[] colorCells;
+        private PlanetCellKey[] colorKeys;
+        private bool[] colorValid;
+        private static readonly int ColorTextureId=Shader.PropertyToID("_PlanetColorTex");
+        private static readonly int ColorDirectionId=Shader.PropertyToID("_PlanetColorDirection");
+        private static readonly int ColorIndexId=Shader.PropertyToID("_PlanetColorIndex");
+        private static readonly int ColorFractionId=Shader.PropertyToID("_PlanetColorFraction");
         private PlanetCellKey rasterCacheKey;
         private float rasterCacheQuad=-1f;
         private bool rasterCacheValid;
@@ -84,6 +94,7 @@ namespace VirtualGeometry.World{
         public float AmplifyHurst{
             get=>this.amplifyHurst;
             set{
+                if(float.IsNaN(value)){value=0.87f;}
                 value=Mathf.Clamp(value,0.3f,1f);
                 if(value==this.amplifyHurst){return;}
                 this.amplifyHurst=value;
@@ -165,15 +176,52 @@ namespace VirtualGeometry.World{
             this.Rebuild();
         }
 
+        /// <summary>色(アルベド)の格子(<see cref="PlanetColorLayer"/>)。null なら使わない。変えたら次の frame から、Cell ごとの値を求め直す(頂点は作り直さない)。</summary>
+        public PlanetColorLayer ColorLayer{
+            get=>this.colorLayer;
+            set{
+                this.colorLayer=value;
+                if(this.colorValid!=null){Array.Clear(this.colorValid,0,this.colorValid.Length);}
+            }
+        }
+
+        /// <summary>
+        /// 色の格子の値(Cell の原点の方向と画素の位置)を draw の MaterialPropertyBlock に書く。shader は RadialMoonGrid.shader の _PlanetColorDirection、_PlanetColorIndex、_PlanetColorFraction、_PlanetColorTex。
+        /// 色の格子が無いとき(または原点を求められないとき)は、_PlanetColorDirection.w = 0 を書く(前の値が残らないように)。
+        /// </summary>
+        protected override void WriteCellProperties(MaterialPropertyBlock block,int slot,in PlanetCellFrame frame){
+            base.WriteCellProperties(block,slot,in frame);
+            if(this.colorLayer==null||this.colorCells==null||slot<0||slot>=this.colorCells.Length){
+                block.SetVector(ColorDirectionId,Vector4.zero);
+                return;
+            }
+            if(!this.colorValid[slot]||!this.colorKeys[slot].Equals(frame.Key)){
+                if(!this.colorLayer.TryCell(frame.SphereOrigin,out this.colorCells[slot])){
+                    this.colorValid[slot]=false;
+                    block.SetVector(ColorDirectionId,Vector4.zero);
+                    return;
+                }
+                this.colorKeys[slot]=frame.Key;this.colorValid[slot]=true;
+            }
+            PlanetColorCell cell=this.colorCells[slot];
+            block.SetTexture(ColorTextureId,this.colorLayer.Texture);
+            block.SetVector(ColorDirectionId,new Vector4(cell.Direction.x,cell.Direction.y,cell.Direction.z,1f));
+            block.SetVector(ColorIndexId,new Vector4(cell.ColumnIndex,cell.RowIndex,cell.Width,cell.Height));
+            block.SetVector(ColorFractionId,new Vector4(cell.ColumnFraction,cell.RowFraction,cell.ColumnsPerRadian,cell.RowsPerRadian));
+        }
+
         protected override void OnEnable(){
             this.RefreshCutoffs();
             if(!LogicalScalar.TryFromFloat(this.baseWavelength,out LogicalScalar wavelength)||!LogicalScalar.TryReciprocal(in wavelength,out this.inverseWavelength)){
                 Debug.LogError("PlanetTerrainSource: 波長を Logical にできません。",this);
             }
             base.OnEnable();
+            int capacity=this.PoolCapacity;
+            this.colorCells=new PlanetColorCell[capacity];this.colorKeys=new PlanetCellKey[capacity];this.colorValid=new bool[capacity];
         }
 
         protected override void OnDisable(){
+            this.colorCells=null;this.colorKeys=null;this.colorValid=null;
             base.OnDisable();
             if(this.emptyRaster!=null){
                 if(Application.isPlaying){Destroy(this.emptyRaster);}else{DestroyImmediate(this.emptyRaster);}

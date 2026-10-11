@@ -61,7 +61,7 @@ Field は供給元の積み重ねで表す。
 各供給元は有効な解像度帯を宣言し、帯が重ならないように積む。
 
 増幅はデータの Nyquist 周波数より上の帯域だけに足し、
-データの1セルごとに平均0にする。
+データの1セルごとに平均0にする(実装は近似: §18 の増幅では、1 画素ごとの平均の二乗平均の平方根が全体の 0.34 倍で、厳密な 0 は保証しない)。
 
 遠景(データそのもの)と近景が一致することを、これで保証する。
 
@@ -830,7 +830,7 @@ slot が足りないと、細分化に必要な Cell を確保できず(`starved
 
 - 深度の分解能(z-fighting が起きる相対距離)は §21 で測った(この節の demo の接点ではなく、半径 10^20 m の天体 2 つの重ねで)。この節の画像の一致が崩れる距離は見つからなかった(上の「距離を変える」)
 - 月は起伏のある天体なので、「接点」は名目の点で、月が巨大な天体の面に突き刺さる所がある。接点 1 の近く(横 0.17m 以内)で、月の最下の頂点は接点の高さより 0.66mm 下にある(月の起伏の傾き約 4×10^-3)
-- 4 つの天体を同時に描く Cell は合計 1,000〜2,400。視点を変える検証の間に、月の pool(4096)で退避が 10,688 回起きた(`starved` 0、設定エラーなし)。pool の大きさと Cell 数の関係は、下の「pool の大きさ」で測った
+- 4 つの天体を同時に描く Cell は合計 1,000〜2,400。視点を変える検証の間に、月の pool(4096)で退避が 10,688 回起きた(`starved` 0、設定エラーなし)。pool の大きさと Cell 数の関係は、上の「pool の大きさ」で測った
 - 巨大な天体は高さの Field で 10^20 m だが、その地形は半径に比べて滑らかすぎ、地上の目線では平面と区別がつかない(§16)
 - 実キーボードの Input System 経由の入力と、HUD の文字(IMGUI)は確かめていない(§16)
 
@@ -889,9 +889,9 @@ slot が足りないと、細分化に必要な Cell を確保できず(`starved
 
 実データ(格子)の画素より細かい波長の起伏は、データに無い。そこへ、シード固定の gradient noise(`PlanetOctaveNoise`、channel 3)を、波長が半分になるごとに振幅を 2^−H 倍にして足す(フラクタル)。
 
-- 遮断波長 λc = 実データの 1/2 画素(`CutoffTexels` = 0.5。全球の LOLA で 1.9 km)。局所の格子があれば、重み(局所の格子の重み)で全球と局所の log2 λc を混ぜる(SLDEM の中では細かい波長まで増幅しない)
+- 遮断波長 λc = 実データの 1/2 画素(`CutoffTexels` = 0.5。全球の LOLA は 1 画素 1,895 m なので約 0.95 km。下の検証の合成の格子は 1 画素 3.79 km で 1.9 km)。局所の格子があれば、重み(局所の格子の重み)で全球と局所の log2 λc を混ぜる(SLDEM の中では細かい波長まで増幅しない)
 - octave d の波長 λd として x = log2(λc/λd) > 0 の octave を、重み saturate(x)(1 octave かけて入る)、振幅 A·2^(−H·x)で足す。A は遮断波長での octave の振幅(m)、H は Hurst 指数(既定 0.87。計画時の調査で LOLA から得た値で、ここでは測り直していない)。`AmplifyAmplitude` = 0 なら無効(既定)
-- 帯域制限は手続きの項と同じ: 波長が 2·quadLength より短い octave は足さない。そのため quad が λc/2 以上の Cell(月で階層 ≤ 5)には入らず、頂点は増幅の有無でビット単位で同じ
+- 帯域制限は手続きの項と同じ: 波長が 2·quadLength より短い octave は足さない。そのため quad が λc/2 以上の Cell(月で、LOLA の全球の格子なら階層 ≤ 6、下の検証の合成の格子なら階層 ≤ 5)には入らず、頂点は増幅の有無でビット単位で同じ
 - 式は GPU の `PlanetHeight.hlsl` の `PlanetAmplifiedHeight` と C# の `PlanetHeightField.Amplified` で同じ。選択の bounds には、上界 1.5·A/(1−2^−H)(A = 40 m、H = 0.87 で 132.5 m)を足す。`TryAmplifiedHeight` が点ごとの増幅の項だけを返す
 - 遮断波長を長くするほど、1 画素ごとの平均が 0 から離れる(gradient noise は低い周波数にも広がる): 2 画素で全体の 0.70 倍、1 画素で 0.50 倍、1/2 画素で 0.34 倍、1/4 画素で 0.26 倍。「データの 1 セルごとに平均 0」(§2)に近づけるため 1/2 画素にした(それより先は効果が小さい)。厳密な 0 は保証していない
 
@@ -907,6 +907,28 @@ slot が足りないと、細分化に必要な Cell を確保できず(`starved
 限界: 振幅 A は手で決める値で、実データの粗さから決める方法は未実施。見た目(模様・陰影)は、検証の画像が暗く(照明が地面に当たらず)評価していない。
 実データ(LOLA + SLDEM)の増幅の検証は、合成の格子だけで確かめた(局所の格子の重みによる遮断波長の混合は、式と CPU・GPU の一致は同じだが、SLDEM の中の動きは確かめていない)
 
+### 色(アルベド)の格子(`PlanetColorLayer`、`ColorLayerValidation`、2026-10-12)
+
+全球の色の texture(北が上・経度 −180°〜+180°・画素の中心が格子点の等距円筒。sRGB、mip 付き)を、`PlanetTerrainSource.ColorLayer` に設定すると、`RadialMoonGrid.shader` が地面の色(`_BaseColor`)の代わりに texture の色 × `_ColorGain` を使う。
+近くで色を 4,096 画素の画像から求めると、色の位置も同じ量子化(約 0.1 m)の問題が出るので、高さと同じ「Cell の原点 + 差」の方式にした。
+
+- CPU(`PlanetColorLayer.TryCell`): Cell の原点の方向を倍精度で正規化し、画素の位置を整数部と端数に分けて、Cell ごとの値(`_PlanetColorDirection`、`_PlanetColorIndex`、`_PlanetColorFraction`)として draw の MaterialPropertyBlock に書く(slot ごとに覚える)
+- GPU(fragment): 画素の方向 n と原点の方向 o の差 eps = n − o を、桁落ちしない式で求める。n = (o·(R+H) + p) の方向(p は Cell の原点からの相対位置)として、
+  eps = (p + o·c)/|w|、c = −(2(R+H)(o·p) + |p|²)/(|w| + R+H)、w = o·(R+H) + p。緯度経度の差は、高さの格子と同じ `PlanetLonLatDelta`(`PlanetLonLat.hlsl` へ切り出して共有。極の近くは `PolarDelta`)。
+  texture の位置 = (原点の画素の整数部 + 端数 + 差 × 1 ラジアンあたりの画素数 + 0.5)/大きさ。mip は、画素の大きさ(m)と texture の 1 画素の大きさ(m)の比の log2 で `SAMPLE_TEXTURE2D_LOD` する
+- `_ColorOnly` = 1 は、照明も格子もなしで、その色(線形)を出す検証用
+
+確認(月、合成の高起伏、RTX 4060 Ti、batchmode。色は線形の 0〜1、誤差は 255 を掛けた値):
+
+- 地上(高度 2 m、真下): 画像の中央 5×5 画素の平均が、真下の方向の CPU の双線形補間の色に、全 9 地点で 0.7/255 以内で一致。地点は、経度 0・90°・45°・180° の継ぎ目・±179.9° の継ぎ目の両側、緯度 ±89.99° の極の近く、−75°。合成の texture(1024×512、画素 10.7 km)と LROC(4096×2048、画素 2.7 km)の両方
+- 月全体の視点(高度 2.5R): 中央は合成の texture で 2.1/255 以内、離れた 4 画素(光線と球の交点の方向)も 1.7/255 以内。LROC は mip(1 画素 7.6 km、texel 2.7 km)で引くので、CPU の mip 0 の補間とは中央で最大 11/255、離れた画素で最大 18/255 違った(許す差 30/255)
+- 画像: LROC が月に貼られて、海と高地が見える(`TestResults/Planet/ColorLayer/lroc_orbit_*.png`)
+- 緯度経度の差の式を `PlanetLonLat.hlsl` へ切り出した後も、RealMoon の頂点ハッシュ 17 件が基準と一致、SyntheticPolar、Amplification、P5a、MoonBall は PASSED
+- データ: Omni のデモのテクスチャ(`Assets/Omni/Demos/PlanetSurface/Textures/LrocGlobal4k.png`)を `LocalData/OmniDemo/lroc-global-4096x2048.png`(git 管理外。Omni の LICENSE により配布・commit しない)にコピーして使う。無い環境では合成の texture だけを確かめる
+
+限界: 色は全球の texture 1 枚で、局所の色の Override は無い。近景の質感(texture の画素 2.7 km より細かい模様)は無い(増幅は高さだけ)。mip は等方(異方性フィルタ無し)。
+極の画素は、高さの格子の極冠のような処理をせず、texture の端の画素が続く(極で texture の端の行が全経度に広がる)。月のデモの scene と、`_ColorGain`(既定 1)の決め方は未実施
+
 ### 限界
 
 - **実データ(LOLA)の極の行は列ごとにばらつく**(行 0: 北 −80〜+65 m、南 +342〜+1,431 m。隣の列と北で 27 m、南で 306 m 違う。極冠の外周 947 m の 1 列は約 1 m)。極冠はこのばらつきを外周に残すので、南極の近くに崖がある。
@@ -916,9 +938,9 @@ slot が足りないと、細分化に必要な Cell を確保できず(`starved
   崖は元データの特徴で、極冠の式の問題ではない。対処は元データの前処理(極の近くの行を、経度方向の分解能に合わせて低域通過する等)で、Field の供給元の仕事として未実施
 - 既定の `Run`、`RunSouth` の GPU/CPU の照合は、粗い Cell のうち |z| > 0.966 の Cell を除外したまま(頂点ハッシュの基準を保つため)。極は `RunPolar`、`RunPolarSynthetic` が全 Cell で比べる
 - 頂点の位置の float の刻みは、Cell の原点の持ち上げ(§19)で解消した。残る限界は §19
-- 実データの帯域より上の増幅は、下の「実データの帯域より上の細部の増幅」で実装・検証した。実データの検証(RealMoon)は増幅 0 のまま(頂点ハッシュ 17 件が基準と一致)。増幅の振幅 A を実データの粗さから決める方法と、1 画素ごとの平均を厳密に 0 にすることは未実施
+- 実データの帯域より上の増幅は、上の「実データの帯域より上の細部の増幅」で実装・検証した。実データの検証(RealMoon)は増幅 0 のまま(頂点ハッシュ 17 件が基準と一致)。増幅の振幅 A を実データの粗さから決める方法と、1 画素ごとの平均を厳密に 0 にすることは未実施
 - 「Field の供給元の interface」(格子以外の供給元)は作っていない。いまは全球 + 局所の 2 枚の格子だけ
-- 色(LROC のアルベド)は未実施。近くで色を 4,096 画素の画像から求めると、色の位置も同じ量子化(約 0.1 m)の問題が出るので、高さと同じ原点 + 差の方式が要る
+- 色(LROC のアルベド)は、下の「色(アルベド)の格子」で、高さと同じ「原点 + 差」の方式で実装・検証した。月のデモの scene(MoonAndBall、BodyStack など)には組み込んでいない(`PlanetTerrainSource.ColorLayer` を設定すれば使える)
 - 視点の高さの降下(高度 150 km → 0.17 m)で、pool(4096)の退避が 17,554 回起きた(`starved` 0、設定エラーなし)
 
 ## 19. Cell の原点の持ち上げ(起伏の大きな天体の頂点の精度)
@@ -975,7 +997,7 @@ Cell の原点を、Cell の中心の方向の地表の高さ H だけ半径 R �
   `BodyStack` の timing は、持ち上げ前後の差を比べていない(振幅が小さく H = 0 のままの検証で、機械の負荷により ±数十 % 揺れた)
 - `TryCellHeightShift` の評価結果は Cell ごとに frame に入れて覚える(Selector の frame の cache は 65,536 件で捨てるが、生成済みの Cell は slot の frame の値を返すので変わらない)。`HeightShiftThreshold` を有効なまま変えると作り直す
 - 実データ(`LocalData/OmniDemo`、git 管理外)の検証は、データが無い環境では走らない。データ無しで走る合成の高起伏の検証は `RealMoonValidation.RunSynthetic`(下の確認)
-- 頂点の FNV ハッシュ(`RealMoonValidation` の report の `vertexHash=`)は、`VertexHashBaseline`(`-vertexHashBaseline <file>`、`-vertexHashMode record|compare|auto`)が基準のファイルと自動で比べる。ハッシュは GPU とドライバーで変わるので、ファイルの先頭の環境(GPU 名、API、Unity の版、持ち上げの設定、データ)が違えば比べず「環境違いのため未比較」と report に書く(失敗にはしない)。基準のファイルは環境ごとの値なので、リポジトリには置かない(`TestResults/` は git 管理外)
+- 頂点の FNV ハッシュ(`RealMoonValidation` の report の `vertexHash=`)は、`VertexHashBaseline`(`-vertexHashBaseline <file>`、`-vertexHashMode record|compare|auto`)が基準のファイルと自動で比べる。ハッシュは GPU とドライバーで変わるので、ファイルの先頭の環境(GPU 名、API、Unity の版、持ち上げの設定、データ、既定でない pool の大きさ)が違えば比べず「環境違いのため未比較」と report に書く(失敗にはしない)。基準のファイルは環境ごとの値なので、リポジトリには置かない(`TestResults/` は git 管理外)
 - `RadialBall` の `_PlanetCellUp.w = R + H` は、起伏のあるボールで H ≠ 0 を通した(§16 の `RunReliefBall`。H を無視すると不合格になる)。月の頂点と描画行列・`_PlanetCellRef` も H ≠ 0 で通した(`MoonBall`、`BodyStack` を `-heightShiftThreshold 0` で実行、`RealMoonBall`)
 
 ## 20. 単純に拡大した面と VG の面に、ボールを沈める比べ(PlaneSink)

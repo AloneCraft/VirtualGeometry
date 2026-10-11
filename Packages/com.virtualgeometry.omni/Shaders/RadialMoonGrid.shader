@@ -14,6 +14,11 @@ Shader "Omni/RadialMoonGrid"
         // 1 なら、照明も格子もなしで _FlatTint だけを出す(検証用)。
         _FlatColor("Flat Color (debug)", Float) = 0
         _FlatTint("Flat Tint (debug)", Color) = (0.5, 0.5, 0.5, 1)
+        // 色(アルベド)の格子(PlanetTerrainSource.ColorLayer)があるとき、_BaseColor の代わりに色の texture の色 × _ColorGain を地面の色にする。
+        // _ColorOnly が 1 なら、その色(線形)を、照明も格子もなしで出す(検証用)。
+        _ColorGain("Color Gain", Float) = 1
+        _ColorOnly("Color Only (debug)", Float) = 0
+        [NoScaleOffset] _PlanetColorTex("Planet Color Texture", 2D) = "white" {}
         // Radial ワープ用プロパティ(MaterialPropertyBlock で上書きされる。宣言が無いと上書きが黙って無視される)。
         [HideInInspector] _RadialGlobal_RadialScale("_RadialGlobal_RadialScale", Float) = 1
         [HideInInspector] _RadialGlobal_Mode("_RadialGlobal_Mode", Float) = 2
@@ -77,6 +82,7 @@ Shader "Omni/RadialMoonGrid"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
             #include "Packages/com.omni.rendering/Runtime/Sharders/RadialInject.hlsl"
             #include "Packages/com.omni.rendering/Runtime/Sharders/RadialVertexHooks.hlsl"
+            #include "Packages/com.virtualgeometry.world/Runtime/Resources/VirtualGeometryWorld/PlanetLonLat.hlsl"
 
             CBUFFER_START(UnityPerMaterial)
                 float4 _BaseColor;
@@ -86,13 +92,25 @@ Shader "Omni/RadialMoonGrid"
                 float  _Smoothness;
                 float  _FlatColor;
                 float4 _FlatTint;
+                float  _ColorGain;
+                float  _ColorOnly;
             CBUFFER_END
+
+            TEXTURE2D(_PlanetColorTex);
+            SAMPLER(sampler_PlanetColorTex);
 
             // Cell ごとの値(MaterialPropertyBlock、PlanetLayerSource.WriteCellProperties)。
             // _PlanetCellUp: xyz=Cell の原点の外向きの単位方向(object 空間)、w=Cell の原点の惑星の中心からの距離(半径 + 原点を持ち上げた距離)。
             // _PlanetCellRef: xyz=Cell の原点 − 基準点(Logical で引いたもの)、w=基準点があれば 1。
             float4 _PlanetCellUp;
             float4 _PlanetCellRef;
+            // 色の格子の Cell ごとの値(PlanetTerrainSource.WriteCellProperties)。
+            // _PlanetColorDirection: xyz=Cell の原点の単位方向(惑星のローカル座標)、w=色の格子があれば 1。
+            // _PlanetColorIndex: xy=原点の画素の列・行(北が行 0)の整数部、zw=texture の幅・高さ。
+            // _PlanetColorFraction: xy=原点の画素の列・行の端数、z=1 ラジアンあたりの列数(経度)、w=同(緯度)。
+            float4 _PlanetColorDirection;
+            float4 _PlanetColorIndex;
+            float4 _PlanetColorFraction;
 
             struct Attributes
             {
@@ -173,6 +191,33 @@ Shader "Omni/RadialMoonGrid"
 
                 float3 position = input.positionOS.xyz / max(input.positionOS.w, 1.0e-30f);
                 half3 albedo = (half3)_BaseColor.rgb;
+                // 色の格子: 画素の緯度経度の差(Cell の原点の方向 o からの差 eps = n − o)を、桁落ちしない式で求め、色の texture の位置にする。
+                // n = (o·(R+H) + position) の方向。n − o = (p + o·(R+H − |w|))/|w|、R+H − |w| = −(2(R+H)(o·p) + |p|²)/(|w| + R+H)(w = o·(R+H) + p)。
+                if (_PlanetColorDirection.w > 0.5f)
+                {
+                    float3 o = _PlanetColorDirection.xyz;
+                    float radius = _PlanetCellUp.w;
+                    float3 w = o * radius + position;
+                    float wl = length(w);
+                    float correction = -(2.0f * radius * dot(o, position) + dot(position, position)) / (wl + radius);
+                    float3 eps = (position + o * correction) / wl;
+                    float2 delta = PlanetLonLatDelta(o, eps);
+                    float column = _PlanetColorFraction.x + delta.x * _PlanetColorFraction.z;
+                    float row = _PlanetColorFraction.y - delta.y * _PlanetColorFraction.w;
+                    float2 uv = float2((_PlanetColorIndex.x + column + 0.5f) / _PlanetColorIndex.z,
+                        1.0f - (_PlanetColorIndex.y + row + 0.5f) / _PlanetColorIndex.w);
+                    // mip: 画素の大きさ(m)と、texture の 1 画素の南北の大きさ(m)から。
+                    float pixelMeters = max(length(ddx(position)), length(ddy(position)));
+                    float texelMeters = radius / _PlanetColorFraction.w;
+                    float lod = max(0.0f, log2(max(pixelMeters, 1.0e-9f) / texelMeters));
+                    albedo = (half3)SAMPLE_TEXTURE2D_LOD(_PlanetColorTex, sampler_PlanetColorTex, uv, lod).rgb * (half)_ColorGain;
+                    if (_ColorOnly > 0.5f)
+                    {
+                        outputColor = half4(albedo, 1);
+                        outputDepth = OmniRadialResolveFragmentDepth(input.positionOS, input.positionCS.z);
+                        return;
+                    }
+                }
                 // 基準点からの差(Cell の原点 − 基準点は CPU が Logical で引いた値)を、基準点の接平面の 2 つの軸で測る。
                 if (_PlanetCellRef.w > 0.5f)
                 {
