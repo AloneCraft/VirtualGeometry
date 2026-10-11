@@ -1,0 +1,13 @@
+{
+  "name": "VirtualGeometry.Omni.Tests.Editor",
+  "rootNamespace": "VirtualGeometry.Omni.Tests",
+  "references": [
+    "VirtualGeometry.Omni"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
+}

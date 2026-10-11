@@ -21,7 +21,7 @@ namespace VirtualGeometry.Omni.Editor{
         /// <summary>開いている scene の全ての <see cref="PlanetTerrainSource"/>(無効なものも含む)に <see cref="Apply"/> する。</summary>
         public static void ApplyToScene(){
             if(!TryRead(out float _)){return;}
-            foreach(PlanetTerrainSource source in UnityEngine.Object.FindObjectsByType<PlanetTerrainSource>(FindObjectsInactive.Include,FindObjectsSortMode.None)){
+            foreach(PlanetTerrainSource source in UnityEngine.Object.FindObjectsByType<PlanetTerrainSource>(FindObjectsInactive.Include)){
                 Apply(source);
             }
         }
