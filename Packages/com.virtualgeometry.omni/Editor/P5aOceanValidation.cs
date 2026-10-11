@@ -59,6 +59,7 @@ namespace VirtualGeometry.Omni.Editor{
 
         public static void Run(){
             report.Clear();failures.Clear();errors.Clear();started=EditorApplication.timeSinceStartup;
+            skipLandTotal=0;skipLandChecked=0;skipMixedChecked=0;skipTrulyMixed=0;
             Directory.CreateDirectory(Results);
             Application.logMessageReceived+=Record;
             try{
@@ -194,6 +195,7 @@ namespace VirtualGeometry.Omni.Editor{
                 report.Add(view.Name+": zFightingFlips="+flipped+" contourFlips="+onContour);
                 if(flipped!=0){failures.Add(view.Name+": 海と陸の境から離れた所で、判定が 0.1mm のずれで入れ替わる画素が "+flipped+" ありました(z-fighting)。");}
                 CompareCpuGpu(view.Name);
+                foreach(object step in CheckSkipLand(view.Name)){yield return step;}
                 // 高度帯の遷移: 目標誤差 1/4 の細かい描画と、海と陸の境を比べる。
                 terrain.TargetPixels=Target*0.25f;ocean.TargetPixels=Target*0.25f;
                 foreach(object step in Converge(view.Name+"Fine")){yield return step;}
@@ -243,6 +245,10 @@ namespace VirtualGeometry.Omni.Editor{
             }
             ocean.WaveTime=FrozenTime;
             SetFlat(true);
+            report.Add("skip land cells total: skipped="+skipLandTotal+" landOnlyChecked="+skipLandChecked+" mixedChecked="+skipMixedChecked+" trulyMixed="+skipTrulyMixed);
+            if(skipLandTotal==0){failures.Add("陸だけの Cell を描かない最適化が、どの視点でも働きませんでした(検証が空です)。");}
+            if(skipLandChecked==0){failures.Add("飛ばした Cell を CPU で確かめられませんでした。");}
+            if(skipTrulyMixed==0){failures.Add("海岸を含む(陸と海の頂点が混在する)Cell を CPU で確かめられませんでした。");}
             report.Add("pool: terrain used="+terrain.UsedSlots+" ocean used="+ocean.UsedSlots+" lastError="+(terrain.LastError??"(none)")+"/"+(ocean.LastError??"(none)"));
             if(terrain.LastError!=null||ocean.LastError!=null){failures.Add("設定エラー: "+terrain.LastError+" "+ocean.LastError);}
         }
@@ -393,6 +399,84 @@ namespace VirtualGeometry.Omni.Editor{
         }
 
         // 海(青が緑より強い)と陸の画素の数。
+        private static int skipLandTotal;
+        private static int skipLandChecked;
+        private static int skipMixedChecked;
+        private static int skipTrulyMixed;
+
+        // 陸だけの Cell(全頂点の水深 < 0)を描かない最適化(PlanetOceanSource.SkipLandCells)。
+        // 描く場合と描かない場合で、同じ視点の単色と見た目の画像が全画素で一致し(clip が全画素を捨てるので描いても同じ)、
+        // 描いた Cell 数 + 飛ばした Cell 数 = 描く場合の Cell 数。飛ばした Cell を CPU の水深(全格子点)で確かめ、海岸を含む Cell は飛ばしていない。
+        private static IEnumerable<object> CheckSkipLand(string name){
+            // 水深の縮約の結果は、生成の数 frame 後に届く。
+            for(int frame=0;frame<8;frame++){
+                Capture();
+                yield return null;
+            }
+            SetFlat(true);
+            ocean.SkipLandCells=false;
+            Capture();
+            yield return null;
+            Texture2D flatOff=Capture();
+            int drawnOff=ocean.LastDrawnCells;int skippedOff=ocean.LastSkippedCells;
+            SetFlat(false);
+            Texture2D shadedOff=Capture();
+            SetFlat(true);
+            ocean.SkipLandCells=true;
+            Capture();
+            yield return null;
+            Texture2D flatOn=Capture();
+            int drawnOn=ocean.LastDrawnCells;int skippedOn=ocean.LastSkippedCells;
+            SetFlat(false);
+            Texture2D shadedOn=Capture();
+            SetFlat(true);
+            int flatDifferent=CountDifferentPixels(flatOff,flatOn);
+            int shadedDifferent=CountDifferentPixels(shadedOff,shadedOn);
+            UnityEngine.Object.DestroyImmediate(flatOff);UnityEngine.Object.DestroyImmediate(flatOn);
+            UnityEngine.Object.DestroyImmediate(shadedOff);UnityEngine.Object.DestroyImmediate(shadedOn);
+            skipLandTotal+=skippedOn;
+            report.Add(name+" skipLand: drawnOff="+drawnOff+" drawnOn="+drawnOn+" skippedOn="+skippedOn+" differentPixels flat="+flatDifferent+" shaded="+shadedDifferent);
+            if(skippedOff!=0){failures.Add(name+": 飛ばさない設定なのに Cell を "+skippedOff+" 個飛ばしました。");}
+            if(drawnOn+skippedOn!=drawnOff){failures.Add(name+": 描いた Cell(最適化あり "+drawnOn+")+ 飛ばした Cell("+skippedOn+")が、最適化なしの Cell 数("+drawnOff+")と違います。");}
+            if(flatDifferent!=0){failures.Add(name+": 陸だけの Cell を飛ばすと単色の画像が "+flatDifferent+" 画素変わりました。");}
+            if(shadedDifferent!=0){failures.Add(name+": 陸だけの Cell を飛ばすと見た目の画像が "+shadedDifferent+" 画素変わりました。");}
+            // CPU の水深で、飛ばした Cell は全格子点が陸、飛ばしていない Cell は陸でない格子点がある(GPU と CPU の float の差の許容 1mm 以内は判定しない)。
+            int landChecked=0;int mixedChecked=0;
+            foreach(PlanetCellKey key in ocean.LastSelected){
+                if(landChecked>=10&&mixedChecked>=10){break;}
+                if(!ocean.TryGetLandOnlyForDiagnostics(in key,out bool landOnly)){continue;}
+                if(landOnly&&landChecked>=10){continue;}
+                if(!landOnly&&mixedChecked>=10){continue;}
+                float maximum=float.MinValue;float minimum=float.MaxValue;
+                for(int j=0;j<=PlanetLayerSource.CellQuads;j++){
+                    for(int i=0;i<=PlanetLayerSource.CellQuads;i++){
+                        if(!ocean.TryEvaluateDepthForDiagnostics(in key,i,j,out float depth)){continue;}
+                        maximum=Mathf.Max(maximum,depth);minimum=Mathf.Min(minimum,depth);
+                    }
+                }
+                if(landOnly){
+                    landChecked++;
+                    if(maximum>1e-3f){failures.Add(name+": 飛ばした Cell "+key+" に、水深 "+maximum.ToString("G4",CultureInfo.InvariantCulture)+" m の格子点があります。");}
+                }else{
+                    mixedChecked++;
+                    if(maximum<-1e-3f){failures.Add(name+": 飛ばしていない Cell "+key+" の全格子点が陸です(最大の水深 "+maximum.ToString("G4",CultureInfo.InvariantCulture)+" m)。");}
+                    // 陸と海の頂点が両方ある Cell(海岸を含む)。
+                    if(maximum>1e-3f&&minimum<-1e-3f){skipTrulyMixed++;}
+                }
+            }
+            skipLandChecked+=landChecked;skipMixedChecked+=mixedChecked;
+            report.Add(name+" skipLand CPU check: landOnlyCells="+landChecked+" otherCells="+mixedChecked);
+        }
+
+        private static int CountDifferentPixels(Texture2D a,Texture2D b){
+            Color32[] pa=a.GetPixels32();Color32[] pb=b.GetPixels32();
+            int different=0;
+            for(int i=0;i<pa.Length;i++){
+                if(pa[i].r!=pb[i].r||pa[i].g!=pb[i].g||pa[i].b!=pb[i].b||pa[i].a!=pb[i].a){different++;}
+            }
+            return different;
+        }
+
         private static void ClassCounts(Texture2D image,out int sea,out int land){
             sea=0;land=0;
             foreach(Color32 pixel in image.GetPixels32()){

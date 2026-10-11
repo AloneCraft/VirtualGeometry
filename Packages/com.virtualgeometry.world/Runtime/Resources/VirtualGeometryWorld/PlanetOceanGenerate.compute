@@ -1,4 +1,5 @@
 #pragma kernel Generate
+#pragma kernel ReduceDepth
 #pragma target 5.0
 
 // 惑星の海の Cell 1つ分の頂点を、VirtualGeometryGridLayout の配置で pool の slot へ書く。C# の PlanetOceanSource.TryEvaluateVertexForDiagnostics と同じ式。
@@ -44,4 +45,29 @@ void Generate(uint3 id:SV_DispatchThreadID)
     vertex.normal=normal;
     vertex.uv=float2(-PlanetHeight(sphere,_QuadLength),0);
     _Vertices[_Slot*_SlotVertexCount+index]=vertex;
+}
+
+// slot の Cell の頂点のうち、水深(UV の x)が 0 以上(または NaN)のものの数を数えて _NonNegativeCounts[_Slot] に書く。
+// 0 なら、全頂点が陸(水深 < 0)で、fragment の clip(depth) が補間した水深でもすべての画素を捨てる(Cell を描いても描かなくても画像が同じ)。
+// Generate の直後に、同じ slot(_Slot)で dispatch する(1 group)。
+RWStructuredBuffer<uint> _NonNegativeCounts;
+groupshared uint sharedCounts[256];
+
+[numthreads(256,1,1)]
+void ReduceDepth(uint3 id:SV_GroupThreadID)
+{
+    uint count=0;
+    int first=_Slot*_SlotVertexCount;
+    for(int index=(int)id.x;index<_SlotVertexCount;index+=256)
+    {
+        if(!(_Vertices[first+index].uv.x<0.0)) { count++; }
+    }
+    sharedCounts[id.x]=count;
+    GroupMemoryBarrierWithGroupSync();
+    for(uint stride=128;stride>0;stride>>=1)
+    {
+        if(id.x<stride) { sharedCounts[id.x]+=sharedCounts[id.x+stride]; }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if(id.x==0) { _NonNegativeCounts[_Slot]=sharedCounts[0]; }
 }

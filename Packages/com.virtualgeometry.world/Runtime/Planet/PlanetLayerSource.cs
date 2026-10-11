@@ -87,6 +87,9 @@ namespace VirtualGeometry.World{
         /// <summary>直近の draw の選択で、選んだ Cell のうち、slot が使えなかった数と、配置が描けなかった数(診断用。どちらも 0 が正常)。</summary>
         public int LastNotReadyCells{get;private set;}
         public int LastDescribeFailedCells{get;private set;}
+        /// <summary>直近の draw の選択で、draw にした Cell の数と、描かなくても画像が変わらないとして <see cref="SkipDraw"/> が飛ばした Cell の数(診断用)。</summary>
+        public int LastDrawnCells{get;private set;}
+        public int LastSkippedCells{get;private set;}
 
         /// <summary>選択の設定を変える。有効なまま変えた場合は無効化して作り直す。</summary>
         protected void ConfigureSelection(int maximumLevel,float targetPixels){
@@ -156,9 +159,10 @@ namespace VirtualGeometry.World{
             }
             int used=0;
             long describeTicks=0;long propertyTicks=0;
-            int notReady=0;int describeFailed=0;
+            int notReady=0;int describeFailed=0;int skipped=0;int drawn=0;
             for(int i=0;i<this.output.Count;i++){
                 if(!this.slotByKey.TryGetValue(this.output[i],out int slot)||!this.IsReady(slot)){notReady++;continue;}
+                if(this.SkipDraw(slot)){skipped++;continue;}
                 MaterialPropertyBlock block=null;
                 if(blocks!=null){
                     if(used==blocks.Count){blocks.Add(new MaterialPropertyBlock());}
@@ -173,6 +177,7 @@ namespace VirtualGeometry.World{
                 propertyTicks+=Stopwatch.GetTimestamp()-describeEnd;
                 draws.Begin(objectToWorld,objectToCull,block);
                 draws.Add(slot);
+                drawn++;
                 this.OnCellDrawn(slot,in this.cellFrames[slot]);
             }
             long prepareEnd=Stopwatch.GetTimestamp();
@@ -181,6 +186,7 @@ namespace VirtualGeometry.World{
             this.LastFlushMilliseconds=(float)((flushEnd-selectEnd)*toMilliseconds);
             this.LastPrepareMilliseconds=(float)((prepareEnd-flushEnd)*toMilliseconds);
             this.LastNotReadyCells=notReady;this.LastDescribeFailedCells=describeFailed;
+            this.LastDrawnCells=drawn;this.LastSkippedCells=skipped;
             this.LastDescribeMilliseconds=(float)(describeTicks*toMilliseconds);
             this.LastPropertiesMilliseconds=(float)(propertyTicks*toMilliseconds);
         }
@@ -241,6 +247,31 @@ namespace VirtualGeometry.World{
 
         /// <summary>この frame に描く Cell ごとに呼ぶ(時間で動く Layer が作り直しを予約するなど)。既定では何もしない。</summary>
         protected virtual void OnCellDrawn(int slot,in PlanetCellFrame frame){
+        }
+
+        /// <summary>
+        /// slot の Cell を、この frame は draw にしない(描いても描かなくても画像が変わらないと、派生クラスが保証できるとき true)。
+        /// 飛ばした Cell は <see cref="OnCellDrawn"/> も呼ばない。既定は false。
+        /// </summary>
+        protected virtual bool SkipDraw(int slot){
+            return false;
+        }
+
+        /// <summary>検証用。Cell が割り当てられている slot。</summary>
+        protected bool TryGetSlotForDiagnostics(in PlanetCellKey key,out int slot){
+            return this.slotByKey.TryGetValue(key,out slot);
+        }
+
+        /// <summary>slot が今割り当てられている Cell の世代(slot を別の Cell に使い直すと変わる。<see cref="OnSlotsGenerated"/> の readback の照合に使う)。</summary>
+        protected int SlotVersion(int slot){
+            return this.slotVersion[slot];
+        }
+
+        /// <summary>
+        /// slot の頂点を生成する dispatch の直後(同じ command buffer)に呼ぶ。生成した頂点を使う後処理(縮約など)を記録する。
+        /// shader は生成の compute で、_Slot などの値は slot のものが設定済み。既定では何もしない。
+        /// </summary>
+        protected virtual void RecordAfterCellGeneration(CommandBuffer commands,ComputeShader shader,GraphicsBuffer poolVertices,int slot){
         }
 
         /// <summary>検証用。生成済みの Cell の頂点(Cell の原点からの相対位置)と、Cell の中心の値を返す。</summary>
@@ -431,6 +462,7 @@ namespace VirtualGeometry.World{
                 commands.SetComputeFloatParam(shader,"_QuadLength",this.selector.QuadArc(key.Level));
                 this.BindCell(commands,shader,slot,in frame);
                 commands.DispatchCompute(shader,this.kernel,(layout.SlotVertexCount+63)/64,1,1);
+                this.RecordAfterCellGeneration(commands,shader,poolVertices,slot);
             }
         }
     }

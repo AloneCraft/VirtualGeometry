@@ -29,6 +29,11 @@ namespace VirtualGeometry.World{
         [SerializeField] private int seed=1;
         /// <summary>false なら <see cref="WaveTime"/> を進めない(検証で時刻を固定する)。</summary>
         [SerializeField] private bool advanceTime=true;
+        /// <summary>
+        /// true なら、全頂点が陸(水深 < 0)の Cell は描かない。fragment の clip(depth) が全画素を捨てるので、画像は変わらない(厳密)。
+        /// 水深は生成時に GPU で縮約して読み戻す(数 frame 後に届くまでは描く)。
+        /// </summary>
+        [SerializeField] private bool skipLandCells=true;
 
         private Wave[] waves=Array.Empty<Wave>();
         private float amplitude;
@@ -40,6 +45,15 @@ namespace VirtualGeometry.World{
         private float[] slotPhases;
         private PlanetCellKey[] slotPhaseKeys;
         private bool[] slotPhaseValid;
+        // slot の Cell の水深の縮約(全頂点が陸か)。landVersion は、縮約を要求した Cell の世代(slot を別の Cell に使い直すと合わなくなる)。
+        private const byte LandUnknown=0;
+        private const byte LandMixed=1;
+        private const byte LandOnly=2;
+        private GraphicsBuffer nonNegativeCounts;
+        private byte[] landState;
+        private int[] landVersion;
+        private readonly System.Collections.Generic.List<int> reducedSlots=new System.Collections.Generic.List<int>();
+        private int reduceKernel=-1;
 
         private struct Wave{
             public Vector3 Direction;
@@ -63,6 +77,8 @@ namespace VirtualGeometry.World{
         /// </summary>
         public double WaveTime{get;set;}
         public bool AdvanceTime{get=>this.advanceTime;set=>this.advanceTime=value;}
+        /// <summary>全頂点が陸の Cell を描かない(<see cref="PlanetLayerSource.LastSkippedCells"/> が数)。画像は変わらない。</summary>
+        public bool SkipLandCells{get=>this.skipLandCells;set=>this.skipLandCells=value;}
         protected override float SelectionAmplitude=>this.amplitude;
         protected override string GeneratorResource=>"VirtualGeometryWorld/PlanetOceanGenerate";
 
@@ -84,10 +100,16 @@ namespace VirtualGeometry.World{
             this.slotPhases=new float[capacity*MaximumWaves];
             this.slotPhaseKeys=new PlanetCellKey[capacity];
             this.slotPhaseValid=new bool[capacity];
+            this.landState=new byte[capacity];this.landVersion=new int[capacity];
+            for(int i=0;i<capacity;i++){this.landVersion[i]=-1;}
+            this.reducedSlots.Clear();this.reduceKernel=-1;
+            if(this.Layout!=null){this.nonNegativeCounts=new GraphicsBuffer(GraphicsBuffer.Target.Structured,capacity,4);}
         }
 
         protected override void OnDisable(){
             this.slotPhases=null;this.slotPhaseKeys=null;this.slotPhaseValid=null;
+            this.landState=null;this.landVersion=null;this.reducedSlots.Clear();
+            this.nonNegativeCounts?.Dispose();this.nonNegativeCounts=null;
             base.OnDisable();
         }
 
@@ -158,6 +180,61 @@ namespace VirtualGeometry.World{
 
         protected override void OnCellDrawn(int slot,in PlanetCellFrame frame){
             if(this.IsAnimated(frame.Key.Level)){this.RequestRegeneration(slot);}
+        }
+
+        // 水深は時刻に依らないので、Cell を新しく生成したときだけ縮約する(作り直しでは求め直さない)。
+        protected override void RecordAfterCellGeneration(CommandBuffer commands,ComputeShader shader,GraphicsBuffer poolVertices,int slot){
+            if(this.nonNegativeCounts==null||this.landVersion==null){return;}
+            int version=this.SlotVersion(slot);
+            if(this.landVersion[slot]==version){return;}
+            if(this.reduceKernel<0){this.reduceKernel=shader.FindKernel("ReduceDepth");}
+            commands.SetComputeBufferParam(shader,this.reduceKernel,"_Vertices",poolVertices);
+            commands.SetComputeBufferParam(shader,this.reduceKernel,"_NonNegativeCounts",this.nonNegativeCounts);
+            commands.DispatchCompute(shader,this.reduceKernel,1,1,1);
+            this.landVersion[slot]=version;this.landState[slot]=LandUnknown;
+            this.reducedSlots.Add(slot);
+        }
+
+        // 縮約した slot の結果(水深が 0 以上の頂点の数)を読み戻す(数 frame 後に届く)。
+        protected override void OnSlotsGenerated(System.Collections.Generic.IReadOnlyList<int> slots){
+            base.OnSlotsGenerated(slots);
+            if(this.nonNegativeCounts==null||!SystemInfo.supportsAsyncGPUReadback){this.reducedSlots.Clear();return;}
+            for(int i=0;i<this.reducedSlots.Count;i++){
+                int slot=this.reducedSlots[i];
+                int version=this.SlotVersion(slot);
+                AsyncGPUReadback.Request(this.nonNegativeCounts,4,slot*4,request=>this.ReceiveLandCount(request,slot,version));
+            }
+            this.reducedSlots.Clear();
+        }
+
+        private void ReceiveLandCount(AsyncGPUReadbackRequest request,int slot,int version){
+            if(request.hasError||this==null||this.landVersion==null||this.landVersion[slot]!=version||this.SlotVersion(slot)!=version){return;}
+            uint count=request.GetData<uint>()[0];
+            this.landState[slot]=LandMixed;
+            if(count==0){this.landState[slot]=LandOnly;}
+        }
+
+        protected override bool SkipDraw(int slot){
+            return this.skipLandCells&&this.landState!=null&&this.landState[slot]==LandOnly&&this.landVersion[slot]==this.SlotVersion(slot);
+        }
+
+        /// <summary>検証用。Cell が生成済みで、水深の縮約の結果が届いているとき true。landOnly は、全頂点が陸(描かない Cell)か。</summary>
+        public bool TryGetLandOnlyForDiagnostics(in PlanetCellKey key,out bool landOnly){
+            landOnly=false;
+            if(!this.TryGetSlotForDiagnostics(in key,out int slot)||this.landState==null||this.landVersion[slot]!=this.SlotVersion(slot)||this.landState[slot]==LandUnknown){return false;}
+            landOnly=this.landState[slot]==LandOnly;
+            return true;
+        }
+
+        /// <summary>検証用。Cell の格子の (i, j) の水深(海面からの地形の深さ。負なら陸)を CPU で求める(UV の x と同じ式)。</summary>
+        public bool TryEvaluateDepthForDiagnostics(in PlanetCellKey key,int i,int j,out float depth){
+            depth=0;
+            if(this.Selector==null){return false;}
+            PlanetCellFrame frame=this.Selector.Frame(in key);
+            Vector3 sphere=PlanetCellGeometry.SpherePoint(in frame,CellQuads,i,j,this.Radius,out Vector3 direction);
+            if(!this.terrain.TryHeight(in frame,sphere,this.Selector.QuadArc(key.Level),out float height)){return false;}
+            depth=-height;
+            return true;
         }
 
         // 波の方向・形・時刻の位相(全 Cell 共通)を、配列に書く。
