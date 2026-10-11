@@ -60,7 +60,6 @@ namespace VirtualGeometry.World{
         public float WaveTime{get;set;}
         public bool AdvanceTime{get=>this.advanceTime;set=>this.advanceTime=value;}
         protected override float SelectionAmplitude=>this.amplitude;
-        protected override bool UsesCellProperties=>true;
         protected override string GeneratorResource=>"VirtualGeometryWorld/PlanetOceanGenerate";
 
         /// <summary>検証用。波と選択の設定を変える。有効なまま変えた場合は無効化して作り直す。</summary>
@@ -187,17 +186,15 @@ namespace VirtualGeometry.World{
             commands.SetComputeVectorArrayParam(shader,"_WavePhase",this.wavePhase);
         }
 
-        /// <summary>fragment の RadialOcean.shader が使う値(波、Cell の向きと quad の大きさ)を書く。</summary>
+        /// <summary>fragment の RadialOcean.shader が使う値(波。Cell の向きと quad の大きさは基底が書く)を書く。</summary>
         protected override void WriteCellProperties(MaterialPropertyBlock block,int slot,in PlanetCellFrame frame){
+            base.WriteCellProperties(block,slot,in frame);
             this.FillWaveArrays();
             this.FillWavePhases(slot,in frame);
             block.SetFloat("_WaveCount",this.waves.Length);
             block.SetVectorArray("_WaveDirection",this.waveDirection);
             block.SetVectorArray("_WaveShape",this.waveShape);
             block.SetVectorArray("_WavePhase",this.wavePhase);
-            Vector3 up=frame.ApproximateOrigin.normalized;
-            block.SetVector("_OceanUp",new Vector4(up.x,up.y,up.z,this.Radius));
-            block.SetVector("_OceanCell",new Vector4(this.Selector.QuadArc(frame.Key.Level),0,0,0));
         }
 
         /// <summary>

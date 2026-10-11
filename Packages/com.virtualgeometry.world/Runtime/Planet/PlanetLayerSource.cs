@@ -42,6 +42,11 @@ namespace VirtualGeometry.World{
         private int[] slotVersion;
         // slot の Cell の中心の値(原点は惑星のローカル座標、Logical 精度)。頂点は原点からの相対位置。
         private PlanetCellFrame[] cellFrames;
+        private LogicalVector3 referencePoint;
+        private bool hasReference;
+        private static readonly int PlanetCellUpId=Shader.PropertyToID("_PlanetCellUp");
+        private static readonly int PlanetCellQuadId=Shader.PropertyToID("_PlanetCellQuad");
+        private static readonly int PlanetCellRefId=Shader.PropertyToID("_PlanetCellRef");
         private IPlanetPlacement placement;
         private readonly StandardPlanetPlacement standardPlacement=new StandardPlanetPlacement();
         private readonly Dictionary<Camera,List<MaterialPropertyBlock>> drawProperties=new Dictionary<Camera,List<MaterialPropertyBlock>>();
@@ -143,11 +148,40 @@ namespace VirtualGeometry.World{
             }
         }
 
-        /// <summary>fragment の shader に Cell ごとの値を渡す Layer は true(配置が MaterialPropertyBlock を使わなくても、Cell ごとに作る)。</summary>
-        protected virtual bool UsesCellProperties=>false;
+        /// <summary>
+        /// Cell ごとの MaterialPropertyBlock を作るか(配置が MaterialPropertyBlock を使わなくても作る)。既定は true。
+        /// fragment の shader が使う値は <see cref="WriteCellProperties"/> が書く。
+        /// </summary>
+        protected virtual bool UsesCellProperties=>true;
 
-        /// <summary>Cell の draw の MaterialPropertyBlock に、この Layer の shader が使う値を書く(配置が書く値の後に呼ぶ)。既定では何もしない。</summary>
+        /// <summary>
+        /// Cell の draw の MaterialPropertyBlock に、この Layer の shader が使う値を書く(配置が書く値の後に呼ぶ)。
+        /// _PlanetCellUp: xyz=Cell の原点の外向きの単位方向(object 空間)、w=惑星の半径。
+        /// _PlanetCellQuad: x=この階層の quad の弧長。
+        /// _PlanetCellRef: xyz=Cell の原点 − 基準点(<see cref="SetReferencePoint"/>)を Logical で引いてから float にしたもの(object 空間)、w=基準点があれば 1。
+        /// 派生クラスは base を呼んでから、自分の値を足す。
+        /// </summary>
         protected virtual void WriteCellProperties(MaterialPropertyBlock block,int slot,in PlanetCellFrame frame){
+            Vector3 up=frame.ApproximateOrigin.normalized;
+            block.SetVector(PlanetCellUpId,new Vector4(up.x,up.y,up.z,this.Radius));
+            block.SetVector(PlanetCellQuadId,new Vector4(this.selector.QuadArc(frame.Key.Level),0,0,0));
+            Vector4 reference=Vector4.zero;
+            if(this.hasReference&&LogicalVector3.TrySubtract(frame.Origin,this.referencePoint,out LogicalVector3 difference)&&difference.TryToFloat3(out Unity.Mathematics.float3 value)){
+                reference=new Vector4(value.x,value.y,value.z,1f);
+            }
+            block.SetVector(PlanetCellRefId,reference);
+        }
+
+        /// <summary>
+        /// 基準点(惑星のローカル座標、Logical)を決める。shader は Cell の原点からの差を、基準点からの差(_PlanetCellRef)として受け取れる。
+        /// 基準点の近くの模様(目盛りなど)を、惑星の大きさによらず mm の精度で描くために使う。
+        /// </summary>
+        public void SetReferencePoint(in LogicalVector3 planetLocalPoint){
+            this.referencePoint=planetLocalPoint;this.hasReference=true;
+        }
+
+        public void ClearReferencePoint(){
+            this.hasReference=false;
         }
 
         /// <summary>この frame に描く Cell ごとに呼ぶ(時間で動く Layer が作り直しを予約するなど)。既定では何もしない。</summary>

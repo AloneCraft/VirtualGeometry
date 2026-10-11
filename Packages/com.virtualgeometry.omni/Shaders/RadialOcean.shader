@@ -96,10 +96,10 @@ Shader "Omni/RadialOcean"
                 float  _FlatColor;
             CBUFFER_END
 
-            // Cell ごとの値(MaterialPropertyBlock、PlanetOceanSource.WriteCellProperties)。
-            // _OceanUp: xyz=Cell の原点の外向きの単位方向(object 空間)、w=惑星の半径。_OceanCell: x=quad の弧長。
-            float4 _OceanUp;
-            float4 _OceanCell;
+            // Cell ごとの値(MaterialPropertyBlock、PlanetLayerSource.WriteCellProperties)。
+            // _PlanetCellUp: xyz=Cell の原点の外向きの単位方向(object 空間)、w=惑星の半径。_PlanetCellQuad: x=quad の弧長。
+            float4 _PlanetCellUp;
+            float4 _PlanetCellQuad;
 
             struct Attributes
             {
@@ -168,9 +168,9 @@ Shader "Omni/RadialOcean"
                 clip(depth);
 
                 float3 position = input.positionOS.xyz / max(input.positionOS.w, 1.0e-30f);
-                float quadLength = _OceanCell.x;
-                float3 label = OceanLabel(position, _OceanUp.xyz, _OceanUp.w, quadLength, OCEAN_LABEL_ITERATIONS);
-                float3 up = normalize(_OceanUp.xyz * _OceanUp.w + label);
+                float quadLength = _PlanetCellQuad.x;
+                float3 label = OceanLabel(position, _PlanetCellUp.xyz, _PlanetCellUp.w, quadLength, OCEAN_LABEL_ITERATIONS);
+                float3 up = normalize(_PlanetCellUp.xyz * _PlanetCellUp.w + label);
 
                 if (_FlatColor > 0.5f)
                 {

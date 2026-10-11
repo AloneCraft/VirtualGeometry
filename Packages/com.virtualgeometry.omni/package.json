@@ -5,10 +5,16 @@
   "unity": "6000.6",
   "description": "Virtualized Geometry の世界(com.virtualgeometry.world)を Omni の Logical 座標と Radial 対数描画で描く adapter。設計は Requirements/PlanetWorld.md。",
   "license": "MIT",
-  "keywords": ["virtualized-geometry", "omni", "radial", "planet"],
+  "keywords": [
+    "virtualized-geometry",
+    "omni",
+    "radial",
+    "planet"
+  ],
   "dependencies": {
     "com.virtualgeometry.core": "0.1.0",
     "com.virtualgeometry.world": "0.1.0",
-    "com.omni.rendering": "0.1.0"
+    "com.omni.rendering": "0.1.0",
+    "com.unity.inputsystem": "1.19.0"
   }
 }
