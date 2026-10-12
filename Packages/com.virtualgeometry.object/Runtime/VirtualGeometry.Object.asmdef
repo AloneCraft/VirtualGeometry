@@ -1,0 +1,10 @@
+{
+  "name": "VirtualGeometry.Object",
+  "rootNamespace": "VirtualGeometry.VirtualObjects",
+  "references": [
+    "VirtualizedGeometry.Runtime",
+    "VirtualGeometry.World",
+    "Radial.Runtime",
+    "Unity.Mathematics"
+  ]
+}

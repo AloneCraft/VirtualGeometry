@@ -1,0 +1,15 @@
+{
+  "name": "VirtualGeometry.Object.Editor",
+  "rootNamespace": "VirtualGeometry.VirtualObjects.Editor",
+  "references": [
+    "VirtualGeometry.Object",
+    "VirtualGeometry.World",
+    "VirtualizedGeometry.Runtime",
+    "VirtualizedGeometry.Editor",
+    "Radial.Runtime",
+    "Unity.Mathematics"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ]
+}

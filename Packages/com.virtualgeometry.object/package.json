@@ -1,0 +1,19 @@
+{
+  "name": "com.virtualgeometry.object",
+  "displayName": "Virtualized Geometry Virtual Object",
+  "version": "0.1.0",
+  "unity": "6000.6",
+  "description": "仮想オブジェクト。空間を番号付きの部分に分け、画面上の大きさに応じて表現(なし、ビルボード、VG メッシュ、プレハブ、VFX、シミュレーションなど)を切り替える。子は「型 + 番号」で表し、例外は割り当て規則の層で選ぶ。位置の正本は Omni の Logical 固定小数点。設計は Requirements/VirtualObject.md。",
+  "license": "MIT",
+  "keywords": [
+    "virtualized-geometry",
+    "virtual-object",
+    "lod",
+    "streaming"
+  ],
+  "dependencies": {
+    "com.virtualgeometry.core": "0.1.0",
+    "com.virtualgeometry.world": "0.1.0",
+    "com.omni.rendering": "0.1.0"
+  }
+}
