@@ -8,7 +8,7 @@ namespace VirtualGeometry.VirtualObjects{
     /// <summary>
     /// GameObject で見せる表現の基底。準備で、作り置きの非表示の親(<see cref="VirtualObjectContext.Pool"/>)の下に GameObject を作り、
     /// 表示で placement(<see cref="IVirtualObjectPlacement"/>)がノードの位置に置いて登録する。隠すと非表示の親へ戻し、解放で placement の決まりの後に破棄する。
-    /// 見えたことは、表示した frame の次の frame に分かる(<see cref="IVirtualObjectRepresentation.IsVisible"/>)。
+    /// 見えたことは、表示した frame から placement の <see cref="IVirtualObjectPlacement.VisibleAfterFrames"/> の後に分かる(<see cref="IVirtualObjectRepresentation.IsVisible"/>)。
     /// </summary>
     public abstract class GameObjectRepresentation:VirtualObjectRepresentationBase{
         private int activatedFrame=-1;
@@ -37,19 +37,19 @@ namespace VirtualGeometry.VirtualObjects{
         }
 
         protected override void OnUpdatePose(VirtualObjectContext context){
-            if(context.Frame>this.activatedFrame){this.visible=true;}
+            if(context.Frame>=this.activatedFrame+Mathf.Max(1,context.Placement.VisibleAfterFrames)){this.visible=true;}
         }
 
         protected override void OnDeactivate(VirtualObjectContext context){
             this.visible=false;
             if(this.Instance==null){return;}
             context.Placement.OnHidden(this.Instance);
-            this.Instance.transform.SetParent(context.Pool,false);
+            if(!context.ShuttingDown){this.Instance.transform.SetParent(context.Pool,false);}
         }
 
         protected override void OnRelease(VirtualObjectContext context){
             if(this.Instance!=null){
-                this.Instance.transform.SetParent(context.Pool,false);
+                if(!context.ShuttingDown){this.Instance.transform.SetParent(context.Pool,false);}
                 context.Retire(this.Instance);
                 this.Instance=null;
             }
@@ -58,7 +58,7 @@ namespace VirtualGeometry.VirtualObjects{
 
     /// <summary>プレハブの表現の設定。</summary>
     [Serializable]
-    public sealed class PrefabRepresentationSettings:IRepresentationSettings{
+    public sealed class PrefabRepresentationSettings:IRepresentationSettings,IVirtualObjectDependencySource{
         public GameObject Prefab;
         [Tooltip("GPU の memory の見積もり(byte)。")]
         public long GpuBytes=1024*1024;
@@ -66,6 +66,10 @@ namespace VirtualGeometry.VirtualObjects{
         public long CpuBytes=256*1024;
         [Tooltip("Play 中は InstantiateAsync で作る(main thread を止めない)。")]
         public bool Async=true;
+
+        public void CollectDependencies(VirtualObjectDependencies dependencies){
+            dependencies.AddPrefab(this.Prefab);
+        }
     }
 
     /// <summary>
@@ -127,12 +131,16 @@ namespace VirtualGeometry.VirtualObjects{
 
     /// <summary>ビルボードの表現の設定。</summary>
     [Serializable]
-    public sealed class BillboardRepresentationSettings:IRepresentationSettings{
+    public sealed class BillboardRepresentationSettings:IRepresentationSettings,IVirtualObjectDependencySource{
         public Material Material;
         [Tooltip("板の大きさ(m、局所)。0 なら境界の球の直径。")]
         public Vector2 Size;
         [Tooltip("板の中心の、原点からの高さ(m、局所)。")]
         public float VerticalOffset;
+
+        public void CollectDependencies(VirtualObjectDependencies dependencies){
+            dependencies.AddMaterial(this.Material);
+        }
     }
 
     /// <summary>

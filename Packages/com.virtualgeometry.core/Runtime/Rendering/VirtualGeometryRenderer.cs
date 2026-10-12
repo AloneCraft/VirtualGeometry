@@ -76,15 +76,7 @@ namespace VirtualizedGeometry{
         public Bounds WorldBounds{
             get{
                 if(this.meshAsset==null){return new Bounds(this.transform.position,Vector3.zero);}
-                Bounds local=this.meshAsset.Bounds;
-                Vector3 center=this.transform.localToWorldMatrix.MultiplyPoint3x4(local.center);
-                Vector3 extents=local.extents;
-                Matrix4x4 matrix=this.transform.localToWorldMatrix;
-                Vector3 worldExtents=new Vector3(
-                    Mathf.Abs(matrix.m00)*extents.x+Mathf.Abs(matrix.m01)*extents.y+Mathf.Abs(matrix.m02)*extents.z,
-                    Mathf.Abs(matrix.m10)*extents.x+Mathf.Abs(matrix.m11)*extents.y+Mathf.Abs(matrix.m12)*extents.z,
-                    Mathf.Abs(matrix.m20)*extents.x+Mathf.Abs(matrix.m21)*extents.y+Mathf.Abs(matrix.m22)*extents.z);
-                return new Bounds(center,worldExtents*2);
+                return this.BoundsIn(this.transform.localToWorldMatrix);
             }
         }
 
@@ -160,6 +152,7 @@ namespace VirtualizedGeometry{
             if(expired!=null){foreach(Camera camera in expired){var state=this.cameraSelections[camera];if(ReferenceEquals(this.lastSelection,state)){this.lastSelection=null;}state.Dispose();this.cameraSelections.Remove(camera);}}
             List<Camera> expiredDecisions=null;foreach(var pair in this.cameraDecisions){if(pair.Key==null){expiredDecisions??=new List<Camera>();expiredDecisions.Add(pair.Key);}}
             if(expiredDecisions!=null){foreach(Camera camera in expiredDecisions){this.cameraDecisions.Remove(camera);}}
+            this.ReleaseDestroyedPlacementCameras();
         }
         /// <summary>Domain Reload前と検証の再初期化で、instance/camera資源を先に解放する。</summary>
         public static void ReleaseResourcesForReload(){
@@ -218,6 +211,7 @@ namespace VirtualizedGeometry{
 
         private void Release(){
             foreach(var state in this.cameraSelections.Values){state.Dispose();}this.cameraSelections.Clear();this.lastSelection=null;
+            this.placementProperties.Clear();
             this.resourceLease?.Dispose();this.resourceLease=null;this.gpuPage=null;
         }
     }

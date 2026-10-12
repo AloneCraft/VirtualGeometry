@@ -350,6 +350,75 @@ namespace VirtualGeometry.VirtualObjects.Tests{
         }
 
         [Test]
+        public void PrepareTeleport(){
+            {
+                // 移動先(距離 50 m、細かい帯を望む)を準備して表示まで済ませてから移ると、移った frame から覆われている(遠くの今は「なし」)。
+                // 準備ができた(true)の条件は穴が無いことで、細かい帯の準備中は粗い帯で覆っていてもよい。
+                Harness harness=this.NewHarness();
+                VirtualObject definition=harness.Define("building",10f,NoneBand(),Coarse(1),Fine(3));
+                harness.Add(definition,"a",0);
+                harness.MoveTo(5000f,true);
+                harness.Advance(5);
+                VirtualObjectNode node=harness.Sys.Roots[0];
+                Assert.That(node.DesiredBand,Is.EqualTo(0));
+                LogicalVector3 destination=At(0f,0f,-50f);
+                float projection=StandardObjectPlacement.ProjectionScale(harness.Camera);
+                // 設定した直後(移動先でまだ評価していない)は準備できていない
+                Assert.That(harness.Sys.PrepareTeleport(in destination,Quaternion.identity,projection,100f),Is.False);
+                bool ready=false;
+                for(int i=0;i<60&&!ready;i++){
+                    harness.Step();
+                    ready=harness.Sys.PrepareTeleport(in destination,Quaternion.identity,projection,100f);
+                }
+                Assert.That(ready,Is.True);
+                Assert.That(node.IsCovered,Is.True);
+                Assert.That(node.ShownBand,Is.GreaterThanOrEqualTo(1));
+                harness.MoveTo(50f,true);
+                harness.Step();
+                Assert.That(harness.Sys.Status.Uncovered,Is.EqualTo(0));
+                Assert.That(node.ShownBand,Is.GreaterThanOrEqualTo(1));
+                Assert.That(harness.Sys.Context.Viewers.Count,Is.EqualTo(1));
+                // その後、移動先で細かい帯まで進む(その間も穴は無い)
+                for(int i=0;i<30&&node.ShownBand!=2;i++){
+                    harness.Step();
+                    Assert.That(harness.Sys.Status.Uncovered,Is.EqualTo(0),"frame "+i);
+                }
+                Assert.That(node.ShownBand,Is.EqualTo(2));
+            }
+            {
+                // 準備しないで移ると、移った frame は「なし」を見せたまま細かい帯を望むので、覆われていないと数える
+                Harness harness=this.NewHarness();
+                VirtualObject definition=harness.Define("building",10f,NoneBand(),Coarse(1),Fine(3));
+                harness.Add(definition,"a",0);
+                harness.MoveTo(5000f,true);
+                harness.Advance(5);
+                harness.MoveTo(50f,true);
+                harness.Step();
+                Assert.That(harness.Sys.Roots[0].ShownBand,Is.EqualTo(0));
+                Assert.That(harness.Sys.Status.Uncovered,Is.EqualTo(1));
+            }
+            {
+                // CancelTeleport で移動先の視点を外す
+                Harness harness=this.NewHarness();
+                VirtualObject definition=harness.Define("building",10f,NoneBand(),Coarse(1));
+                harness.Add(definition,"a",0);
+                harness.MoveTo(5000f,true);
+                LogicalVector3 destination=At(0f,0f,-50f);
+                harness.Sys.PrepareTeleport(in destination,Quaternion.identity,StandardObjectPlacement.ProjectionScale(harness.Camera),100f);
+                harness.Step();
+                Assert.That(harness.Sys.Context.Viewers.Count,Is.EqualTo(2));
+                harness.Sys.CancelTeleport();
+                harness.Step();
+                Assert.That(harness.Sys.Context.Viewers.Count,Is.EqualTo(1));
+            }
+        }
+
+        private static LogicalVector3 At(float x,float y,float z){
+            if(!LogicalVector3.TryFromFloat3(new float3(x,y,z),out LogicalVector3 value)){throw new System.InvalidOperationException("position");}
+            return value;
+        }
+
+        [Test]
         public void Initialize(){
             {
                 // 2 回呼んでも 1 回だけ初期化される(ルートが増えない)
@@ -473,6 +542,31 @@ namespace VirtualGeometry.VirtualObjects.Tests{
                 Assert.That(switchFrame,Is.EqualTo(activate+1+harness.Sys.Budget.HandoffFrames));
                 Assert.That(FakeLog.Count("deactivate","a#1"),Is.EqualTo(1));
                 Assert.That(harness.Sys.Status.Uncovered,Is.EqualTo(0));
+            }
+            {
+                // 「なし」から最初の帯へ: 近づく間は予測で最初の帯を先に見せ、望む帯が最初の帯になった frame にはもう見えている(Uncovered==0)
+                Harness harness=this.NewHarness();
+                VirtualObject definition=harness.Define("building",10f,NoneBand(),Coarse(1));
+                harness.Add(definition,"a",0);
+                harness.MoveTo(5000f,true);
+                harness.Advance(5);
+                VirtualObjectNode node=harness.Sys.Roots[0];
+                Assert.That(node.DesiredBand,Is.EqualTo(0));
+                Assert.That(node.ShownBand,Is.EqualTo(0));
+                // 300 m/s で近づく(粗い帯の入口は距離 2078 m)
+                float distance=5000f;
+                int firstDesired=-1;
+                for(int i=0;i<600&&firstDesired<0;i++){
+                    distance-=5f;
+                    harness.MoveTo(distance,false);
+                    harness.Step();
+                    Assert.That(harness.Sys.Status.Uncovered,Is.EqualTo(0),"frame "+i);
+                    if(node.DesiredBand==1){firstDesired=harness.Sys.Context.Frame;}
+                }
+                Assert.That(firstDesired,Is.GreaterThan(0));
+                Assert.That(node.ShownBand,Is.EqualTo(1));
+                Assert.That(FakeLog.ActivateFrames["a#1"],Is.LessThan(firstDesired));
+                Assert.That(harness.Sys.Status.Lagging,Is.EqualTo(0));
             }
             {
                 // 粗い方へ戻る: 常駐の粗い帯が再び見えてから細かい帯を外す(その間 Uncovered==0)

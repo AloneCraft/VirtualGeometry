@@ -34,6 +34,11 @@ namespace VirtualGeometry.VirtualObjects{
         public IReadOnlyList<VirtualObjectViewerState> Viewers=>this.viewers;
         /// <summary>表現を作り置きする、非表示の親(この下の GameObject は描かれない)。</summary>
         public Transform Pool=>this.System.PoolTransform;
+        /// <summary>
+        /// システムを止めている最中か(<see cref="VirtualObjectSystem.Shutdown"/>)。止める途中は、親の GameObject を無効にしている最中のことがあり、
+        /// GameObject の親を付け替えられないので、表現は付け替えずに破棄の予定に載せる。
+        /// </summary>
+        public bool ShuttingDown{get;internal set;}
 
         internal List<VirtualObjectViewerState> MutableViewers=>this.viewers;
 
@@ -53,6 +58,11 @@ namespace VirtualGeometry.VirtualObjects{
         /// <summary>GameObject を、placement の決まり(<see cref="IVirtualObjectPlacement.RetireFrames"/>)の後に破棄する。</summary>
         public void Retire(GameObject instance){
             this.System.Retire(instance);
+        }
+
+        /// <summary>表現が作ったメッシュを、GameObject と同じく placement の決まりの後に破棄する(描画から外した frame に消さない)。</summary>
+        public void RetireMesh(Mesh mesh){
+            this.System.Retire(mesh);
         }
 
         public void ReportError(IVirtualObjectRepresentation representation,Exception error){

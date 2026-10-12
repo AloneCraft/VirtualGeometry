@@ -164,7 +164,8 @@ namespace VirtualizedGeometry{
             // MeshRendererのMaterialはInspectorで直接変わるため、影専用の子へ反映する。描画ごとに呼ばれるので確保なしで比べる。
             if(this.shadowCaster!=null&&this.ShadowMaterialsChanged(ordinary)){this.UpdateShadowCaster();return;}
             bool virtualDraw=!this.renderDecision.UseProxy;
-            ordinary.forceRenderingOff=virtualDraw;
+            // 代替 Mesh を描かない配置(ProxyFallback=false)では、VG が描けない間も通常 MeshRenderer を止めたままにする。
+            ordinary.forceRenderingOff=virtualDraw||!this.proxyFallback;
             if(this.shadowCaster!=null){this.shadowCaster.enabled=virtualDraw&&ordinary.enabled&&ordinary.shadowCastingMode!=ShadowCastingMode.Off;}
         }
         internal bool CanDrawVirtual(Camera camera)=>this.decisionCamera==camera&&this.renderDecision.UseVirtual;

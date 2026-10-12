@@ -4,7 +4,9 @@
   "references": [
     "VirtualizedGeometry.Runtime",
     "VirtualGeometry.World",
+    "VirtualGeometry.Object",
     "Radial.Runtime",
+    "Omni.BatchRendering.Runtime",
     "Unity.Mathematics",
     "Unity.InputSystem"
   ]

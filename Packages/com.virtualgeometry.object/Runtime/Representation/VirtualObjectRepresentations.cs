@@ -72,7 +72,7 @@ namespace VirtualGeometry.VirtualObjects{
         private static void EnsureDiscovered(){
             if(discovered!=null){return;}
             discovered=new Dictionary<string,Entry>();
-            foreach(Assembly assembly in AppDomain.CurrentDomain.GetAssemblies()){
+            foreach(Assembly assembly in UnityEngine.Assemblies.CurrentAssemblies.GetLoadedAssemblies()){
                 Type[] types;
                 try{
                     types=assembly.GetTypes();

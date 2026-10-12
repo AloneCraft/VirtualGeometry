@@ -18,6 +18,8 @@ namespace VirtualGeometry.VirtualObjects{
         void OnHidden(GameObject instance);
         /// <summary>隠した GameObject を破棄するまで待つ frame 数(描画の仕組みが同じ frame の破棄を許さないとき)。</summary>
         int RetireFrames{get;}
+        /// <summary>見せてから実際に描かれるまでの frame 数(描画への登録が次の更新で効く仕組みでは 2 以上)。粗い表現を外すのは、この frame 数の後。</summary>
+        int VisibleAfterFrames{get;}
     }
 
     /// <summary>
@@ -26,6 +28,7 @@ namespace VirtualGeometry.VirtualObjects{
     /// </summary>
     public sealed class StandardObjectPlacement:IVirtualObjectPlacement{
         public int RetireFrames=>0;
+        public int VisibleAfterFrames=>1;
 
         public bool TryGetViewer(Transform root,Camera camera,out LogicalVector3 rootLocalPosition,out Quaternion rootLocalRotation,out float projectionScale){
             rootLocalPosition=default;rootLocalRotation=Quaternion.identity;projectionScale=0f;

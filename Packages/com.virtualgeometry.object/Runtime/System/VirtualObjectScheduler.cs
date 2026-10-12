@@ -330,23 +330,31 @@ namespace VirtualGeometry.VirtualObjects{
             return baseSpeed*ratio;
         }
 
-        // 帯の入口に達するまでの時間(今の速度、止まっていれば前方へ 1 m/s)。近づいていなければ false。
+        // 帯が要る時刻までの時間(今の速度、止まっていれば前方へ 1 m/s)。近づいていなければ false。
+        // 親が子の帯を望む前に先に準備している子(PrefetchOnly)は、親が子の帯に入る時刻を締切にする。
         private bool TryDeadline(VirtualObjectNode node,int band,bool assumed,out float deadline){
             deadline=0f;
+            if(node.PrefetchOnly&&node.Parent!=null){
+                int childrenBand=ChildrenBand(node.Parent);
+                if(childrenBand<0){return false;}
+                return this.TryDeadline(node.Parent,childrenBand,assumed,out deadline);
+            }
             float enter=node.Bands[band].EnterPixels;
             if(!(enter>0f)){return false;}
             float best=float.PositiveInfinity;
+            Vector3 center=node.CenterOffset;
             IReadOnlyList<VirtualObjectViewerState> viewers=this.context.Viewers;
             for(int i=0;i<viewers.Count;i++){
                 VirtualObjectViewerState viewer=viewers[i];
                 if(!LogicalVector3.TrySubtract(node.Origin,viewer.Position,out LogicalVector3 difference)||!difference.TryToFloat3(out float3 offset)){continue;}
-                Vector3 relative=(Vector3)offset;
+                // 画面上の大きさ(VirtualObjectSystem.ScreenPixels)と同じく、境界の球の中心で測り、球の中では入口を越えたとする。
+                Vector3 relative=(Vector3)offset+center;
                 float distance=relative.magnitude;
                 if(!(distance>0f)){continue;}
                 Vector3 velocity=viewer.Velocity;
                 if(assumed){velocity=viewer.Rotation*Vector3.forward;}
                 float closing=Vector3.Dot(velocity,relative/distance);
-                float bandDistance=node.Radius*viewer.ProjectionScale/enter;
+                float bandDistance=Mathf.Max(node.Radius*viewer.ProjectionScale/enter,node.Radius);
                 if(distance<=bandDistance){best=0f;break;}
                 if(!(closing>1e-4f)){continue;}
                 best=Mathf.Min(best,(distance-bandDistance)/closing);
@@ -354,6 +362,14 @@ namespace VirtualGeometry.VirtualObjects{
             if(float.IsPositiveInfinity(best)){return false;}
             deadline=best;
             return true;
+        }
+
+        private static int ChildrenBand(VirtualObjectNode node){
+            RepresentationBand[] bands=node.Bands;
+            for(int i=0;i<bands.Length;i++){
+                if(bands[i].IsChildren){return i;}
+            }
+            return -1;
         }
     }
 }

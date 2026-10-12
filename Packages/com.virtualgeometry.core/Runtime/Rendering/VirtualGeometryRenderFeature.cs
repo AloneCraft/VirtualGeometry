@@ -154,6 +154,8 @@ namespace VirtualizedGeometry{
                 public Vector4 HzbSize;
                 public Matrix4x4 ViewProjection;
                 public Vector4[] FrustumPlanes;
+                // 配置の差し込み口が決めた cull 空間の平面(項目ごと。差し込み口が無ければ使わず、camera の平面を共有する)。
+                public readonly Vector4[] PlacementPlanes=new Vector4[6];
                 public int FrustumEnabled;
                 public int OcclusionEnabled;
                 public int ReversedZ;
@@ -244,14 +246,49 @@ namespace VirtualizedGeometry{
             private readonly Dictionary<int,PerObjectLighting> lightingByLayer=new Dictionary<int,PerObjectLighting>();
             private readonly Vector4[] planeVectors=new Vector4[6];
 
-            // 描く対象か。無効・layer外・page未準備・専用描画を使わないcamera・視錐台の外のinstanceは、選択・描画・feedbackのpassを作らない。
+            /// <summary>部品をこの camera で描く空間。配置の差し込み口が無ければ、Transform の行列と camera の world 空間。</summary>
+            private struct InstancePlacement{
+                public Matrix4x4 ObjectToWorld;
+                public Matrix4x4 ObjectToCull;
+                public Vector3 CameraPosition;
+                public Matrix4x4 ViewProjection;
+                // 差し込み口が決めた cull 空間の平面(無ければ null で、camera の平面を使う)。
+                public Plane[] Planes;
+                public float NearPlane;
+                public float MaximumScale;
+                public bool OcclusionAllowed;
+                public MaterialPropertyBlock Properties;
+            }
+
+            // 描く対象か。無効・layer外・page未準備・専用描画を使わないcamera・配置できない・視錐台の外のinstanceは、選択・描画・feedbackのpassを作らない。
             // GPUのcullingでも視錐台の外は全clusterが棄却されるが、部品ごとの記録・実行がframeの大半を占める。
-            private bool PassesGate(VirtualGeometryRenderer instance,Plane[] planes,out VirtualGeometryGpuPage page){
-                page=null;
+            private bool PassesGate(VirtualGeometryRenderer instance,Plane[] planes,in VirtualGeometryClusterView view,out VirtualGeometryGpuPage page,out InstancePlacement placed){
+                page=null;placed=default;
                 if(instance==null||!instance.isActiveAndEnabled||(this.camera.cullingMask&(1<<instance.gameObject.layer))==0||!instance.TryGetGpuPage(out page)){return false;}
                 if(!instance.CanDrawVirtual(this.camera)){return false;}
-                if(instance.EnableFrustumCulling&&!GeometryUtility.TestPlanesAABB(planes,instance.WorldBounds)){return false;}
+                IVirtualGeometryInstancePlacement placement=instance.Placement;
+                if(placement==null){
+                    Matrix4x4 matrix=instance.transform.localToWorldMatrix;
+                    placed.ObjectToWorld=matrix;placed.ObjectToCull=matrix;placed.CameraPosition=view.CameraPosition;placed.ViewProjection=view.ViewProjection;
+                    placed.Planes=null;placed.NearPlane=view.NearPlane;placed.MaximumScale=instance.MaximumWorldScale;placed.OcclusionAllowed=true;placed.Properties=null;
+                    if(instance.EnableFrustumCulling&&!GeometryUtility.TestPlanesAABB(planes,instance.WorldBounds)){return false;}
+                    return true;
+                }
+                MaterialPropertyBlock properties=instance.GetPlacementProperties(this.camera);
+                if(!placement.TryDescribe(instance,in view,properties,out VirtualGeometryInstancePose pose)){return false;}
+                VirtualGeometryClusterCullSpace space=pose.CullSpace;
+                if(space.Planes==null){return false;}
+                placed.ObjectToWorld=pose.ObjectToWorld;placed.ObjectToCull=pose.ObjectToCull;placed.CameraPosition=space.CameraPosition;placed.ViewProjection=space.ViewProjection;
+                placed.Planes=space.Planes;placed.NearPlane=space.NearPlane;placed.MaximumScale=MaximumScale(pose.ObjectToCull);placed.OcclusionAllowed=space.OcclusionAllowed;placed.Properties=properties;
+                if(instance.EnableFrustumCulling&&!GeometryUtility.TestPlanesAABB(space.Planes,instance.BoundsIn(pose.ObjectToCull))){return false;}
                 return true;
+            }
+
+            private static float MaximumScale(Matrix4x4 matrix){
+                float x=new Vector3(matrix.m00,matrix.m10,matrix.m20).magnitude;
+                float y=new Vector3(matrix.m01,matrix.m11,matrix.m21).magnitude;
+                float z=new Vector3(matrix.m02,matrix.m12,matrix.m22).magnitude;
+                return Mathf.Max(x,Mathf.Max(y,z));
             }
             private SelectionPassData AcquireSelect(){
                 if(this.selectCount==this.selectItems.Count){this.selectItems.Add(new SelectionPassData());}
@@ -534,11 +571,12 @@ namespace VirtualizedGeometry{
                 int orthographic=0;if(this.camera.orthographic){orthographic=1;}
                 Vector3 cameraPosition=this.camera.transform.position;
                 float nearPlane=Mathf.Max(1e-5f,this.camera.nearClipPlane);
+                var view=new VirtualGeometryClusterView(this.camera,cameraPosition,planes,projectionScale,nearPlane,this.camera.orthographic,viewProjection);
                 // 手順1: 描く部品ごとに、選択・描画・feedbackの項目を集める(passはまだ作らない)。bufferのimportと宣言は、passを作るときにまとめて行う。
                 for(int rendererIndex=0;rendererIndex<renderers.Count;rendererIndex++){
                     VirtualGeometryRenderer instance=renderers[rendererIndex];
-                    VirtualGeometryGpuPage page=null;bool gate;
-                    using(RecordGateMarker.Auto()){gate=this.PassesGate(instance,planes,out page);}
+                    VirtualGeometryGpuPage page=null;bool gate;InstancePlacement placed;
+                    using(RecordGateMarker.Auto()){gate=this.PassesGate(instance,planes,in view,out page,out placed);}
                     if(!gate){continue;}
                     BufferHandle vertices=graph.ImportBuffer(page.VertexBuffer);
                     BufferHandle sourceIndices=graph.ImportBuffer(page.IndexBuffer);
@@ -548,7 +586,7 @@ namespace VirtualizedGeometry{
                     if(selection!=null){argumentsBuffer=selection.ArgumentsBuffer;}
                     BufferHandle arguments=graph.ImportBuffer(argumentsBuffer);
                     BufferHandle drawIndices=sourceIndices;
-                    Matrix4x4 objectToWorld=instance.transform.localToWorldMatrix;
+                    Matrix4x4 objectToWorld=placed.ObjectToWorld;
                     if(page.HasHierarchy){
                         if(this.selectionShader==null){
                             if(!this.reportedMissingSelector){
@@ -566,17 +604,22 @@ namespace VirtualizedGeometry{
                             data.Shader=this.selectionShader;data.ResetKernel=this.resetKernel;data.SelectKernel=this.selectKernel;
                             data.Debug=graph.ImportBuffer(selection.DebugBuffer);data.DebugMode=(int)instance.DebugView;
                             data.CullingStatistics=graph.ImportBuffer(selection.CullingStatisticsBuffer);data.Hzb=hzb;data.ScreenSize=screenSize;data.HzbSize=hzbSize;
-                            data.ViewProjection=viewProjection;
-                            data.FrustumPlanes=this.planeVectors;data.FrustumEnabled=0;if(instance.EnableFrustumCulling){data.FrustumEnabled=1;}
-                            data.OcclusionEnabled=0;if(instance.EnableOcclusionCulling){data.OcclusionEnabled=1;}
+                            data.ViewProjection=placed.ViewProjection;
+                            data.FrustumPlanes=this.planeVectors;
+                            if(placed.Planes!=null){
+                                for(int i=0;i<6;i++){data.PlacementPlanes[i]=new Vector4(placed.Planes[i].normal.x,placed.Planes[i].normal.y,placed.Planes[i].normal.z,placed.Planes[i].distance);}
+                                data.FrustumPlanes=data.PlacementPlanes;
+                            }
+                            data.FrustumEnabled=0;if(instance.EnableFrustumCulling){data.FrustumEnabled=1;}
+                            data.OcclusionEnabled=0;if(instance.EnableOcclusionCulling&&placed.OcclusionAllowed){data.OcclusionEnabled=1;}
                             data.ReversedZ=reversedZ;data.TextureYSign=textureYSign;
                             data.SourceIndices=sourceIndices;data.Clusters=graph.ImportBuffer(page.ClusterBuffer);data.Nodes=graph.ImportBuffer(page.NodeBuffer);
                             data.MaterialRanges=graph.ImportBuffer(page.MaterialRangeBuffer);data.PageResidency=graph.ImportBuffer(page.PageResidencyBuffer);
                             data.VisibleIndices=graph.ImportBuffer(selection.VisibleIndexBuffer);data.RefinementState=graph.ImportBuffer(selection.RefinementStateBuffer);
                             data.SelectionFlags=graph.ImportBuffer(selection.SelectionFlagsBuffer);data.Arguments=arguments;
-                            data.ObjectToWorld=objectToWorld;data.CameraPosition=cameraPosition;
-                            data.MaximumScale=instance.MaximumWorldScale;
-                            data.ProjectionScale=projectionScale;data.NearPlane=nearPlane;
+                            data.ObjectToWorld=placed.ObjectToCull;data.CameraPosition=placed.CameraPosition;
+                            data.MaximumScale=placed.MaximumScale;
+                            data.ProjectionScale=projectionScale;data.NearPlane=placed.NearPlane;
                             data.TargetErrorPixels=instance.LodErrorThresholdPixels;data.Hysteresis=instance.LodHysteresis;
                             data.Orthographic=orthographic;data.MaterialCount=page.MaterialCount;data.NodeCount=page.NodeCount;data.PageCount=page.PageCount;
                             drawIndices=data.VisibleIndices;
@@ -597,7 +640,8 @@ namespace VirtualizedGeometry{
                             Material drawMaterial=this.material;int drawPass=0;
                             if(debugMode==0&&!instance.TryResolveDrawMaterial(materialSlot,out drawMaterial,out drawPass)){continue;}
                             DrawData data=this.AcquireDraw();
-                            data.Owner=page;data.Page=page;data.Selection=selection;data.Properties=null;
+                            data.Owner=page;data.Page=page;data.Selection=selection;data.Properties=placed.Properties;
+                            instance.MarkVirtualDrawn();
                             data.Material=drawMaterial;data.Pass=drawPass;data.Lighting=lighting;data.DebugMode=debugMode;data.TargetError=instance.LodErrorThresholdPixels;
                             data.Loading=0;
                             if(instance.StreamingStatistics!=null){data.Loading=instance.StreamingStatistics.Queued+instance.StreamingStatistics.Loading+instance.StreamingStatistics.Uploading;}

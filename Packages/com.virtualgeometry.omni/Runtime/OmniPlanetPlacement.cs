@@ -5,7 +5,6 @@ using UnityEngine;
 using VirtualGeometry.World;
 using VirtualizedGeometry;
 using DrawTransform=Omni.Rendering.Radial.DrawTransform;
-using Frustum=Omni.Rendering.Radial.Frustum;
 using LogicalMatrix3x3=Omni.Logical.Matrix3x3;
 using LogicalPosition3=Omni.Logical.Position3;
 using LogicalRenderPose=Omni.Logical.RenderPose;
@@ -23,9 +22,6 @@ namespace VirtualGeometry.Omni{
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class OmniPlanetPlacement:MonoBehaviour,IPlanetPlacement{
-        // far plane は使わない(Radial は遠方を圧縮して描くので、Unity の far で切らない)。
-        private const float UnboundedDistance=1e30f;
-
         private readonly Plane[] planes=new Plane[6];
         private IDisposable externalDraw;
         private ViewSnapshot snapshot;
@@ -56,19 +52,13 @@ namespace VirtualGeometry.Omni{
 
         public bool TryBeginFrame(in VirtualGeometryClusterView view,Transform planet,out PlanetPlacementFrame frame){
             frame=default;
-            if(!RadialViewRegistry.TryGetCurrent(view.Camera.GetEntityId(),out this.snapshot)){
-                return this.Fail("Omni の ViewSnapshot がこの camera と frame に無い。");
-            }
-            if(!this.snapshot.GpuFrame.IsUsable||!this.snapshot.Frustum.IsValid){
-                return this.Fail("Omni の GpuFrame または錐台が使えない。");
-            }
-            if(this.snapshot.Frustum.IsOrthographic){
-                return this.Fail("正投影の camera は未対応。");
+            if(!OmniRadialCull.TryGetSnapshot(view.Camera,out this.snapshot,out float near,out string failure)){
+                return this.Fail(failure);
             }
             if(!LogicalRenderPose.TryResolve(planet,out this.planetPose)){
                 return this.Fail("惑星の Logical 姿勢を解決できない。");
             }
-            if(!TryToMatrix(in this.planetPose.Basis,out this.basis)){
+            if(!OmniRadialCull.TryToMatrix(in this.planetPose.Basis,out this.basis)){
                 return this.Fail("惑星の基底を float にできない。");
             }
             // 惑星のローカル座標でのカメラ位置は、Logical で差を取り、基底の逆で戻す(Logical のまま選択に渡す)。
@@ -77,11 +67,8 @@ namespace VirtualGeometry.Omni{
                 !LogicalMatrix3x3.TryMultiplyVector(in inverse,in eyeFromPlanet,out LogicalVector3 eyeLocal)){
                 return this.Fail("カメラの惑星ローカル位置を求められない。");
             }
-            if(!this.snapshot.NearClip.TryToFloat(out float near)||!(near>0.0f)){
-                return this.Fail("Omni の near を float にできない。");
-            }
             this.planetProxy=planet.localToWorldMatrix;
-            Matrix4x4 viewProjection=this.BuildPlanes(near);
+            Matrix4x4 viewProjection=OmniRadialCull.BuildPlanes(in this.snapshot,near,this.planes);
             float scale=Mathf.Max(this.basis.GetColumn(0).magnitude,Mathf.Max(this.basis.GetColumn(1).magnitude,this.basis.GetColumn(2).magnitude));
             var space=new VirtualGeometryClusterCullSpace(Vector3.zero,this.planes,viewProjection,near,false);
             // cull 空間は eye が原点なので、カメラの cull 空間での位置は 0、惑星のローカルの向きは基底で写す。
@@ -110,41 +97,9 @@ namespace VirtualGeometry.Omni{
             return true;
         }
 
-        // eye を原点とする world 軸の空間で、Omni の錐台から side と near の平面を作る。far は無限遠。
-        // Radial で eye が warp 中心に無いときは錐台が写像後の可視域と一致しないので、全面を通す(fail-open)。
-        private Matrix4x4 BuildPlanes(float near){
-            Frustum frustum=this.snapshot.Frustum;
-            Quaternion rotation=Quaternion.LookRotation(frustum.Forward,frustum.Up);
-            Matrix4x4 worldToView=Matrix4x4.Scale(new Vector3(1.0f,1.0f,-1.0f))*Matrix4x4.Rotate(Quaternion.Inverse(rotation));
-            Matrix4x4 projection=Matrix4x4.Perspective(frustum.VerticalFieldOfViewDegrees,frustum.Aspect,near,near*1e6f);
-            Matrix4x4 viewProjection=projection*worldToView;
-            if(this.snapshot.CanUseConeCulling){
-                GeometryUtility.CalculateFrustumPlanes(viewProjection,this.planes);
-                this.planes[5]=new Plane(-frustum.Forward,UnboundedDistance);
-            }else{
-                for(int i=0;i<this.planes.Length;i++){
-                    this.planes[i]=new Plane(Vector3.up,UnboundedDistance);
-                }
-            }
-            return viewProjection;
-        }
-
         private bool Fail(string reason){
             this.lastFailure=reason;
             return false;
-        }
-
-        private static bool TryToMatrix(in LogicalMatrix3x3 value,out Matrix4x4 result){
-            result=Matrix4x4.identity;
-            if(!value.M00.TryToFloat(out float m00)||!value.M01.TryToFloat(out float m01)||!value.M02.TryToFloat(out float m02)||
-                !value.M10.TryToFloat(out float m10)||!value.M11.TryToFloat(out float m11)||!value.M12.TryToFloat(out float m12)||
-                !value.M20.TryToFloat(out float m20)||!value.M21.TryToFloat(out float m21)||!value.M22.TryToFloat(out float m22)){
-                return false;
-            }
-            result.m00=m00;result.m01=m01;result.m02=m02;
-            result.m10=m10;result.m11=m11;result.m12=m12;
-            result.m20=m20;result.m21=m21;result.m22=m22;
-            return true;
         }
     }
 }

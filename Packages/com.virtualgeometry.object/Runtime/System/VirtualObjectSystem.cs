@@ -32,8 +32,6 @@ namespace VirtualGeometry.VirtualObjects{
         [SerializeField] private bool manualStep;
 
         private readonly List<VirtualObjectNode> roots=new List<VirtualObjectNode>();
-        private readonly List<GameObject> retireObjects=new List<GameObject>();
-        private readonly List<int> retireFrames=new List<int>();
         private readonly Dictionary<Camera,LogicalVector3> previousViewerPositions=new Dictionary<Camera,LogicalVector3>();
         private readonly Dictionary<Camera,Vector3> viewerVelocities=new Dictionary<Camera,Vector3>();
         private readonly List<Camera> extraCameras=new List<Camera>();
@@ -42,6 +40,9 @@ namespace VirtualGeometry.VirtualObjects{
         private GameObject pool;
         private bool initialized;
         private bool teleportRequested;
+        private bool hasTeleportTarget;
+        private VirtualObjectViewerState teleportTarget;
+        private int teleportTargetFrame;
         private VirtualObjectStatus status;
         private float smoothedSafeSpeed=float.PositiveInfinity;
         private IVirtualObjectGround explicitGround;
@@ -86,9 +87,37 @@ namespace VirtualGeometry.VirtualObjects{
             this.extraCameras.Remove(camera);
         }
 
-        /// <summary>瞬間移動を知らせる(次の Step で、速度と予測をやり直す)。</summary>
+        /// <summary>瞬間移動を知らせる(次の Step で、速度と予測をやり直す)。<see cref="PrepareTeleport"/> の移動先の視点も外す。</summary>
         public void NotifyTeleport(){
             this.teleportRequested=true;
+            this.hasTeleportTarget=false;
+        }
+
+        /// <summary>
+        /// 瞬間移動の準備。移動先(ルートの局所の位置と向き)を見る camera がもう 1 つあるものとして評価し、移動先の近くの表現を準備して表示まで済ませる
+        /// (遠くにいる間に表示しても見えないので害はない)。移動先から半径 radius の実体が全部覆われたら true。true になったら camera を動かし、<see cref="NotifyTeleport"/> を呼ぶ。
+        /// これで、移動した直後の frame から穴が出ない。やめるときは <see cref="CancelTeleport"/>。
+        /// </summary>
+        public bool PrepareTeleport(in LogicalVector3 position,Quaternion rotation,float projectionScale,float radius){
+            if(!this.initialized){this.Initialize();}
+            // 移動先が変わったら、その移動先で評価した Step の後から判定し直す。
+            if(!this.hasTeleportTarget||!this.teleportTarget.Position.Equals(position)){this.teleportTargetFrame=this.context.Frame;}
+            this.teleportTarget=new VirtualObjectViewerState{Camera=null,Position=position,Rotation=rotation,ProjectionScale=projectionScale,Velocity=Vector3.zero};
+            this.hasTeleportTarget=true;
+            if(this.context.Frame<=this.teleportTargetFrame){return false;}
+            for(int i=0;i<this.roots.Count;i++){
+                VirtualObjectNode root=this.roots[i];
+                if(!LogicalVector3.TrySubtract(root.Origin,position,out LogicalVector3 difference)||!difference.TryToFloat3(out float3 offset)){continue;}
+                if(math.length(offset)>radius+root.Radius){continue;}
+                // 移動先の視点で評価した後(次の Step の後)に、覆われているか。
+                if(root.LastEvaluatedFrame!=this.context.Frame||!root.IsCovered){return false;}
+            }
+            return true;
+        }
+
+        /// <summary><see cref="PrepareTeleport"/> の移動先の視点を外す(瞬間移動をやめたとき)。</summary>
+        public void CancelTeleport(){
+            this.hasTeleportTarget=false;
         }
 
         private void OnEnable(){
@@ -141,34 +170,31 @@ namespace VirtualGeometry.VirtualObjects{
             return true;
         }
 
-        /// <summary>全部の表現を解放し、作り置きの GameObject を破棄する。</summary>
+        /// <summary>
+        /// 全部の表現を解放し、作り置きの GameObject を破棄する。破棄は配置の決まり(<see cref="IVirtualObjectPlacement.RetireFrames"/>)の後
+        /// (<see cref="VirtualObjectRetirement"/> が、このシステムを止めた後も数えて破棄する)。
+        /// </summary>
         public void Shutdown(){
             if(!this.initialized){return;}
             this.initialized=false;
+            this.context.ShuttingDown=true;
             foreach(VirtualObjectNode root in this.roots){this.scheduler.ReleaseSubtree(root,true);}
+            this.context.ShuttingDown=false;
             this.roots.Clear();
-            for(int i=0;i<this.retireObjects.Count;i++){DestroyObject(this.retireObjects[i]);}
-            this.retireObjects.Clear();this.retireFrames.Clear();
-            DestroyObject(this.pool);
+            VirtualObjectRetirement.Retire(this.pool,this.Placement.RetireFrames);
             this.pool=null;
             this.previousViewerPositions.Clear();this.viewerVelocities.Clear();
+            this.hasTeleportTarget=false;
         }
 
-        internal void Retire(GameObject instance){
-            if(instance==null){return;}
-            this.retireObjects.Add(instance);
-            this.retireFrames.Add(this.context.Frame+this.Placement.RetireFrames);
+        internal void Retire(UnityEngine.Object instance){
+            VirtualObjectRetirement.Retire(instance,this.Placement.RetireFrames);
         }
 
         internal void ReportError(IVirtualObjectRepresentation representation,Exception error){
             this.status.Failures++;
             this.errors.Add(representation+": "+error.Message);
             if(this.errors.Count>32){this.errors.RemoveAt(0);}
-        }
-
-        private static void DestroyObject(GameObject target){
-            if(target==null){return;}
-            if(Application.isPlaying){Destroy(target);}else{DestroyImmediate(target);}
         }
 
         /// <summary>
@@ -179,7 +205,6 @@ namespace VirtualGeometry.VirtualObjects{
             if(!(dt>0f)){dt=1f/60f;}
             this.context.Frame++;
             this.context.Time+=dt;
-            this.ProcessRetire();
             this.UpdateViewers(dt);
             int failures=this.status.Failures;
             int starved=this.status.StarvedRequests;
@@ -187,7 +212,7 @@ namespace VirtualGeometry.VirtualObjects{
             this.status.Failures=failures;
             this.scheduler.BeginFrame();
             if(this.context.Viewers.Count>0){
-                for(int i=0;i<this.roots.Count;i++){this.Evaluate(this.roots[i]);}
+                for(int i=0;i<this.roots.Count;i++){this.Evaluate(this.roots[i],false);}
             }
             this.scheduler.Prepare();
             for(int i=0;i<this.roots.Count;i++){this.Present(this.roots[i]);}
@@ -197,14 +222,6 @@ namespace VirtualGeometry.VirtualObjects{
             for(int i=0;i<this.roots.Count;i++){this.CollapseIdleChildren(this.roots[i]);}
             this.status.StarvedRequests=starved+this.scheduler.StarvedThisFrame;
             this.Publish(dt);
-        }
-
-        private void ProcessRetire(){
-            for(int i=this.retireObjects.Count-1;i>=0;i--){
-                if(this.context.Frame<this.retireFrames[i]){continue;}
-                DestroyObject(this.retireObjects[i]);
-                this.retireObjects.RemoveAt(i);this.retireFrames.RemoveAt(i);
-            }
         }
 
         private void UpdateViewers(float dt){
@@ -236,11 +253,15 @@ namespace VirtualGeometry.VirtualObjects{
                 this.previousViewerPositions[camera]=position;
                 viewers.Add(new VirtualObjectViewerState{Camera=camera,Position=position,Rotation=rotation,ProjectionScale=projection,Velocity=velocity});
             }
+            // 瞬間移動の移動先(準備中だけ)。速度は 0。
+            if(this.hasTeleportTarget){viewers.Add(this.teleportTarget);}
         }
 
-        // 望む帯と要求を決める(子へも)。
-        private void Evaluate(VirtualObjectNode node){
+        // 望む帯と要求を決める(子へも)。prefetchOnly は、親がまだ子の帯を望んでいない(予測で子の帯に入りそうなので先に準備する)子:
+        // 要求は不足として扱わず、表示もしない。
+        private void Evaluate(VirtualObjectNode node,bool prefetchOnly){
             node.LastEvaluatedFrame=this.context.Frame;
+            node.PrefetchOnly=prefetchOnly;
             this.status.Nodes++;
             this.ResolveGround(node);
             RepresentationBand[] bands=node.Bands;
@@ -256,29 +277,38 @@ namespace VirtualGeometry.VirtualObjects{
             }
             int desired=node.DesiredBand;
             if(desired>=0&&!bands[desired].IsChildren){
-                bool deficit=node.ShownBand!=desired;
-                this.scheduler.Request(node,desired,node.Pixels*importance*10f,deficit);
+                bool deficit=!prefetchOnly&&node.ShownBand!=desired;
+                float priority=node.Pixels*importance*10f;
+                if(prefetchOnly){priority=node.PredictedPixels*importance;}
+                this.scheduler.Request(node,desired,priority,deficit);
             }
             // 先読み: 予測した帯が細かければ、その帯を準備する。
             if(node.PredictedBand>desired&&!bands[node.PredictedBand].IsChildren){
                 this.scheduler.Request(node,node.PredictedBand,node.PredictedPixels*importance,false);
+            }
+            // 「なし」から最初の帯へ先に見せる帯(EarlyBand)も準備する。
+            int early=EarlyBand(node);
+            if(early>desired&&!bands[early].Resident){
+                this.scheduler.Request(node,early,node.PredictedPixels*importance,false);
             }
             // 見せている帯と、切り替え中の帯は解放しない。
             if(node.ShownBand>=0){node.LastRequestedFrame[node.ShownBand]=this.context.Frame;}
             if(node.HandoffTarget>=0&&node.HandoffTarget<bands.Length){node.LastRequestedFrame[node.HandoffTarget]=this.context.Frame;}
             bool wantsChildren=desired>=0&&bands[desired].IsChildren;
             bool showsChildren=node.ShownBand>=0&&bands[node.ShownBand].IsChildren;
-            if(wantsChildren){this.EnsureChildren(node);}
-            if((wantsChildren||showsChildren)&&node.ChildList!=null){
-                for(int i=0;i<node.ChildList.Count;i++){this.Evaluate(node.ChildList[i]);}
+            // 予測で子の帯に入りそうなら、子を先に作って準備する(子の帯に入った時に、子が揃うまで粗い帯で待たないように)。
+            bool predictsChildren=node.PredictedBand>=0&&node.PredictedBand<bands.Length&&bands[node.PredictedBand].IsChildren;
+            if(wantsChildren||predictsChildren){this.EnsureChildren(node);}
+            if((wantsChildren||showsChildren||predictsChildren)&&node.ChildList!=null){
+                bool childPrefetch=prefetchOnly||(!wantsChildren&&!showsChildren);
+                for(int i=0;i<node.ChildList.Count;i++){this.Evaluate(node.ChildList[i],childPrefetch);}
             }
         }
 
         // 見る camera ごとの画面上の大きさの最大と、先読みの予測。
         private void MeasurePixels(VirtualObjectNode node){
             float radius=node.Radius;
-            Vector3 center=Vector3.zero;
-            if(node.Definition!=null){center=node.EffectiveRotation*(node.Definition.BoundsCenter*node.Scale);}
+            Vector3 center=node.CenterOffset;
             float best=0f;float predicted=0f;float nearest=float.MaxValue;
             float lead=this.scheduler.AveragePrepareSeconds*this.budget.PredictionSafety+0.25f;
             IReadOnlyList<VirtualObjectViewerState> viewers=this.context.Viewers;
@@ -289,7 +319,12 @@ namespace VirtualGeometry.VirtualObjects{
                 float distance=relative.magnitude;
                 nearest=Mathf.Min(nearest,Mathf.Max(0f,distance-radius));
                 best=Mathf.Max(best,ScreenPixels(radius,distance,viewer.ProjectionScale));
-                Vector3 future=relative-viewer.Velocity*lead;
+                // 先読みの時間に camera が進む線分の上で、最も近づく距離(通り過ぎた先の位置は使わない)。
+                Vector3 travel=viewer.Velocity*lead;
+                float along=0f;
+                float travelSquared=travel.sqrMagnitude;
+                if(travelSquared>1e-12f){along=Mathf.Clamp01(Vector3.Dot(relative,travel)/travelSquared);}
+                Vector3 future=relative-travel*along;
                 predicted=Mathf.Max(predicted,ScreenPixels(radius,future.magnitude,viewer.ProjectionScale));
             }
             node.Pixels=best;node.PredictedPixels=Mathf.Max(best,predicted);node.Distance=nearest;
@@ -363,13 +398,16 @@ namespace VirtualGeometry.VirtualObjects{
 
         // 見せる帯を決める(子から先に)。
         private void Present(VirtualObjectNode node){
-            if(node.LastEvaluatedFrame!=this.context.Frame){return;}
+            // 先に準備しているだけの子は見せない(親の表現と重ねて描かない)。
+            if(node.LastEvaluatedFrame!=this.context.Frame||node.PrefetchOnly){return;}
             if(node.ChildList!=null){
                 for(int i=0;i<node.ChildList.Count;i++){this.Present(node.ChildList[i]);}
             }
             RepresentationBand[] bands=node.Bands;
             int desired=node.DesiredBand;
             if(desired<0||bands.Length==0){return;}
+            int early=EarlyBand(node);
+            if(early>desired){desired=early;}
             int target=-1;
             for(int b=desired;b>=0;b--){
                 if(this.IsAvailable(node,b)){target=b;break;}
@@ -378,19 +416,40 @@ namespace VirtualGeometry.VirtualObjects{
                 // 細かい方へ進む途中で、今見せている帯の方が望む帯に近ければ、それを保つ(粗い方へ戻さない)。
                 target=node.ShownBand;
             }
+            // 遅れは、本来望む帯(先に見せる帯でなく)より粗い帯で見せている数。
+            bool lagging=node.ShownBand<node.DesiredBand&&target<node.DesiredBand;
             if(target<0||target==node.ShownBand){
                 node.HandoffTarget=-1;node.HandoffCount=0;
                 if(target>=0){this.EnsureActive(node,target);}
-                if(target<desired){this.status.Lagging++;}
+                if(lagging){this.status.Lagging++;}
                 return;
             }
-            if(target<desired){this.status.Lagging++;}
+            if(lagging){this.status.Lagging++;}
             this.EnsureActive(node,target);
             if(!this.IsVisible(node,target)){return;}
             if(node.HandoffTarget!=target){node.HandoffTarget=target;node.HandoffCount=0;}
             node.HandoffCount++;
-            bool immediate=node.ShownBand<0||bands[target].IsNone||!this.IsVisible(node,node.ShownBand);
+            // 何も描いていない(「なし」)状態からは、重ねる相手が無いので見えた frame に切り替える。
+            bool immediate=node.ShownBand<0||bands[target].IsNone||bands[node.ShownBand].IsNone||!this.IsVisible(node,node.ShownBand);
             if(immediate||node.HandoffCount>this.budget.HandoffFrames){this.Switch(node,target);}
+        }
+
+        // 最初の帯を先に見せる、入口の px に対する割合(見せ始めと、見せるのをやめる所。ヒステリシス)。
+        private const float EarlyEnterFraction=0.5f;
+        private const float EarlyExitFraction=0.4f;
+
+        // 「なし」から最初の帯へ進むとき、表現が実際に描かれるまでの数 frame は何も描かれない(穴)。
+        // 画面上の大きさが最初の帯の入口の半分を超えるか、移動の予測で入口に届きそうなら、望む帯が「なし」の間に最初の帯を先に見せる
+        // (まだ入口の px より小さいので、見えても差し支えない)。見せた後は、入口の 0.4 倍を下回るまで見せ続ける。
+        private static int EarlyBand(VirtualObjectNode node){
+            RepresentationBand[] bands=node.Bands;
+            if(bands.Length<2||!bands[0].IsNone||bands[1].IsNone||bands[1].IsChildren){return -1;}
+            if(node.DesiredBand!=0){return -1;}
+            float enter=bands[1].EnterPixels;
+            float threshold=enter*EarlyEnterFraction;
+            if(node.ShownBand==1){threshold=enter*EarlyExitFraction;}
+            if(node.Pixels>=threshold||node.PredictedPixels>=enter){return 1;}
+            return -1;
         }
 
         // 帯が見せられる状態か(なし: 常に、子: 全部の子が覆われている、表現: 準備済みで、地面が揃っている)。

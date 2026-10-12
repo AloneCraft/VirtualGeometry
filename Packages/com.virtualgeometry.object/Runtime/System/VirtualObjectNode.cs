@@ -19,6 +19,8 @@ namespace VirtualGeometry.VirtualObjects{
         internal bool GroundResolved;
         internal Quaternion GroundedRotation;
         internal int ChildrenLastUsedFrame;
+        /// <summary>この frame、親が子の帯を望む前に先に準備しているだけか(見せない。要求は不足として扱わない)。</summary>
+        internal bool PrefetchOnly;
 
         public VirtualObjectNode(VirtualObject definition,VirtualObjectNode parent,int number,in LogicalVector3 origin,Quaternion rotation,float scale,uint seed){
             this.Definition=definition;this.Parent=parent;this.Number=number;this.Origin=origin;this.Rotation=rotation;this.Scale=scale;this.Seed=seed;
@@ -46,6 +48,14 @@ namespace VirtualGeometry.VirtualObjects{
         public Quaternion Rotation{get;}
         /// <summary>実際の向き(ルートの局所)。地面に置いた後は、地面の上向きに合わせた向き。</summary>
         public Quaternion EffectiveRotation=>this.GroundedRotation;
+
+        /// <summary>原点から境界の球の中心までの差(ルートの局所、m)。画面上の大きさと締切は、この中心で測る。</summary>
+        public Vector3 CenterOffset{
+            get{
+                if(this.Definition==null){return Vector3.zero;}
+                return this.EffectiveRotation*(this.Definition.BoundsCenter*this.Scale);
+            }
+        }
         public float Scale{get;}
         public uint Seed{get;}
         /// <summary>割り当ての層が渡したパラメータ。</summary>
@@ -100,12 +110,14 @@ namespace VirtualGeometry.VirtualObjects{
 
         /// <summary>
         /// 画面に何かが出ているか(穴でないか)。見せている帯の表現が見えているか、子で見せているなら全部の子が覆われている。望む帯が「なし」なら覆われている扱い。
+        /// 望む帯が「なし」でないのに「なし」を見せている(何も描いていない)なら、覆われていない。
         /// </summary>
         public bool IsCovered{
             get{
                 RepresentationBand[] bands=this.Bands;
                 if(this.DesiredBand>=0&&this.DesiredBand<bands.Length&&bands[this.DesiredBand].IsNone){return true;}
                 if(this.ShownBand<0||this.ShownBand>=bands.Length){return false;}
+                if(bands[this.ShownBand].IsNone){return false;}
                 if(bands[this.ShownBand].IsChildren){return this.AreChildrenCovered();}
                 IVirtualObjectRepresentation representation=this.Representations[this.ShownBand];
                 return representation!=null&&representation.IsVisible;

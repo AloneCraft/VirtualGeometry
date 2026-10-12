@@ -26,6 +26,8 @@ namespace VirtualGeometry.VirtualObjects{
         }
 
         private static readonly Dictionary<(EntityId mesh,int size),Clusters> cache=new Dictionary<(EntityId mesh,int size),Clusters>();
+        // Read/Write が無効と知らせたメッシュ(同じメッシュで何度も知らせない)。
+        private static readonly HashSet<EntityId> unreadable=new HashSet<EntityId>();
 
         public int GetPartCount(VirtualObjectNode node){
             Clusters clusters=this.Get(node);
@@ -72,6 +74,11 @@ namespace VirtualGeometry.VirtualObjects{
         public Clusters Get(VirtualObjectNode node){
             Mesh mesh=this.ResolveMesh(node);
             if(mesh==null){return null;}
+            // Play 中とビルドでは Read/Write が無効なメッシュの頂点を読めない。Edit Mode でも同じ扱いにして、取り込みの設定の誤りを早く見つける。
+            if(!mesh.isReadable){
+                if(unreadable.Add(mesh.GetEntityId())){Debug.LogError("MeshClusterPartition: メッシュ '"+mesh.name+"' は Read/Write が無効なので分けられません(モデルの取り込みで Read/Write を有効にしてください)。",mesh);}
+                return null;
+            }
             int size=Mathf.Max(1,this.TrianglesPerPart);
             var key=(mesh.GetEntityId(),size);
             if(cache.TryGetValue(key,out Clusters clusters)){return clusters;}
@@ -83,6 +90,7 @@ namespace VirtualGeometry.VirtualObjects{
         /// <summary>cache を捨てる(メッシュを変えたとき、Editor から呼ぶ)。</summary>
         public static void ClearCache(){
             cache.Clear();
+            unreadable.Clear();
         }
 
         public static Clusters Build(Mesh mesh,int trianglesPerPart){

@@ -152,6 +152,16 @@ namespace VirtualGeometry.VirtualObjects.Tests{
                 VirtualObjectNode node=NewNode(null);
                 Assert.That(small.GetPartCount(node),Is.GreaterThan(large.GetPartCount(node)));
             }
+            {
+                // Read/Write が無効なメッシュ(Play 中とビルドでは頂点を読めない)は、Edit Mode でも分けず、エラーを 1 回だけ出す
+                Mesh mesh=this.Wave(6);
+                mesh.UploadMeshData(true);
+                var partition=new MeshClusterPartition{Mesh=mesh,TrianglesPerPart=16};
+                VirtualObjectNode node=NewNode(null);
+                UnityEngine.TestTools.LogAssert.Expect(LogType.Error,new System.Text.RegularExpressions.Regex("Read/Write が無効"));
+                Assert.That(partition.Get(node),Is.Null);
+                Assert.That(partition.GetPartCount(node),Is.EqualTo(0));
+            }
         }
 
         [Test]

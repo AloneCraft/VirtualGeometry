@@ -75,7 +75,7 @@ namespace VirtualGeometry.VirtualObjects{
 
     /// <summary>番号ごとの上書きの表。指定した番号だけ、型・プレハブ・パラメータを変える(子を作らない指定もできる)。</summary>
     [Serializable]
-    public sealed class OverrideTableRule:IChildAssignmentRule{
+    public sealed class OverrideTableRule:IChildAssignmentRule,IVirtualObjectDependencySource{
         [Serializable]
         public struct Row{
             public int Number;
@@ -101,11 +101,15 @@ namespace VirtualGeometry.VirtualObjects{
             }
             return -1;
         }
+
+        public void CollectDependencies(VirtualObjectDependencies dependencies){
+            for(int i=0;i<this.Rows.Length;i++){dependencies.AddDefinition(this.Rows[i].Prefab);}
+        }
     }
 
     /// <summary>領域: ルートの局所の位置が球の中なら、型を割り当てる(都市の範囲、火山の範囲など)。</summary>
     [Serializable]
-    public sealed class RegionRule:IChildAssignmentRule{
+    public sealed class RegionRule:IChildAssignmentRule,IVirtualObjectDependencySource{
         /// <summary>球の中心(ルートの局所の位置、m、10 進の文字列)。</summary>
         public string CenterX="0";
         public string CenterY="0";
@@ -125,6 +129,10 @@ namespace VirtualGeometry.VirtualObjects{
             if(Unity.Mathematics.math.length(offset)>this.Radius){return;}
             result.TemplateIndex=this.TemplateIndex;result.Prefab=this.Prefab;result.Parameters=this.Parameters;result.Source="region";
         }
+
+        public void CollectDependencies(VirtualObjectDependencies dependencies){
+            dependencies.AddDefinition(this.Prefab);
+        }
     }
 
     /// <summary>
@@ -138,7 +146,7 @@ namespace VirtualGeometry.VirtualObjects{
 
     /// <summary>場による分類: 場の値(種類の番号)ごとに型を割り当てる(海、火山、都市など)。</summary>
     [Serializable]
-    public sealed class FieldClassificationRule:IChildAssignmentRule{
+    public sealed class FieldClassificationRule:IChildAssignmentRule,IVirtualObjectDependencySource{
         [Serializable]
         public struct Mapping{
             public int Classification;
@@ -156,6 +164,10 @@ namespace VirtualGeometry.VirtualObjects{
                 result.TemplateIndex=this.Mappings[i].TemplateIndex;result.Prefab=this.Mappings[i].Prefab;result.Parameters=parameters;result.Source="field";
                 return;
             }
+        }
+
+        public void CollectDependencies(VirtualObjectDependencies dependencies){
+            for(int i=0;i<this.Mappings.Length;i++){dependencies.AddDefinition(this.Mappings[i].Prefab);}
         }
     }
 }

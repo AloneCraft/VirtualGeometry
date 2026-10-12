@@ -41,6 +41,10 @@ namespace VirtualGeometry.World{
         public bool Clamped{get;private set;}
         /// <summary>直近の失敗の理由(成功した frame では null)。</summary>
         public string LastFailure{get;private set;}
+        /// <summary>
+        /// 速さの上限(m/s)。既定は正の無限大(上限なし)。ゲームが、読み込みの追いつく速さ(仮想オブジェクトの安全速度など)を任意で渡す。
+        /// </summary>
+        public float SpeedLimit{get;set;}=float.PositiveInfinity;
 
         private void OnEnable(){
             this.logical=this.GetComponent<LogicalTransform>();
@@ -86,6 +90,7 @@ namespace VirtualGeometry.World{
                 if(!this.TrySetRotation(rotation)){return this.Fail("回転を Logical にできない。");}
             }
             float speed=Mathf.Max(this.minimumSpeed,altitude)*this.speedPerAltitude*this.speedMultiplier;
+            if(speed>this.SpeedLimit){speed=Mathf.Max(0f,this.SpeedLimit);}
             Vector3 delta=(rotation*new Vector3(move.x,0,move.z)+up*move.y)*(speed*deltaTime);
             if(delta!=Vector3.zero){
                 if(!LogicalVector3.TryFromFloat3(delta,out LogicalVector3 worldDelta)||!this.logical.TranslateWorld(in worldDelta)){return this.Fail("移動を Logical にできない。");}
