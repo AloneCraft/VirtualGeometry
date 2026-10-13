@@ -7,7 +7,7 @@ namespace VirtualizedGeometry.Samples.SpaceElevator.Editor{
     /// <summary>
     /// Blender のカメラ設定(se_ground_anchor.py の setup_world_and_camera)を Unity のカメラへ写し、表示どおりの sRGB 画像を撮る。
     /// 参照画像「地上が、宇宙へのはじまり。」(1448×1086)と同じ構図の SE_GA_Camera と、配置確認用の SE_GA_Camera_Aerial を扱う。
-    /// 使用先: SpaceElevatorValidation(修正前後の撮影・参照画像との横並び)、SpaceElevatorSceneBuilder(SpaceElevator.unity の Main Camera)。
+    /// 使用先: SpaceElevatorValidation(撮影・参照画像との横並び)、SpaceElevatorSceneBuilder(SpaceElevator.unity の Main Camera)。
     /// </summary>
     public static class SpaceElevatorCapture{
         /// <summary>Blender のカメラ1台分の設定。位置・注視は Blender のワールド座標(m、Z上)。</summary>

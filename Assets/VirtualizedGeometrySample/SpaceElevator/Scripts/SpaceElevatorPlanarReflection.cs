@@ -135,6 +135,9 @@ namespace VirtualizedGeometry.Samples.SpaceElevator{
             int height=Mathf.Max(64,Mathf.RoundToInt(this.mainCamera.pixelHeight*this.resolutionScale));
             if(this.target!=null&&this.target.width==width&&this.target.height==height){return;}
             if(this.target!=null){
+                if(this.reflectionCamera!=null){
+                    this.reflectionCamera.targetTexture=null;
+                }
                 this.target.Release();
                 DestroyImmediate(this.target);
             }
