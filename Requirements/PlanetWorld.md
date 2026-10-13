@@ -1177,6 +1177,12 @@ EditMode テスト(`VirtualGeometry.Omni.Tests.Editor`): `ScaledPlaneMesh`(座�
 - **他の `Vector3.Angle` の使用箇所(パッケージ内を検索して、コードを読んで確認)**: `CubeSphereTests` は、0° 付近の誤差を許容している(コメントと `Within(0.05f)`)。`PlanetCellSelector` は、角度の最大値(余裕を持たせる側)に使う。`P2OmniPlanetValidation`・`P4bDescentValidation` は、最も近い Cell を角度の最小で選ぶ(0° 付近では、床の 0.02° 程度で同点になりうる。同点は階層の深い方を選ぶ)か、Cell の大きさ(度)との比較で、0 近傍の閾値の判定ではない。今回の症状は出ない(ただし、これらは今回実行して確かめてはいない)。
 - **教訓**: 向きが揃っていることを float の `acos` で判定しない(閾値が約 345 µrad 未満のとき、必ず誤判定の余地がある)。
 
+### 検証が material のアセットに値を残すバグと修正(2026-10-13)
+
+- **症状**: `PlaneSinkValidation` / `PlaneSeamValidation` などを動かすたびに、`PlaneSink/Materials/LeftPlane.mat` と `PlaneSeam/Materials/LeftPlane.mat` が git の差分になる(`_ObjectScale` が 2000006 から 20000006 に、`_GridOriginOS` が 0.4999985 から 0.49999985 に)。
+- **原因**: デモ(`PlaneSinkDemo`、`PlaneSeamDemo`)は、左の面の material のアセットに `_GridOriginOS` と `_ObjectScale` を書き、`OnDestroy` で元の値に戻す。batchmode の検証は `EditorApplication.Exit` で終わるので `OnDestroy` が走らず、検証が最後に使った距離 D = 1e7 の値(2e7 + 6)がアセットに残った。
+- **修正**: `RestoreWrittenAsset` を public にし、4 つの検証・スモーク(`PlaneSinkValidation`、`PlaneSeamValidation`、`PlaneSinkPlaySmoke`、`PlaneSeamPlaySmoke`)の `Finish` で呼ぶ。修正後に 4 ジョブ(`PlaneSink`、`PlaneSeam`、`PlaneSinkPlay`、`PlaneSeamPlay`)を実行して、すべて PASSED、material の内容が HEAD と同じ(blob のハッシュが一致)ことを確認した。
+
 ### 限界
 
 - **誤差の原因の内訳は切り分けていない**。D が大きいほど増える(10^4 と 10^5 で 0、10^6 から出る)ことと、画像の様子は、Omni の記録(`CurrentWork.md` の COSMIC-PRECISION-001)の「物体空間の float の分解能」の説明と合う。

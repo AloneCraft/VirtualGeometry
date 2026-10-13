@@ -112,7 +112,8 @@ namespace VirtualGeometry.Omni{
             if(this.ownedLeftMaterial!=null){DisposeObject(this.ownedLeftMaterial);}
         }
 
-        private void RestoreWrittenAsset(){
+        /// <summary>デモが material のアセットに書いた値(_GridOriginOS、_ObjectScale)を、元の値へ戻す。batchmode の検証は EditorApplication.Exit で終わり、OnDestroy が走らずに、検証の最後の値(D = 1e7 など)がアセットに残るので、検証の終了時に呼ぶ。</summary>
+        public void RestoreWrittenAsset(){
             if(this.writtenAsset==null){return;}
             this.writtenAsset.SetVector("_GridOriginOS",this.originalGridOrigin);
             this.writtenAsset.SetFloat("_ObjectScale",this.originalObjectScale);

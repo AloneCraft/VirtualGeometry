@@ -393,6 +393,8 @@ namespace VirtualGeometry.Omni.Editor{
 
         private static void Finish(Exception error){
             EditorApplication.update-=Tick;Application.logMessageReceived-=Record;
+            // デモが material のアセットに書いた値を戻す(戻さないと、検証の最後の値がアセットに残り、git の差分になる)。
+            if(demo!=null){demo.RestoreWrittenAsset();}
             if(error!=null){failures.Add(error.ToString());}
             foreach(string message in errors){failures.Add("Unity logged error: "+message);}
             report.Add("UTC="+DateTime.UtcNow.ToString("O",CultureInfo.InvariantCulture)+" Unity="+Application.unityVersion+" GPU="+SystemInfo.graphicsDeviceName+" API="+SystemInfo.graphicsDeviceType);
