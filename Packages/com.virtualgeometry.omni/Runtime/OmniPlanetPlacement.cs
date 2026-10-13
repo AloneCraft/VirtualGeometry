@@ -20,6 +20,9 @@ namespace VirtualGeometry.Omni{
     /// Cell ごとに、Omni が precise な Renderer に書くのと同じ物体ごとの値を MaterialPropertyBlock へ書く。
     /// material には Omni の Radial shader を元にした .vgshader(このパッケージの Shaders/RadialGlobalLit.vgshader)を使う。
     /// </summary>
+    // [ExecuteAlways]: Edit Mode でも、外部描画経路の登録(OnEnable)と配置(isActiveAndEnabled)を有効にする(OmniVirtualGeometryPlacement、OmniObjectPlacement と同じ)。
+    // 付けないと、Play を止めた Edit Mode の Game View・Scene View で、VG の月が Omni の配置に乗らず、何も表示されない。
+    [ExecuteAlways]
     [DisallowMultipleComponent]
     public sealed class OmniPlanetPlacement:MonoBehaviour,IPlanetPlacement{
         private readonly Plane[] planes=new Plane[6];

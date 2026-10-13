@@ -24,7 +24,7 @@ Material:
     serializedVersion: 3
     m_TexEnvs:
     - _BaseMap:
-        m_Texture: {fileID: 2800000, guid: 0f826acee83caf14dbae3e834e8a473c, type: 3}
+        m_Texture: {fileID: 0}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - _CloudMap:
@@ -49,7 +49,7 @@ Material:
     - _RadialGlobal_UseRadialTransform: 0
     - _RadialGlobal_UseRigidAnchor: 0
     m_Colors:
-    - _BaseColor: {r: 1, g: 1, b: 1, a: 1}
+    - _BaseColor: {r: 0.62, g: 0.36, b: 0.72, a: 1}
     - _CosmicBody: {r: 10, g: 0, b: 0, a: 0}
     - _CosmicP0: {r: 0, g: 0, b: 0, a: 0}
     - _CosmicP1: {r: 0, g: 0, b: 0, a: 0}

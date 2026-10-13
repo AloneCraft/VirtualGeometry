@@ -52,7 +52,7 @@ Material:
     - _BaseColor: {r: 1, g: 1, b: 1, a: 1}
     - _CosmicBody: {r: 7, g: 2, b: 5, a: 0}
     - _CosmicP0: {r: 0.41, g: 0.67, b: 0.29, a: 0.11}
-    - _CosmicP1: {r: 1, g: 0, b: 0, a: 0.4}
+    - _CosmicP1: {r: 0, g: -1, b: 0, a: 0.4}
     - _CosmicP2: {r: 0.0035, g: 1, b: 0.08, a: 0.08}
     - _CosmicP3: {r: 0, g: 0, b: 0, a: 0}
     - _RadialGlobal_EyeRelative: {r: 0, g: 0, b: 0, a: 0}

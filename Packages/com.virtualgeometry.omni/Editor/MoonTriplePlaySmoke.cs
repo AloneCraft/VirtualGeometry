@@ -80,6 +80,15 @@ namespace VirtualGeometry.Omni.Editor{
             }
         }
 
+        // 「シーンを再読み込みしない」設定(Enter Play Mode Options の Reload Scene 無効)で Play する。Edit Mode で作った分割処理(CosmicPlanetSurface の隠れた PlanetSurfaceLod)が、
+        // Play に入る時の OnDisable で終了したまま残る場合(手動分割した月が細分化されない)の再現と、直しの確認に使う。
+        private static bool noSceneReload;
+
+        public static void RunNoSceneReload(){
+            noSceneReload=true;
+            Run();
+        }
+
         public static void Run(){
             frames=0;phase=0;caseIndex=0;caseFrame=0;demo=null;started=EditorApplication.timeSinceStartup;
             report.Clear();failures.Clear();errors.Clear();sweepCrops.Clear();
@@ -92,6 +101,7 @@ namespace VirtualGeometry.Omni.Editor{
                 // 再読み込みしないと、Edit Mode で作った PlanetSurface の分割処理が、Play に入る時の無効化で終了したまま残り、月 B が更新されない)。
                 EditorSettings.enterPlayModeOptionsEnabled=true;
                 EditorSettings.enterPlayModeOptions=EnterPlayModeOptions.DisableDomainReload;
+                if(noSceneReload){EditorSettings.enterPlayModeOptions=EnterPlayModeOptions.DisableDomainReload|EnterPlayModeOptions.DisableSceneReload;}
                 EditorApplication.update+=Tick;
                 EditorApplication.EnterPlaymode();
             }catch(Exception error){
@@ -117,7 +127,85 @@ namespace VirtualGeometry.Omni.Editor{
         private static Case[] BuildCases(){
             var list=new List<Case>(BuildBaseCases());
             list.AddRange(BuildScaleCases());
+            list.AddRange(BuildBuryCases());
             return list.ToArray();
+        }
+
+        // 「ボールの半分を埋める」: 接触点ちょうど(z = 0)で押しても、接触点から 1,500 m へ移って埋まる(以前は、接触点では上下の面の高さが同じで、y が動かなかった)。
+        // 下の月は 15° 見下ろし、上の月は 15° 見上げる。上の月では、光を下から当てる。HUD の呼び名(分割しない面 / VG の面 / 手動分割した面)に、古い呼び名が残っていない。
+        private static Case[] BuildBuryCases(){
+            var cases=new List<Case>();
+            long lateralUnits=(long)Math.Round(MoonTripleDemo.BuryLateralMeters/MoonTripleDemo.UnitMeters);
+            foreach(int contactIndex in new[]{0,1}){
+                int contact=contactIndex;
+                foreach(bool lowerMoon in new[]{true,false}){
+                    bool lower=lowerMoon;
+                    string moon;
+                    if(lower){moon=MoonTripleDemo.LowerSurfaceName(contact);}else{moon=MoonTripleDemo.UpperSurfaceName(contact);}
+                    MoonTripleKey key;
+                    if(lower){key=MoonTripleKey.BuryLower;}else{key=MoonTripleKey.BuryUpper;}
+                    cases.Add(new Case{Name="Bury half into the "+(lower?"lower":"upper")+" moon ("+moon+") from the exact contact point "+contact,Keys=new[]{key},Hold=2,Wait=1000,
+                        Prepare=()=>{demo.SetGaps(0,0);demo.SetState(contact,0,0,0,180f,10f,0.35f);},
+                        Check=(a,b)=>{
+                            double surface;
+                            if(lower){surface=demo.Layout.LowerSurfaceY(contact,MoonTripleDemo.BuryLateralMeters);}else{surface=demo.Layout.UpperSurfaceY(contact,MoonTripleDemo.BuryLateralMeters);}
+                            long expectedY=(long)Math.Round((surface-demo.Layout.ContactY(contact))/MoonTripleDemo.UnitMeters);
+                            float expectedPitch;
+                            if(lower){expectedPitch=15f;}else{expectedPitch=-15f;}
+                            double distance=math.length(b.Position-demo.BallCenterDouble());
+                            Vector4 light=Shader.GetGlobalVector("_CosmicKeyLight");
+                            bool lightOk;
+                            if(lower){lightOk=light.y>0;}else{lightOk=light.y<0;}
+                            if(!b.Pending&&b.Contact==contact&&b.X==0&&b.Z==lateralUnits&&b.Y==expectedY&&b.Yaw==180f&&b.Pitch==expectedPitch&&Math.Abs(distance-MoonTripleDemo.FrameDistance)<1e-3&&lightOk){return null;}
+                            return "半分を埋められませんでした(pending "+b.Pending+"、接触点 "+b.Contact+"、位置 ("+b.X+","+b.Y+","+b.Z+") 期待 (0,"+expectedY+","+lateralUnits+")、yaw "+b.Yaw+"、pitch "+b.Pitch+" 期待 "+expectedPitch+"、camera までの距離 "+distance.ToString("G4",CultureInfo.InvariantCulture)+"、光の y "+light.y+")。";
+                        }});
+                }
+            }
+            // ボタンの入口(同じメソッド)。接触点ちょうどから、キーを使わずに呼ぶ。
+            cases.Add(new Case{Name="Bury half (button entry, upper moon of contact 0)",Keys=new MoonTripleKey[0],Hold=1,Wait=1000,
+                Prepare=()=>{demo.SetGaps(0,0);demo.SetState(0,0,0,0,180f,10f,0.35f);demo.BuryBall(false);},
+                Check=(a,b)=>{
+                    double surface=demo.Layout.UpperSurfaceY(0,MoonTripleDemo.BuryLateralMeters);
+                    long expectedY=(long)Math.Round((surface-demo.Layout.ContactY(0))/MoonTripleDemo.UnitMeters);
+                    if(!b.Pending&&b.Z==lateralUnits&&b.Y==expectedY){return null;}
+                    return "ボタンの入口で、半分を埋められませんでした(pending "+b.Pending+"、位置 ("+b.X+","+b.Y+","+b.Z+") 期待 y "+expectedY+" z "+lateralUnits+")。";
+                }});
+            // HUD の呼び名: 古い呼び名(普通の月、拡大した月、PlanetSurface、方式の番号、月 A・月 B。球と誤解される「月」全般)が残っていない。今の接触点の面の呼び名が出る。
+            foreach(int contactIndex in new[]{0,1}){
+                int contact=contactIndex;
+                cases.Add(new Case{Name="HUD names at contact "+contact,Keys=new MoonTripleKey[0],Hold=1,Wait=3,
+                    Prepare=()=>{demo.SetGaps(0,0);demo.SetState(contact,0,0,Touch(contact),180f,10f,0.35f);},
+                    Check=(a,b)=>{
+                        string hud=demo.BuildHudText();
+                        foreach(string forbidden in new[]{"普通の月","拡大した月","手動分割した月","VG の月","PlanetSurface","方式","月 A","月 B","月"}){
+                            if(hud.Contains(forbidden)){return "HUD に、古い呼び名「"+forbidden+"」が残っています。";}
+                        }
+                        foreach(string required in new[]{MoonTripleDemo.LowerSurfaceName(contact),MoonTripleDemo.UpperSurfaceName(contact)}){
+                            if(!hud.Contains(required)){return "HUD に、今の接触点の面の呼び名「"+required+"」が出ていません。";}
+                        }
+                        return null;
+                    }});
+            }
+            // ボールの点光源: 面のシェーダーへ渡す値(Omni の面 = ボールの中心のカメラからの相対位置、VG の面 = ボールの中心 − 基準点)が、今の状態と合っている。原子の周りでは消える。
+            foreach(int contactIndex in new[]{0,1}){
+                int contact=contactIndex;
+                cases.Add(new Case{Name="Ball light globals at contact "+contact,Keys=new MoonTripleKey[0],Hold=1,Wait=3,
+                    Prepare=()=>{demo.SetGaps(0,0);demo.SetState(contact,30,20,Touch(contact),180f,10f,0.35f);},
+                    Check=(a,b)=>{
+                        Vector4 omni=Shader.GetGlobalVector("_CosmicBallLight");
+                        Vector4 vg=Shader.GetGlobalVector("_PlanetBallLight");
+                        double3 relative=demo.BallCenterDouble()-demo.CameraPosition;
+                        double referenceY=demo.Layout.CenterA+(contact==1?demo.Layout.Radius:-demo.Layout.Radius);
+                        double3 ball=demo.BallCenterDouble();
+                        double error=Math.Max(Math.Max(Math.Abs(omni.x-relative.x),Math.Abs(omni.y-relative.y)),Math.Abs(omni.z-relative.z));
+                        double vgError=Math.Max(Math.Max(Math.Abs(vg.x-ball.x),Math.Abs(vg.y-(ball.y-referenceY))),Math.Abs(vg.z-ball.z));
+                        Vector4 keyOmni=Shader.GetGlobalVector("_CosmicKeyLight");Vector4 keyVg=Shader.GetGlobalVector("_PlanetKeyLight");
+                        if(keyOmni!=keyVg){return "主光源が、Omni の面(_CosmicKeyLight "+keyOmni+")と VG の面(_PlanetKeyLight "+keyVg+")で違います。";}
+                        if(error<1e-3&&vgError<1e-3&&omni.w==MoonTripleDemo.BallLightIntensity&&vg.w==MoonTripleDemo.BallLightIntensity){return null;}
+                        return "ボールの点光源の値が合っていません(Omni の面 "+omni+" 期待 "+relative+"、VG の面 "+vg+")。";
+                    }});
+            }
+            return cases.ToArray();
         }
 
         // 論理ニアクリップのプリセット、キー 7・8、原子へのテレポートと戻り、スケールに連動した飛ぶ量。
@@ -167,7 +255,9 @@ namespace VirtualGeometry.Omni.Editor{
             double near=MoonTripleDemo.ScaleNearMeters[preset];
             double read=demo.LogicalNearMeters;
             float log2=demo.LogicalLog2ViewScale;
-            double expectedLog2=Math.Log(demo.CameraNearPlane/near,2.0);
+            // 期待値は、camera の設定の Near(定数 0.3)から計算する(Camera.nearClipPlane は、描画の途中の値が読めることがあり、同じ値から期待値を出すと食い違いを見逃す)。
+            double expectedLog2=Math.Log(MoonTripleDemo.DefaultCameraNearMeters/near,2.0);
+            if(demo.CameraNearRewritten){return "Camera.nearClipPlane が設定の Near(0.3)と違います("+demo.CameraNearPlane.ToString("G4",CultureInfo.InvariantCulture)+")。描画の途中の値が戻っていません。";}
             report.Add("  scale readback preset "+preset+": nearClip="+read.ToString("G4",CultureInfo.InvariantCulture)+" (expected "+near.ToString("G4",CultureInfo.InvariantCulture)+") log2ViewScale="+log2.ToString("G4",CultureInfo.InvariantCulture)+" (expected "+expectedLog2.ToString("G4",CultureInfo.InvariantCulture)+")");
             if(double.IsNaN(read)||Math.Abs(read-near)>1e-3*near){return "論理 near が反映されていません(読み戻し "+read+" m、期待 "+near+" m)。";}
             if(Math.Abs(log2-expectedLog2)>1e-3+1e-4*Math.Abs(expectedLog2)){return "log2 M が反映されていません(読み戻し "+log2+"、期待 "+expectedLog2+")。";}
@@ -295,6 +385,8 @@ namespace VirtualGeometry.Omni.Editor{
                         Save("PlayStart",Capture());
                         demo.Keys=scripted;
                         caseIndex=0;caseFrame=0;phase=2;
+                        // 近道(デバッグ用。環境変数 MOONTRIPLE_QUICK=1): キーのケースを飛ばして、手動分割した月の細分化の確認(phase 3)だけを行う。
+                        if(Environment.GetEnvironmentVariable("MOONTRIPLE_QUICK")=="1"){phase=3;refineFrame=0;refineStable=0;}
                     }
                 }else if(phase==2){
                     Capture(320,240);
@@ -369,7 +461,7 @@ namespace VirtualGeometry.Omni.Editor{
                 demo.FrameBall(180f,-15f,1.5f);
                 demo.Apply();
                 // 月 B の下面は太陽光の反対側を向いて暗いので、光を下から当てる。
-                Shader.SetGlobalVector("_CosmicKeyLight",new Vector4(-0.2f,-0.8f,0.55f,1.3f));
+                demo.SetKeyLightFromBelow(true);
             }
             global::Omni.PlanetSurface.PlanetSurfaceDiagnostics patch=demo.MoonB.Lod.Diagnostics;
             if(refineFrame%30==0){
@@ -392,6 +484,7 @@ namespace VirtualGeometry.Omni.Editor{
                 Save("PatchRefined",Capture());
                 if(!reached){failures.Add("PlanetSurface の月 B の細分化が、"+refineFrame+" frame で要求の階層に届きませんでした(最深 "+patch.DeepestLevel+" / 要求 "+patch.DesiredLevel+")。");}
                 phase=4;buryIndex=0;buryFrame=0;
+                if(Environment.GetEnvironmentVariable("MOONTRIPLE_QUICK")=="1"){phase=99;}
             }
         }
 
@@ -424,8 +517,7 @@ namespace VirtualGeometry.Omni.Editor{
             if(!view.LowerMoon){pitch=-angle;}
             demo.FrameBall(yaw,pitch,distance);
             demo.Apply();
-            if(view.LowerMoon){Shader.SetGlobalVector("_CosmicKeyLight",new Vector4(-0.2f,0.8f,0.55f,1.3f));}
-            else{Shader.SetGlobalVector("_CosmicKeyLight",new Vector4(-0.2f,-0.8f,0.55f,1.3f));}
+            demo.SetKeyLightFromBelow(!view.LowerMoon);
         }
 
         // 細分化と VG の Cell の生成が済んだか(または待ちすぎたか)。

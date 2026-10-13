@@ -69,7 +69,10 @@ $table = @(
     # MoonTripleValidation.Run(Edit Mode のバッチ)は、回帰に入れない: 方式 3(PlanetSurface の月)が Edit Mode では階層 12 から細分化されず、普通の月(方式 1)は近距離で描画が欠けるため、
     # 常に FAILED になる(観測用。Assets/VirtualizedGeometrySample/MoonTriple/README.md の「既知の問題」)。Play Mode のスモークが、その代わり(キー・テレポート・スケール切り替え・
     # 細分化・半分を埋めた画像・掃引・mm 未満の掃引・原子と月 A の円の比較)を確かめる。約 12 分。
-    @("MoonTriplePlay", "MoonTriplePlaySmoke.Run", "MoonTriplePlay", @("on"))
+    @("MoonTripleEdit", "MoonTripleEditModeCheck.Run", "MoonTripleEdit", @("on")),
+    @("MoonTriplePlay", "MoonTriplePlaySmoke.Run", "MoonTriplePlay", @("on")),
+    # 「シーンを再読み込みしない」設定の Play(Edit Mode で作った PlanetSurface の分割処理が、Play で作り直されること)。
+    @("MoonTriplePlayNoReload", "MoonTriplePlaySmoke.RunNoSceneReload", "MoonTriplePlay", @("on"))
 )
 $knownJobs = $table | ForEach-Object { $_[0] }
 $knownModes = @("on", "forced", "off")

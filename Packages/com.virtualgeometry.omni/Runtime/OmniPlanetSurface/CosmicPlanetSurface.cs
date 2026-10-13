@@ -72,6 +72,15 @@ namespace Omni.CosmicScale{
             // Edit Mode は Time.time が描画のたびに進むとは限らないので、パッチの切り替えの補間を待たずに切り替えます。
             if(editMode){profile.MorphDurationSeconds=0;}
             this.m_Lod=this.GetComponent<PlanetSurfaceLod>();
+            // MoonTriple が追加: Play では、Edit Mode で作った隠れた(保存しない)分割処理は、再利用せず、破棄して作り直す。
+            // Enter Play Mode Options で「シーンを再読み込みしない」とき、Edit Mode で作ったコンポーネントは、Play で更新(Update)が回らない
+            // (CosmicPlanetSurface は作り直されて m_Lod が null になり、Begin は呼ばれて初期化されるが、LastUpdateMilliseconds が 0 のまま、階層が進まなかった。
+            //  破棄して作り直すと、階層 20 まで進む)。通常の Play(再読み込みする)では、隠れた分割処理は無いので、何もしない。
+            // DisallowMultipleComponent のため、即時に破棄してから追加する。
+            if(!editMode&&this.m_Lod!=null&&(this.m_Lod.hideFlags&HideFlags.DontSave)!=0){
+                UnityEngine.Object.DestroyImmediate(this.m_Lod);
+                this.m_Lod=null;
+            }
             if(this.m_Lod==null){this.m_Lod=this.gameObject.AddComponent<PlanetSurfaceLod>();}
             // Edit Mode の Component は保存せず、Inspector にも出しません。
             if(editMode){this.m_Lod.hideFlags=HideFlags.HideAndDontSave;}

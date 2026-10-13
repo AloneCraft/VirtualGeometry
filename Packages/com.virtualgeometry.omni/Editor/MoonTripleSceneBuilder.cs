@@ -86,7 +86,12 @@ namespace VirtualGeometry.Omni.Editor{
         public static void BuildScene(){
             MoonBallSceneBuilder.UsePipeline();
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);
-            Populate();
+            MoonTripleObjects objects=Populate();
+            // Play 開始と同じ配置(月・ボール・原子の Logical の位置・倍率、camera の姿勢)を、scene に焼き込む。
+            // 焼き込まないと、位置 0・倍率 1 のまま保存され、Play を止めた Edit Mode では全部が原点に重なって、何も表示されない。
+            // Initialize は、VG の月 A・原子の Selector と、PlanetSurface の月 B の分割処理が使える(MoonsReady)ときに呼ぶ(Edit Mode でも、OnEnable で用意される)。
+            if(!objects.Demo.MoonsReady()){throw new InvalidOperationException("月の準備ができていません(Selector か PlanetSurface の分割処理が無い)。配置を焼き込めません。");}
+            if(!objects.Demo.Initialize()){throw new InvalidOperationException("MoonTripleDemo.Initialize が失敗しました: "+objects.Demo.Failure);}
             Directory.CreateDirectory(Root);
             if(!EditorSceneManager.SaveScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene(),ScenePath)){
                 throw new IOException("Could not save scene: "+ScenePath);
@@ -153,12 +158,10 @@ namespace VirtualGeometry.Omni.Editor{
             if(mesh==null){throw new InvalidOperationException("単位球のメッシュがありません: "+MeshPath);}
             Mesh plainMesh=mesh;
             if(PlainLongitude>0&&PlainLatitude>0){plainMesh=BuildUvSphere(PlainLongitude,PlainLatitude);}
-            // 普通の月: Omni の Moon.mat と同じ(CosmicPlanetLit、_CosmicBody の種類 0 = 月、画像は LROC 全球)。
-            var moonTexture=AssetDatabase.LoadAssetAtPath<Texture2D>(MoonTexturePath);
-            if(moonTexture==null){throw new InvalidOperationException("月の画像がありません: "+MoonTexturePath);}
+            // 分割しない面(方式 1): CosmicPlanetLit、_CosmicBody の種類 0 = 月。画像は使わず(_BaseMap は白)、方式ごとの色(MoonTripleDemo.ColorScaled)を _BaseColor に持つ。
             result.PlainMaterial=EnsureMaterial(PlainMaterialPath,CosmicShaderPath,material=>{
-                material.SetTexture("_BaseMap",moonTexture);
-                material.SetColor("_BaseColor",Color.white);
+                material.SetTexture("_BaseMap",Texture2D.whiteTexture);
+                material.SetColor("_BaseColor",MoonTripleDemo.ColorScaled);
                 material.SetVector("_CosmicBody",new Vector4(10,0,0,0));
                 material.SetVector("_CosmicP0",Vector4.zero);
                 material.SetVector("_CosmicP1",Vector4.zero);
@@ -166,7 +169,7 @@ namespace VirtualGeometry.Omni.Editor{
                 material.SetVector("_CosmicP3",Vector4.zero);
             });
             result.MoonAMaterial=EnsureMaterial(MoonAMaterialPath,MoonShaderPath,material=>{
-                material.SetColor("_BaseColor",new Color(0.30f,0.50f,0.30f,1));material.SetColor("_GridColor",new Color(0.92f,0.9f,0.82f,1));
+                material.SetColor("_BaseColor",MoonTripleDemo.ColorVg);material.SetColor("_GridColor",new Color(0.92f,0.9f,0.82f,1));
                 material.SetFloat("_Smoothness",0.05f);material.SetFloat("_FlatColor",0);
             });
             // 原子サイズの VG の球: 月 A と同じ材質の種類(RadialMoonGrid)。基準点は設定しない(格子の周期は 1 m / 10 cm / 1 cm 固定で、原子では全面が格子の色になるため)ので、
@@ -175,10 +178,10 @@ namespace VirtualGeometry.Omni.Editor{
                 material.SetColor("_BaseColor",new Color(0.95f,0.72f,0.30f,1));material.SetColor("_GridColor",new Color(0.95f,0.72f,0.30f,1));
                 material.SetFloat("_Smoothness",0.35f);material.SetFloat("_FlatColor",0);
             });
-            // 方式 3 の月: 普通の月と同じ見た目の式(CosmicPlanetPatch。物体空間がパッチの中心からの差)。
+            // 手動分割した面(方式 3): 分割しない面と同じ見た目の式(CosmicPlanetPatch。物体空間がパッチの中心からの差)。色は MoonTripleDemo.ColorSplit。
             result.PatchMaterial=EnsureMaterial(PatchMaterialPath,PatchShaderPath,material=>{
-                material.SetTexture("_BaseMap",moonTexture);
-                material.SetColor("_BaseColor",Color.white);
+                material.SetTexture("_BaseMap",Texture2D.whiteTexture);
+                material.SetColor("_BaseColor",MoonTripleDemo.ColorSplit);
                 material.SetVector("_CosmicBody",new Vector4(10,0,0,0));
                 material.SetVector("_CosmicP0",Vector4.zero);
                 material.SetVector("_CosmicP1",Vector4.zero);
@@ -190,14 +193,14 @@ namespace VirtualGeometry.Omni.Editor{
                 material.SetColor("_BaseColor",Color.white);
                 material.SetVector("_CosmicBody",new Vector4(7,2,5,0));
                 material.SetVector("_CosmicP0",new Vector4(0.41f,0.67f,0.29f,0.11f));
-                material.SetVector("_CosmicP1",new Vector4(1,0,0,0.4f));
+                material.SetVector("_CosmicP1",new Vector4(0,-1,0,0.4f));
                 // 赤道の線(MoonTriple が足したシェーダーの追加): x = 帯の半幅 3.5 mm、yzw = 赤。半分を面に埋めたとき、面の境界との差が誤差になる。
                 material.SetVector("_CosmicP2",new Vector4(0.0035f,1f,0.08f,0.08f));
                 material.SetVector("_CosmicP3",Vector4.zero);
             });
 
             // 普通の月: 単位球のメッシュ(直径 1)。倍率は MoonTripleDemo が Logical で 2R にする。
-            result.PlainMoon=new GameObject("Plain Moon (unit sphere scaled)");
+            result.PlainMoon=new GameObject("分割しない面(方式 1。単位球のメッシュを、直径 3,475 km に拡大した 1 つの物体)");
             result.PlainMoon.AddComponent<global::Omni.Logical.Transform>();
             result.PlainMoon.AddComponent<MeshFilter>().sharedMesh=plainMesh;
             MeshRenderer renderer=result.PlainMoon.AddComponent<MeshRenderer>();
@@ -208,15 +211,15 @@ namespace VirtualGeometry.Omni.Editor{
             renderer.reflectionProbeUsage=ReflectionProbeUsage.Off;
 
             float radius=(float)MoonTripleLayout.Default.Radius;
-            result.MoonA=AddSphere("VG Moon A",radius,result.MoonAMaterial,4096,64,out result.MoonAObject);
+            result.MoonA=AddSphere("VG の面(方式 2。VG の PlanetTerrainSource。Cell ごとに頂点を持つ)",radius,result.MoonAMaterial,4096,64,out result.MoonAObject);
             // 原子サイズの VG の球(半径 1e-10 m。AddSphere は半径 1 m 未満を階層 10 にする。原子の頂点間隔(~1e-12 m)には 7 階層ほどで足りる)。
-            result.Atom=AddSphere("VG Atom (radius 1e-10 m)",(float)MoonTripleLayout.AtomRadius,result.AtomMaterial,1024,32,out result.AtomObject);
+            result.Atom=AddSphere("原子(VG の球、半径 1e-10 m。論理ニアクリップの検証用)",(float)MoonTripleLayout.AtomRadius,result.AtomMaterial,1024,32,out result.AtomObject);
             // 方式 3 の月 B(PlanetSurface): Omni の分割した地面。視点(camera の Logical.Transform)を設定してから有効にする(有効にした時点で分割が始まる)。
-            result.MoonBObject=new GameObject("PlanetSurface Moon B (method 3)");result.MoonBObject.SetActive(false);
+            result.MoonBObject=new GameObject("手動分割した面(方式 3。Omni の PlanetSurface。カメラの距離で分割するパッチ)");result.MoonBObject.SetActive(false);
             result.MoonBObject.AddComponent<global::Omni.Logical.Transform>();
             result.MoonB=result.MoonBObject.AddComponent<global::Omni.CosmicScale.CosmicPlanetSurface>();
             // ボール: CosmicSphere(直径 1)を Logical で直径 2R に拡大する(MoonTripleDemo が設定する)。VG ではなく通常の MeshRenderer。
-            result.Ball=new GameObject("Soccer Ball (Omni CosmicScale)");
+            result.Ball=new GameObject("サッカーボール(Omni の CosmicScale、半径 0.11 m。赤い線がボールの中心の高さ)");
             result.Ball.AddComponent<global::Omni.Logical.Transform>();
             result.Ball.AddComponent<MeshFilter>().sharedMesh=mesh;
             MeshRenderer ballRenderer=result.Ball.AddComponent<MeshRenderer>();
@@ -227,7 +230,7 @@ namespace VirtualGeometry.Omni.Editor{
             ballRenderer.reflectionProbeUsage=ReflectionProbeUsage.Off;
 
             // camera(ボールの周回。位置と向きは MoonTripleDemo が Logical で決める)
-            result.CameraObject=new GameObject("Main Camera");result.CameraObject.tag="MainCamera";
+            result.CameraObject=new GameObject("メインカメラ(自由飛行。操作と HUD は MoonTripleDemo)");result.CameraObject.tag="MainCamera";
             result.Camera=result.CameraObject.AddComponent<Camera>();
             result.Camera.fieldOfView=50;result.Camera.nearClipPlane=0.3f;result.Camera.farClipPlane=100000;
             result.Camera.clearFlags=CameraClearFlags.SolidColor;result.Camera.backgroundColor=new Color(0.005f,0.005f,0.012f,1);
@@ -241,10 +244,10 @@ namespace VirtualGeometry.Omni.Editor{
             result.Demo=result.CameraObject.AddComponent<MoonTripleDemo>();
             result.Demo.PlainMoon=result.PlainMoon;result.Demo.MoonA=result.MoonA;result.Demo.MoonB=result.MoonB;result.Demo.Ball=result.Ball;result.Demo.Atom=result.Atom;
 
-            // 太陽: 接触点に斜めから(2 つの面の間に光が入る向き)。
-            result.Sun=new GameObject("Sun");
+            // 太陽: +x 側の斜め上から(ボールの影が、camera の横に見える向き。VG の面が URP の光で描かれるのは、ボールが無いときだけ)。
+            result.Sun=new GameObject("太陽(URP の平行光。VG の面だけを照らす。他の面とボールは _CosmicKeyLight)");
             Light sun=result.Sun.AddComponent<Light>();sun.type=LightType.Directional;sun.intensity=1.3f;sun.color=new Color(1f,0.96f,0.9f);sun.shadows=LightShadows.None;
-            result.Sun.transform.rotation=Quaternion.LookRotation(new Vector3(0.2f,-0.8f,-0.55f).normalized,Vector3.up);
+            result.Sun.transform.rotation=Quaternion.LookRotation(new Vector3(-0.7f,-0.55f,-0.25f).normalized,Vector3.up);
             RenderSettings.ambientMode=AmbientMode.Flat;RenderSettings.ambientLight=new Color(0.08f,0.08f,0.1f);
             RenderSettings.skybox=null;
             return result;

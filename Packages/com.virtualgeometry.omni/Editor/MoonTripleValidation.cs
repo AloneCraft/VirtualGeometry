@@ -141,7 +141,7 @@ namespace VirtualGeometry.Omni.Editor{
             if(!demo.Initialize()){throw new InvalidOperationException("Initialize: "+demo.Failure);}
             report.Add("plain moon triangles(in cap)="+plainTriangles.Count+" sag="+plainSagMeters.ToString("F3",CultureInfo.InvariantCulture)+" m");
             // 上の月の下面に埋めるときは、下面が見えるよう、光を下から当てる(太陽光の向きの反対側を向く面は暗い)。
-            if(probeBury==2){Shader.SetGlobalVector("_CosmicKeyLight",new Vector4(-0.2f,-0.8f,0.55f,1.3f));}
+            if(probeBury==2){Shader.SetGlobalVector("_CosmicKeyLight",new Vector4(0.7f,-0.55f,0.25f,1.3f));}
             bool showPlain=probeContact==0;
             bool showBall=probeContact!=0||probeBury!=0;
             Show(showPlain,showBall);

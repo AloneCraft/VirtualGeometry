@@ -104,6 +104,12 @@ Shader "Omni/RadialMoonGrid"
             // _PlanetCellRef: xyz=Cell の原点 − 基準点(Logical で引いたもの)、w=基準点があれば 1。
             float4 _PlanetCellUp;
             float4 _PlanetCellRef;
+            // ボールの点光源(MoonTripleDemo が Shader.SetGlobalVector で毎フレーム書く。書かなければ 0 で、何も足さない)。
+            // xyz=ボールの中心 − 基準点(惑星のローカル座標、m)、w=強さ。基準点があるときだけ働く(_PlanetCellRef.w > 0.5)。
+            // 距離 d の減衰は 1 / (1 + (d / 0.4 m)^2)(影の中の補助光)。Omni の面(CosmicPlanetSurface.hlsl)の _CosmicBallLight と同じ式。
+            float4 _PlanetBallLight;
+            // 主光源(MoonTripleDemo が書く。Omni の面の _CosmicKeyLight と同じ値): xyz = 光へ向かう向き、w = 強さ。ボールがあるときだけ使う。
+            float4 _PlanetKeyLight;
             // 色の格子の Cell ごとの値(PlanetTerrainSource.WriteCellProperties)。
             // _PlanetColorDirection: xyz=Cell の原点の単位方向(惑星のローカル座標)、w=色の格子があれば 1。
             // _PlanetColorIndex: xy=原点の画素の列・行(北が行 0)の整数部、zw=texture の幅・高さ。
@@ -191,6 +197,10 @@ Shader "Omni/RadialMoonGrid"
 
                 float3 position = input.positionOS.xyz / max(input.positionOS.w, 1.0e-30f);
                 half3 albedo = (half3)_BaseColor.rgb;
+                half3 ballLight = 0;
+                // ボールの点光源が有効なとき: Sun と環境光は 0.1 倍に下げ(光が届かない所は暗い)、格子の線は光の計算の後で色を直接乗せる(エミッシブ)。
+                bool ballLit = _PlanetBallLight.w > 0.0f && _PlanetCellRef.w > 0.5f;
+                float gridMask = 0;
                 // 色の格子: 画素の緯度経度の差(Cell の原点の方向 o からの差 eps = n − o)を、桁落ちしない式で求め、色の texture の位置にする。
                 // n = (o·(R+H) + position) の方向。n − o = (p + o·(R+H − |w|))/|w|、R+H − |w| = −(2(R+H)(o·p) + |p|²)/(|w| + R+H)(w = o·(R+H) + p)。
                 if (_PlanetColorDirection.w > 0.5f)
@@ -229,10 +239,39 @@ Shader "Omni/RadialMoonGrid"
                     float line10cm = max(GridLine(u, 0.1f, 0.003f, footprint), GridLine(v, 0.1f, 0.003f, footprint));
                     float line1cm = max(GridLine(u, 0.01f, 0.0008f, footprint), GridLine(v, 0.01f, 0.0008f, footprint));
                     float grid = max(line1m, max(0.7f * line10cm, 0.4f * line1cm));
-                    albedo = lerp(albedo, (half3)_GridColor.rgb, (half)grid);
+                    if (ballLit) { gridMask = grid; } else { albedo = lerp(albedo, (half3)_GridColor.rgb, (half)grid); }
                 }
 
                 half3 normalWS = normalize(input.normalWS);
+
+                // ボールがあるとき(_PlanetBallLight.w > 0 かつ基準点がある)は、URP の光を使わず、Omni の面(CosmicPlanetSurface.hlsl)と同じ式で照らす:
+                // 主光源(_PlanetKeyLight)の拡散(Lommel-Seeliger と Lambert の混合 = 月面の粗い面の反射)、ボールの球の影(解析的、縁は画素幅で滑らかに)、
+                // ボールの周りの環境遮蔽(球による解析式)、影の中が真っ黒にならない弱い補助光(ボールの点光源)。URP の影の地図は、この座標の精度では使えない。
+                half3 ballShaded = 0;
+                if (ballLit)
+                {
+                    float3 toBall = _PlanetBallLight.xyz - (_PlanetCellRef.xyz + position);
+                    float ballDistance2 = max(dot(toBall, toBall), 1.0e-12f);
+                    float3 ballDirection = toBall * rsqrt(ballDistance2);
+                    float3 lightDir = normalize(_PlanetKeyLight.xyz);
+                    float3 viewDir = normalize(input.logicalViewDirectionWS);
+                    float mu0 = dot((float3)normalWS, lightDir);
+                    float mu = saturate(dot((float3)normalWS, viewDir));
+                    float ls = mu0 > 0.0f ? 2.0f * mu0 / (mu0 + mu + 1.0e-4f) : 0.0f;
+                    float diffuse = lerp(saturate(mu0), ls * 0.5f, 0.6f);
+                    float alongLight = dot(toBall, lightDir);
+                    float closest = sqrt(max(ballDistance2 - alongLight * alongLight, 0.0f));
+                    float edge = max(fwidth(closest), 1.0e-4f);
+                    float shadow = alongLight > 0.0f ? smoothstep(0.11f - edge, 0.11f + edge, closest) : 1.0f;
+                    float ao = 1.0f - saturate(dot((float3)normalWS, ballDirection)) * (0.11f * 0.11f) / ballDistance2;
+                    float radiance = _PlanetBallLight.w / (1.0f + ballDistance2 / (0.4f * 0.4f))
+                        * (0.35f + 0.65f * saturate(dot((float3)normalWS, ballDirection)));
+                    float3 ambient = float3(0.012f, 0.013f, 0.016f);
+                    float3 lit = (float3)albedo * (_PlanetKeyLight.w * diffuse * shadow + ambient * ao + radiance * ao) * 1.35f;
+                    // 格子の線はエミッシブ(光の計算の後で色を直接乗せる)。
+                    lit = lerp(lit, _GridColor.rgb, gridMask);
+                    ballShaded = (half3)lit;
+                }
 
                 InputData inputData = (InputData)0;
                 inputData.positionWS = input.trueWS;
@@ -251,6 +290,10 @@ Shader "Omni/RadialMoonGrid"
                 surfaceData.alpha = 1;
 
                 half4 finalColor = UniversalFragmentPBR(inputData, surfaceData);
+                if (ballLit)
+                {
+                    finalColor.rgb = ballShaded;
+                }
                 finalColor.rgb = MixFog(finalColor.rgb, inputData.fogCoord);
                 outputColor = finalColor;
                 outputDepth = OmniRadialResolveFragmentDepth(input.positionOS, input.positionCS.z);

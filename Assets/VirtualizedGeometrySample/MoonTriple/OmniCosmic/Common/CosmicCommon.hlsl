@@ -13,6 +13,12 @@ float4 _CosmicState[COSMIC_MAX_BODIES];
 float4 _CosmicTime;
 // xyz = 惑星を照らす演出用の主光源の向き（天体から光源へ、Logical の世界軸）、w = 強さ。
 float4 _CosmicKeyLight;
+// MoonTriple が追加: ボールの点光源。xyz = ボールの中心の、カメラからの相対位置(Logical の世界軸、m)、w = 強さ(0 で消す)。MoonTripleDemo が毎フレーム書く。
+// 面の点との距離 d の減衰は 1 / (1 + (d / COSMIC_BALL_LIGHT_RADIUS)^2)(ボールの近くを明るく、遠ざかると暗くする)。
+float4 _CosmicBallLight;
+#define COSMIC_BALL_LIGHT_RADIUS 0.4
+// ボールの半径(m)。MoonTripleLayout.BallRadius と同じ。
+#define COSMIC_BALL_RADIUS 0.11
 // x = 星空の明るさ、y = 遠方の銀河の場、z = 入れ子（宇宙地図）の重み。
 float4 _CosmicSky;
 // 診断の表示（URL・起動引数の cosmic-debug=、0 = 通常）。不透明面（CosmicOpaquePass）が、照明の結果の代わりに入力の項を色で出します:
@@ -65,6 +71,8 @@ struct CosmicSurface
     float3 viewWS;
     float2 uv;
     float footprint;
+    // 表面の点の、カメラからの相対位置(Logical の世界軸、m)。ボールの点光源 _CosmicBallLight の距離に使う。
+    float3 cameraRelative;
 };
 
 #endif

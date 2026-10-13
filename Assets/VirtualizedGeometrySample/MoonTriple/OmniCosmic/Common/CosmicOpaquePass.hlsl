@@ -28,6 +28,8 @@ struct CosmicVaryings
 #if defined(COSMIC_SURFACE_FROM_NORMAL) || defined(COSMIC_SURFACE_MESH_NORMAL)
     float3 normalOS   : TEXCOORD3;
 #endif
+    // MoonTriple が追加: 表面の点の、カメラからの相対位置(ボールの点光源の距離に使う)。
+    float3 cameraRelative : TEXCOORD4;
 };
 
 #if defined(COSMIC_SURFACE_MESH_NORMAL) && !defined(COSMIC_SPIN_AXIS)
@@ -69,6 +71,7 @@ CosmicVaryings CosmicOpaqueVertex(CosmicAttributes input)
         output.normalWS = TransformObjectToWorldNormal(normalOS);
     }
     output.positionOS = CosmicInvariantDepthPosition(positionOS);
+    output.cameraRelative = OmniRadialUsesLogicalTransform() ? OmniRadialObjectToLogicalCameraRelative(positionOS) : TransformObjectToWorld(positionOS) - _WorldSpaceCameraPos;
     output.uv = input.uv;
 #if defined(COSMIC_SURFACE_FROM_NORMAL) || defined(COSMIC_SURFACE_MESH_NORMAL)
     output.normalOS = normalOS;
@@ -121,6 +124,7 @@ void CosmicOpaqueFragment(CosmicVaryings input, out half4 outputColor : SV_Targe
     s.normalWS = OmniRadialUsesLogicalTransform() ? OmniRadialObjectToLogicalNormal(s.normalOS) : normalize(input.normalWS);
     s.uv = input.uv;
 #endif
+    s.cameraRelative = input.cameraRelative;
     s.viewWS = OmniRadialUsesLogicalTransform() ? OmniRadialReconstructLogicalViewDirection(input.positionOS) : GetWorldSpaceNormalizeViewDir(TransformObjectToWorld(objectPosition));
     float3 dx = ddx(s.unitPosition), dy = ddy(s.unitPosition);
     s.footprint = max(sqrt(max(dot(dx, dx), dot(dy, dy))), 1e-7);

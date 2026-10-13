@@ -31,7 +31,27 @@ float3 CosmicSurfaceColor(CosmicSurface s)
         // 月面: 満月で縁が暗くならない拡散（Lommel-Seeliger）を Lambert と混ぜます。
         float ls = mu0 > 0 ? 2.0 * mu0 / (mu0 + mu + 1e-4) : 0;
         float diffuse = lerp(saturate(mu0), ls * 0.5, 0.6);
-        return albedo * (intensity * diffuse + ambient) * 1.35;
+        // MoonTriple が追加: ボールの影と接触の暗がりと、ボールの点光源(_CosmicBallLight。xyz = ボールの中心のカメラからの相対位置、w = 強さ)。
+        // 影: 面の点から主光源の向きへの光線が、ボール(半径 COSMIC_BALL_RADIUS の球)に当たれば影。縁は画素幅で滑らかにする(解析的な球の影なので、くっきり出る)。
+        // 接触の暗がり: ボールに近く、ボールの方を向く面ほど、環境光が遮られる(球による環境遮蔽の解析式)。深さ・食い込みが見える。
+        // 点光源は、影の中も真っ黒にならないための弱い補助光(ボールに近い面ほど明るい)。
+        float3 toBall = _CosmicBallLight.xyz - s.cameraRelative;
+        float ballDistance2 = max(dot(toBall, toBall), 1e-12);
+        float3 ballDirection = toBall * rsqrt(ballDistance2);
+        float shadow = 1.0;
+        float ao = 1.0;
+        float ballRadiance = 0.0;
+        if (_CosmicBallLight.w > 0.0)
+        {
+            float alongLight = dot(toBall, lightDir);
+            float closest = sqrt(max(ballDistance2 - alongLight * alongLight, 0.0));
+            float edge = max(fwidth(closest), 1e-4);
+            shadow = alongLight > 0.0 ? smoothstep(COSMIC_BALL_RADIUS - edge, COSMIC_BALL_RADIUS + edge, closest) : 1.0;
+            ao = 1.0 - saturate(dot(s.normalWS, ballDirection)) * (COSMIC_BALL_RADIUS * COSMIC_BALL_RADIUS) / ballDistance2;
+            ballRadiance = _CosmicBallLight.w / (1.0 + ballDistance2 / (COSMIC_BALL_LIGHT_RADIUS * COSMIC_BALL_LIGHT_RADIUS))
+                * (0.35 + 0.65 * saturate(dot(s.normalWS, ballDirection)));
+        }
+        return albedo * (intensity * diffuse * shadow + ambient * ao + ballRadiance * ao) * 1.35;
     }
     float land = SAMPLE_TEXTURE2D(_LandMask, sampler_LandMask, uv).r;
     float2 cloudUv = float2(uv.x - frac(t * _CosmicP0.y / 60.0), uv.y);

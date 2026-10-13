@@ -261,7 +261,11 @@ namespace VirtualGeometry.Omni.Editor{
         private static double CenterAngle(){
             if(!demo.TryGetBallCenter(out LogicalVector3 center)||!LogicalVector3.TrySubtract(in center,cameraLogical.LocalPosition,out LogicalVector3 difference)||!difference.TryToFloat3(out float3 toBall)){return double.NaN;}
             Vector3 forward=demo.CameraRotation*Vector3.forward;
-            return Vector3.Angle(forward,toBall)*Mathf.Deg2Rad;
+            // Vector3.Angle は acos(正規化した内積)で、float では内積が 1 の 1 ulp 下に丸まると sqrt(2·2^-24) ≒ 345 µrad になる(向きが完全に揃っていても)。
+            // 判定の閾値(100 µrad)より大きいので、yaw の値しだいで NG が出たり出なかったりした。atan2(|外積|, 内積)を倍精度で求める(角度が 0 に近くても精度が落ちない)。
+            double3 f=new double3(forward.x,forward.y,forward.z);
+            double3 t=new double3(toBall.x,toBall.y,toBall.z);
+            return Math.Atan2(math.length(math.cross(f,t)),math.dot(f,t));
         }
 
         private static Texture2D Capture(int width=640,int height=480){
