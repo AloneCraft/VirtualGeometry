@@ -1,0 +1,71 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: SoccerBall
+  m_Shader: {fileID: 4800000, guid: 140c1bc15335bee48ae1a35571770eca, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs:
+    - _BaseMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _CloudMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _LandMask:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _NightMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    m_Ints: []
+    m_Floats:
+    - _RadialGlobal_EyeRelativeExponent: 0
+    - _RadialGlobal_LinearRadius: 10
+    - _RadialGlobal_Log2ViewScale: 0
+    - _RadialGlobal_Mode: 2
+    - _RadialGlobal_RadialScale: 1
+    - _RadialGlobal_UseRadialTransform: 0
+    - _RadialGlobal_UseRigidAnchor: 0
+    m_Colors:
+    - _BaseColor: {r: 1, g: 1, b: 1, a: 1}
+    - _CosmicBody: {r: 7, g: 2, b: 5, a: 0}
+    - _CosmicP0: {r: 0.41, g: 0.67, b: 0.29, a: 0.11}
+    - _CosmicP1: {r: 1, g: 0, b: 0, a: 0.4}
+    - _CosmicP2: {r: 0.0035, g: 1, b: 0.08, a: 0.08}
+    - _CosmicP3: {r: 0, g: 0, b: 0, a: 0}
+    - _RadialGlobal_EyeRelative: {r: 0, g: 0, b: 0, a: 0}
+    - _RadialGlobal_RadialTransformBasisRow0: {r: 1, g: 0, b: 0, a: 0}
+    - _RadialGlobal_RadialTransformBasisRow1: {r: 0, g: 1, b: 0, a: 0}
+    - _RadialGlobal_RadialTransformBasisRow2: {r: 0, g: 0, b: 1, a: 0}
+    - _RadialGlobal_RadialTransformExponents: {r: 0, g: 0, b: 0, a: 0}
+    - _RadialGlobal_RadialTransformNormalRow0: {r: 1, g: 0, b: 0, a: 0}
+    - _RadialGlobal_RadialTransformNormalRow1: {r: 0, g: 1, b: 0, a: 0}
+    - _RadialGlobal_RadialTransformNormalRow2: {r: 0, g: 0, b: 1, a: 0}
+    - _RadialGlobal_RadialTransformRelative: {r: 0, g: 0, b: 0, a: 0}
+    - _RadialGlobal_ViewRow0: {r: 1, g: 0, b: 0, a: 0}
+    - _RadialGlobal_ViewRow1: {r: 0, g: 1, b: 0, a: 0}
+    - _RadialGlobal_ViewRow2: {r: 0, g: 0, b: -1, a: 0}
+  m_BuildTextureStacks: []
+  m_AllowLocking: 1

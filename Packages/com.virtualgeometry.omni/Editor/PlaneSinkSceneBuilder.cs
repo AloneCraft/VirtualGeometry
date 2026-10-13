@@ -35,6 +35,8 @@ namespace VirtualGeometry.Omni.Editor{
         public const string MaterialsFolder=Root+"/Materials";
         public const string ScenePath=Root+"/PlaneSink.unity";
         public const string LeftMaterialPath=MaterialsFolder+"/LeftPlane.mat";
+        /// <summary>フォーカス専用の目印の全直径(m)。Scene View が表面の試験点のまわりをこの大きさで見る。</summary>
+        public const float FocusDiameter=20f;
         public const string WallMaterialPath=MaterialsFolder+"/Wall.mat";
         public const string GroundMaterialPath=MaterialsFolder+"/RightGround.mat";
         public const string BallMaterialPath=MaterialsFolder+"/Ball.mat";
@@ -133,6 +135,17 @@ namespace VirtualGeometry.Omni.Editor{
             MoonBallSceneBuilder.Configure(result.GroundSource,(float)layout.RightRadius,0f,1000f,1,30,4096,64,false);
             result.GroundSource.Material=result.GroundMaterial;
             result.Ground.SetActive(true);
+
+            // VG Ground の Transform は天体の中心(Y=-R)で、Renderer も無く Scale が 1 なので、Hierarchy のダブルクリック(Omni の論理フォーカス)では
+            // 中心の 1 m 手前(地表の R 下)へ寄ってしまう。地表の試験点にフォーカス専用の目印を置く(Renderer なし。Scale が全直径になる)。
+            var focus=new GameObject("VG Ground Focus (surface)");
+            var focusLogical=focus.AddComponent<global::Omni.Logical.Transform>();
+            if(global::Omni.Logical.Vector3.TryFromFloat3(new Unity.Mathematics.float3((float)layout.RightSpotX,0,0),out global::Omni.Logical.Vector3 focusPosition)&&
+                global::Omni.Logical.Scalar.TryFromFloat(FocusDiameter,out global::Omni.Logical.Scalar focusScale)){
+                focusLogical.LocalPosition=focusPosition;
+                focusLogical.LocalScale=new global::Omni.Logical.Vector3(in focusScale,in focusScale,in focusScale);
+                focusLogical.SyncUnityTransform();
+            }
 
             // ボール(高さのない球)
             result.Ball=new GameObject("Ball");result.Ball.SetActive(false);

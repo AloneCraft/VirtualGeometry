@@ -79,6 +79,30 @@ namespace VirtualGeometry.World{
         }
 
         /// <summary>
+        /// 平面の Cell の値。一辺 extent(m)の正方形の平面(局所座標の XZ、原点が正方形の中心、法線 +Y)を、階層 L の 2^L×2^L の Cell に分けた 1 つ。
+        /// Cell の中心 = extent·(2x+1−2^L)/2^(L+1)(x は key.X が x、key.Y が z)を、Logical で正確に作る。球の面 +Y(<see cref="CubeSphere"/> の面 2)と同じ向き。
+        /// 原点は持ち上げず(<see cref="HeightShift"/> = 0)、<see cref="SphereOrigin"/> は <see cref="Origin"/> と同じ、<see cref="Direction"/> は (0,1,0)。
+        /// </summary>
+        public static bool TryCreatePlane(in PlanetCellKey key,in LogicalScalar extent,out PlanetCellFrame frame){
+            frame=default;
+            if(key.Level>MaximumLevel){return false;}
+            if(!TryPlaneCenter(key.X,key.Level,in extent,out LogicalScalar centerX)||!TryPlaneCenter(key.Y,key.Level,in extent,out LogicalScalar centerZ)){return false;}
+            var origin=new LogicalVector3(in centerX,LogicalScalar.Zero,in centerZ);
+            if(!origin.TryToFloat3(out Unity.Mathematics.float3 approximate)){return false;}
+            var direction=new LogicalVector3(LogicalScalar.Zero,LogicalScalar.One,LogicalScalar.Zero);
+            frame=new PlanetCellFrame(in key,LogicalScalar.Zero,LogicalScalar.Zero,in origin,approximate,in origin,approximate,in direction,0f,Vector2.zero);
+            return true;
+        }
+
+        // extent·(2c+1−2^L)/2^(L+1)。分数は正確に作り、extent を掛けるときだけ丸める(絶対誤差は 2^-96 程度)。
+        private static bool TryPlaneCenter(in PlanetCellCoordinate coordinate,int level,in LogicalScalar extent,out LogicalScalar center){
+            center=default;
+            BigInteger value=((BigInteger)coordinate.High<<64)|coordinate.Low;
+            BigInteger numerator=2*value+1-(BigInteger.One<<level);
+            return TryFromFraction(numerator,level+1,out LogicalScalar fraction)&&LogicalScalar.TryMultiply(in extent,in fraction,out center);
+        }
+
+        /// <summary>
         /// Origin を SphereOrigin から外向きに heightShift(m)だけ持ち上げた Cell の値を返す。
         /// Origin·(shift/R) の比ではなく、単位方向 × shift で作る(R=10^20 m でも、固定小数点の絶対精度 2^-96 のまま足せる)。
         /// heightShift は float のまま使う(float は Logical に正確に変換でき、GPU にも同じ値を渡せる)。有限でないときは false。

@@ -48,9 +48,13 @@ namespace VirtualGeometry.Omni{
         [SerializeField] private bool showHud=true;
 
         private LogicalTransform planeLogical,wallLogical,groundLogical,ballLogical,cameraLogical;
-        // 左の面の material。scene の共有 asset には書かず、実行時の複製(ownedLeftMaterial)に値を書く。SetLeftMaterial で替えられる。
+        // 左の面の material。Omni の Scene BRG は scene の材質に永続 asset の正本を要求し、実行時の複製は Radial の差し替えと
+        // 明示登録の検査が食い違って Play が止まるので、複製せず scene の asset へ書く。終了時に元の値へ戻す(ownedLeftMaterial は検証用の複製)。
         private Material leftMaterial;
         private Material ownedLeftMaterial;
+        private Material writtenAsset;
+        private Vector4 originalGridOrigin;
+        private float originalObjectScale;
         private Mesh planeMesh;
         private Mesh wallMesh;
         private bool initialized;
@@ -104,7 +108,15 @@ namespace VirtualGeometry.Omni{
         private void OnDestroy(){
             if(this.planeMesh!=null){DisposeObject(this.planeMesh);}
             if(this.wallMesh!=null){DisposeObject(this.wallMesh);}
+            this.RestoreWrittenAsset();
             if(this.ownedLeftMaterial!=null){DisposeObject(this.ownedLeftMaterial);}
+        }
+
+        private void RestoreWrittenAsset(){
+            if(this.writtenAsset==null){return;}
+            this.writtenAsset.SetVector("_GridOriginOS",this.originalGridOrigin);
+            this.writtenAsset.SetFloat("_ObjectScale",this.originalObjectScale);
+            this.writtenAsset=null;
         }
 
         private static void DisposeObject(UnityEngine.Object value){
@@ -195,10 +207,10 @@ namespace VirtualGeometry.Omni{
             this.scaledPlane.GetComponent<MeshFilter>().sharedMesh=this.planeMesh;
             MeshRenderer renderer=this.scaledPlane.GetComponent<MeshRenderer>();
             if(this.leftMaterial==null){
-                // scene の共有 asset に実行時の値を書かないよう、複製を使う。
-                this.ownedLeftMaterial=new Material(renderer.sharedMaterial){name="LeftPlane (runtime)",hideFlags=HideFlags.DontSave};
-                this.leftMaterial=this.ownedLeftMaterial;
-                renderer.sharedMaterial=this.leftMaterial;
+                this.writtenAsset=renderer.sharedMaterial;
+                this.originalGridOrigin=this.writtenAsset.GetVector("_GridOriginOS");
+                this.originalObjectScale=this.writtenAsset.GetFloat("_ObjectScale");
+                this.leftMaterial=this.writtenAsset;
             }
             this.ApplyLeftMaterial();
             // 継ぎ目の壁(世界の座標のまま、z 方向に細かく分けた mesh。倍率 1)

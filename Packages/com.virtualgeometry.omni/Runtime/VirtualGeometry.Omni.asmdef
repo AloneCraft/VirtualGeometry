@@ -8,6 +8,8 @@
     "Radial.Runtime",
     "Omni.BatchRendering.Runtime",
     "Unity.Mathematics",
+    "Unity.Collections",
+    "Unity.RenderPipelines.Universal.Runtime",
     "Unity.InputSystem"
   ]
 }

@@ -108,17 +108,28 @@ namespace VirtualGeometry.World{
         protected override void OnEnable(){
             base.OnEnable();
             if(this.Layout==null){return;}
-            this.selector=new PlanetCellSelector(this.Radius,this.SelectionAmplitude,CellQuads,Mathf.Min(this.maximumLevel,GpuMaximumLevel),this.skirtQuads,this.ProvideHeightShift){
-                TargetPixels=this.targetPixels,Hysteresis=this.hysteresis,
-            };
+            this.selector=this.CreateSelector(Mathf.Min(this.maximumLevel,GpuMaximumLevel),this.skirtQuads);
+            this.selector.TargetPixels=this.targetPixels;this.selector.Hysteresis=this.hysteresis;
             this.keyBySlot=new PlanetCellKey[this.PoolCapacity];this.used=new bool[this.PoolCapacity];this.touchedFrame=new int[this.PoolCapacity];
             this.actualBounds=new Vector4[this.PoolCapacity];this.actualValid=new bool[this.PoolCapacity];this.slotVersion=new int[this.PoolCapacity];
             this.cellFrames=new PlanetCellFrame[this.PoolCapacity];
             this.placement=this.GetComponent<IPlanetPlacement>();
             this.slotByKey.Clear();this.history.Clear();this.requests.Clear();this.output.Clear();
             this.StarvedRequests=0;this.Evictions=0;
-            for(int face=0;face<CubeSphere.FaceCount;face++){this.Request(PlanetCellKey.Root(face),float.MaxValue);}
+            if(this.selector.IsPlane){
+                this.Request(PlanetCellKey.Root(PlanetCellSelector.PlaneFace),float.MaxValue);
+            }else{
+                for(int face=0;face<CubeSphere.FaceCount;face++){this.Request(PlanetCellKey.Root(face),float.MaxValue);}
+            }
             this.FlushRequests();
+        }
+
+        /// <summary>
+        /// Cell の選択を作る。既定は半径 <see cref="Radius"/> の球(Cell の原点を持ち上げる高さは <see cref="TryCellHeightShift"/>)。
+        /// 平面の Layer は <see cref="PlanetCellSelector.CreatePlane"/> で作った選択を返す(原点を持ち上げず、<see cref="WriteCellProperties"/> の球の値を平面の値に直すこと)。
+        /// </summary>
+        protected virtual PlanetCellSelector CreateSelector(int maximumLevel,float skirtQuads){
+            return new PlanetCellSelector(this.Radius,this.SelectionAmplitude,CellQuads,maximumLevel,skirtQuads,this.ProvideHeightShift);
         }
 
         protected override void OnCameraReleased(Camera camera){
@@ -288,9 +299,12 @@ namespace VirtualGeometry.World{
         /// カメラより上に来ない(粗い面は細かい地形をならすので、谷では本当の地表より高い)。
         /// </summary>
         public bool Prefetch(in LogicalVector3 point,float eyeHeight){
-            if(this.selector==null||!point.TryToFloat3(out Unity.Mathematics.float3 approximate)){return false;}
-            Vector3 direction=((Vector3)approximate).normalized;
-            if(direction==Vector3.zero){return false;}
+            // 平面の Layer では未対応(点を含む Cell を平面の座標から探す処理が無い)。
+            if(this.selector==null||this.selector.IsPlane||!point.TryToFloat3(out Unity.Mathematics.float3 approximate)){return false;}
+            // Unity の Vector3.normalized は、大きさが 1e-5 以下だとゼロを返す(原子サイズの球の面の点(大きさ 1e-10)で、先読みが永久に false になっていた)ので、float3 で正規化する。
+            Unity.Mathematics.float3 unit=Unity.Mathematics.math.normalizesafe(approximate);
+            if(unit.Equals(Unity.Mathematics.float3.zero)){return false;}
+            Vector3 direction=new Vector3(unit.x,unit.y,unit.z);
             int target=0;
             while(target<Mathf.Min(this.maximumLevel,PrefetchLevelLimit)&&this.selector.QuadArc(target)>eyeHeight){target++;}
             bool ready=true;

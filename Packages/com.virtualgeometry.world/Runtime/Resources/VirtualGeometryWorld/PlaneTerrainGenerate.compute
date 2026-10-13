@@ -1,0 +1,40 @@
+#pragma kernel Generate
+#pragma target 5.0
+
+// 平らな地面(高さ 0)の Cell 1つ分の頂点を、VirtualGeometryGridLayout の配置で pool の slot へ書く。
+// 位置は Cell の原点(平面上の Cell の中心、PlanetCellFrame.TryCreatePlane)からの相対位置 ((a−N/2)·q, 0, (b−N/2)·q)。q = _QuadLength(1 quad の長さ)。
+// 向きは球の面 +Y(PlanetCell.hlsl の FaceU[2]=+x、FaceV[2]=+z、FaceNormal[2]=+y)と同じ。
+// 球の値(_Radius、_Face、_QuadAngle、_CenterTangent、_HeightShift)は設定されるが使わない。
+
+#include "PlanetCell.hlsl"
+
+float3 Surface(float a,float b)
+{
+    float half=(float)_CellQuads*0.5;
+    return float3((a-half)*_QuadLength,0,(b-half)*_QuadLength);
+}
+
+[numthreads(64,1,1)]
+void Generate(uint3 id:SV_DispatchThreadID)
+{
+    int index=(int)id.x;
+    if(index >= _SlotVertexCount) { return; }
+    int i;
+    int j;
+    bool skirt;
+    GridIndex(index,i,j,skirt);
+    float a=(float)i;
+    float b=(float)j;
+    float3 position=Surface(a,b);
+    // 高さ 0 の平面の法線は常に +Y(球の生成と同じく外向き)。
+    float3 normal=float3(0,1,0);
+    if(skirt)
+    {
+        position.y-=_SkirtDepth;
+    }
+    VGPackedVertex vertex;
+    vertex.position=position;
+    vertex.normal=normal;
+    vertex.uv=_FaceRange.xy+float2(a,b)*(_FaceRange.z/(float)_CellQuads);
+    _Vertices[_Slot*_SlotVertexCount+index]=vertex;
+}

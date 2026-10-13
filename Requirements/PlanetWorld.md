@@ -1124,7 +1124,7 @@ Logical の原点を継ぎ目 x=0 に置く。
 - 左の面の mesh は、試験点のまわり ±32 m を 0.5 m 刻み、外へ 1.25 倍ずつ広げて端 ±S/2 までの格子(約 3.2 万頂点)。座標は「原点からの距離 / S」を float にした値で、試験点の付近(座標 ≈ 0.5)の float の刻みは S·2^-25(D=10^6 m で約 6 cm)。
   壁を細分しない 1 枚の四角形(幅 2,000 m)で作ったときは、近い側が描かれなかった(画像で観測。原因は未確認で、Radial の写像が頂点ごとであることによる推測)ので、壁も細分した。左の面を 1 枚の四角形にした場合の比較はしていない
 - 左の shader `RadialScaledPlane`(素の MeshRenderer 用)は、`RadialMoonGrid` と同じ格子(1 m、10 cm、1 cm)を物体空間の float のまま描く。右の格子は `_PlanetCellRef`(Logical)から描く(右の格子の基準点は惑星のローカル座標の上端 (0, R, 0))
-- 左の material は実行時の複製に値を書く(scene の共有 asset を書き換えない)
+- 左の material は、scene の共有 asset(LeftPlane.mat)へ値(`_GridOriginOS`、`_ObjectScale`)を書き、終了時に元の値へ戻す。実行時の複製を使うと、Omni の Scene BRG が Play の準備で「正本が無い材質」として止まる(複製を Radial の実行時の複製へ差し替える処理と、明示登録した Renderer の検査が食い違うため。2026-10-12 に Play で観測)
 - ボールの位置は Logical のまま計算する(試験点 + (x, r + y, z)、0.1 mm 単位の整数)。camera は Logical の周回(yaw、pitch、距離)で、ボールの中心を常に向く(pitch の下限は camera が面から 5 cm より下へ行かないように決める)
 - キー: ↑↓ 1 mm 浮かせる/沈める(Shift で 10 mm、Ctrl で 0.1 mm)、WASD 水平、←→ PageUp/PageDown Home/End ホイール 右ドラッグ 周回と距離、1/2/3 左/右/全体、[ ] 左の面の D を {10^4, 10^5, 10^6, 10^7} で切り替え、Space 自動で沈める、R 初期化(領域と D は変えない)
 - 物理は使わない。Omni は安全域 10^4 m を超える物体の Collider を無効にする(`RenderProxyRegistry`。コードを読んだ範囲で、動作は確かめていない)ので、ボールは Logical の計算で動かす
@@ -1212,3 +1212,98 @@ Omni の `SV_Depth` で、近い 2 つの面を前後に分けられる最小の
 - 10^20 m は、天体の見かけの半径 30° が画面の水平半画角 32° より小さく、隅に背景が出る(3,576 画素)。背景の画素は数えない
 - 真下の見下ろしだけを測った。斜めの視線の端や地平線近くは測っていない。結果は GPU(RTX 4060 Ti)とドライバーに依存する
 - 合否の基準(10^12 m までの最悪が 1×10^-3 以下)は、実測の約 2 倍の回帰の検出用で、仕様ではない。10^15 m 以上は記録だけ
+
+
+## 22. 平らな地面の Layer と、単純に拡大した平面との継ぎ目の比べ(PlaneSeam)
+
+デモ scene は `Assets/VirtualizedGeometrySample/PlaneSeam/PlaneSeam.unity`(操作は README.md)。§20 の PlaneSink は、ボールと半径 2×10^6 m の球で比べるので操作と比較が難しい。
+こちらは、球をやめて平面 2 枚(左 = 単純に拡大した面、右 = VG の面)を、同じ高さ y=0 で継ぎ目 x=0 に隣り合わせ、camera を自由に動かして継ぎ目の隙間と段差を見る。
+
+### 平らな地面の Layer(`PlanarTerrainSource`、`com.virtualgeometry.world`)
+
+球の cube-sphere の Cell を、平面の四分木に差し替えた Layer。高さは 0 だけ。
+
+- 一辺 `Extent`(既定 2^25 m。float で quad の長さまで正確に表せる)の正方形(局所座標の XZ、原点が中心、法線 +Y)を、階層 L の 2^L×2^L の Cell に分ける。1 quad の長さは Extent·2^-L/64
+- Cell の原点は Logical で正確に作る(`PlanetCellFrame.TryCreatePlane`: 中心 = Extent·(2x+1−2^L)/2^(L+1)。分数は正確で、Extent を掛けるときだけ丸める)。頂点は Cell の原点からの相対位置 ((a−N/2)·q, 0, (b−N/2)·q) で、q は 2 のべき乗に Extent を掛けた値なので float で正確
+- 選択は `PlanetCellSelector.CreatePlane`(球の選択と同じ深さ優先・ヒステリシス・2:1 の均し。根は 1 つ(`PlaneFace` = 面 2 = +Y)、地平線の判定なし、bounds は一辺と skirt から求める)。根の縁の `PlanetCellKey.Neighbor` は別の面の Key を返すが、その Key は選ばれないので、均しは壊れない(EditMode テストで確認)
+- 基底 `PlanetLayerSource` の球に依存した部分を `CreateSelector`(virtual)と、根の要求(`selector.IsPlane`)にした。球の動作は変えない(球の EditMode テスト全件が通る)
+- 頂点の生成は `PlaneTerrainGenerate.compute`(`PlanetCell.hlsl` の `GridIndex` と頂点の構造体を共有し、球の値は使わない)。描画の shader は球と同じ `RadialMoonGrid.vgshader`(格子の軸を (1,0,0)、(0,0,1) にする)
+- 未対応: 先読み(`Prefetch`)、高さ、色の格子
+
+### 配置(`PlaneSeamLayout`、`PlaneSeamDemo`)
+
+| 量 | 値 |
+|---|---|
+| 左 | 単位の XZ 平面を一様に S=2(D+3) 倍した 1 つの物体(`ScaledPlaneMesh`、`RadialScaledPlane.shader`)。高さ 0、右端が x=0。D は面の原点から左の試験点(x=−3)までの距離(10^4〜10^7 m を `[` `]` で切り替え) |
+| 右 | `PlanarTerrainSource`(一辺 2^25 m、左端が x=0)。高さの差 δ を ↑↓ で 1mm ずつ動かせる(Logical の位置) |
+| camera | 自由(Logical の位置 + yaw・pitch。WASD・EQ・右ドラッグ) |
+
+左の材質は、PlaneSink と同じく scene の asset(`LeftPlane.mat`)へ格子の値を書く(複製は Omni の Play 準備が止まる。§20)。**asset の `_GridOriginOS`、`_ObjectScale` は、Omni が Play の準備で Radial 版の材質を作る元になるので、build のときに既定の配置の値を保存しておく**(初期値のままだと、Play 中に書いても描画に届かず、左の面が一色になった。2026-10-13 に観測)。
+
+### 確認(`PlaneSeamValidation`、2026-10-13、640×480、DX12、RTX 4060 Ti、batchmode)
+
+単色の画像(左 青、右 緑、背景 マゼンタ)を、Logical の位置から倍精度の光線で求めた 2 枚の面(左 y=0 の x∈[−2(D+3)、0]、右 y=δ の x∈[0、Extent])と、1 画素の帯の外で比べた。視点 3 つ × δ(−3〜+3mm)7 段 = 21 frame を、次の 2 つの条件で撮る。
+
+| 条件 | D | 不一致の画素(1 frame の最大 / 21 frame の合計) |
+|---|---|---|
+| 右(VG)だけ(左の面を消す) | — | 2 / 9(画像 307,200 画素の 0.001% 以下。継ぎ目の線と平面の遠い端の線の角の 1〜2 画素) |
+| 左右とも | 10^4 m | 0 / 0 |
+| 左右とも | 10^5 m | 1,597 / 11,582 |
+| 左右とも | 10^6 m | 9,835 / 124,367 |
+| 左右とも | 10^7 m | 67,701 / 1,160,669 |
+
+- 右(VG)は、D と δ によらず、解析の位置にある(不一致 ≤ 2 画素。合否は 4 画素以下)
+- 左(単純な拡大)の誤差は D と共に増える(10^4 で 0、10^7 で 67,701。D=10^6 から 10^7 で約 6.9 倍)。D=10^6 m の継ぎ目には、左の端が x=0 から数 cm ずれて、背景の黒い隙間が見える(Play で目視)。誤差の内訳(CPU の float の量子化、GPU の頂点の加算、画素ごとの補間)は切り分けていない(推測は物体空間の float の刻み S·2^-25。D=10^6 m で約 6 cm)
+- 合否のしきい値: 右だけは 4 画素以下、左右とも D=10^4 は 100 画素以下、D と共に減らない、D=10^6 は 1,000 画素以上、D=10^7 は D=10^6 の 3 倍以上。観測の約半分で、回帰の検出用(仕様ではない)
+- `PlaneSeamPlaySmoke`(Play Mode、キーごとの量と向き、視点、初期化、D の切り替え): 合格
+- EditMode テスト: `PlanarCellTests`(平面の Cell の位置が Logical で正確、隣の Cell との差が一辺にぴったり、面積の合計、2:1)と `PlaneSeamLayoutTests`
+
+実行: `Tools/Run-PlanetRegression.ps1 -Jobs PlaneSeam,PlaneSeamPlay`。開いている Editor の中では、Edit Mode の `Time.frameCount` が進まず、Cell の生成が 1 回しか進まない(`VirtualGeometryClusterSource` は同じ frame に 2 回生成しない)ので、
+検証は Editor を閉じたプロジェクトで batchmode にする(Editor を開いたままのときは、Assets・Packages・ProjectSettings・Tools だけを別のフォルダーへコピーして走らせた)。
+
+### 限界
+
+- 左右の高さを同じにして継ぎ目を見る比べだけ。δ が数 mm のとき、右の縁の skirt(段差の面)は解析に入れず、1 画素の帯に吸収させた
+- 平面の一辺は 2^25 m で、D=10^7 m の左の面(±10^7 m)より広いが、無限ではない。端の線は解析にも入れた
+- 実際のキーボード・マウスから Input System を通る経路と、HUD の文字(IMGUI)は確かめていない(§16 と同じ)
+
+## 23. 描き方の違う 3 つの月とサッカーボール、論理ニアクリップの切り替えと原子サイズの VG(MoonTriple)
+
+目的: 同じ半径(1,737.4 km)の 3 つの月を、**描き方(方式)を変えて**並べ、1 点で接触させて、サッカーボール(半径 0.11 m)で面の高さの誤差を比べる。後で方式を入れ替えたときの差を比べるため。
+併せて、論理ニアクリップを近づけて、原子サイズの VG の球(半径 1e-10 m)と、巨大な VG の月を、同じ処理で描く。
+実装は `Packages/com.virtualgeometry.omni`(`MoonTripleDemo`、`MoonTripleLayout`、`MoonTripleSceneBuilder`、`MoonTriplePlaySmoke`)、使い方は `Assets/VirtualizedGeometrySample/MoonTriple/README.md`。
+
+### 3 つの方式
+
+| 方式 | 月 | 作り方 |
+|---|---|---|
+| 1. 単純な巨大化 | 普通の月(下) | Omni の単位球メッシュ(CosmicSphere、512×256)を、直径 2R の 1 つの物体に拡大する |
+| 2. VG | VG の月 A(中) | `PlanetTerrainSource`(cube-sphere の Cell、Cell の原点は Logical) |
+| 3. PlanetSurface | 月 B(上) | Omni の分割した地面(`PlanetSurfaceLod` のパッチ)。Omni のデモの PlanetSurface のランタイムを `Runtime/OmniPlanetSurface/` に複製して使う |
+
+### 確認(Play Mode、`MoonTriplePlaySmoke`、2026-10-13、DX12、RTX 4060 Ti)
+
+面の高さの誤差は、ボールの半分を面に埋め、ボールの赤道の赤い線(ボールの中心の高さ)の見える太さが、ボールの y のずれで変わる量から読む(線の太さが全体の半分になる y が、面の高さの理想との差)。
+
+| 方式 | 接触点から 1,500 m での面の高さの理想との差 |
+|---|---|
+| 1. 単純な巨大化 | 面が近距離で描かれず、ずれを測れない(5 mm 以上)。数値の計算(三角形の補間)では、618 m の位置で約 3.7 m 低い。極(頂点)の周りの面が傾いている(表面は約 θ/2・L だけ下がる。θ は極から 1 段目の緯度の角度) |
+| 2. VG | 理想の高さ ±0.06 mm 以内(−0.040 mm(見下ろし 8°)、−0.055 mm(15°)) |
+| 3. PlanetSurface | 理想の高さ ±0.06 mm 以内(+0.040 mm(8°)、+0.055 mm(15°)。細分化が階層 20 に届いた状態) |
+
+- 測定の分解能: 1 画素 ≒ 0.023 mm(画角 5°、1280×960、カメラはボールから 0.35 m)。方式 2 と 3 の差は、この分解能でゼロ。
+- 残る ±0.04〜0.055 mm は、2 つの方式で同じ値・同じ向き。赤い線の重みの閾値を変えても 0.003 mm 以下しか動かない。第 3 の基準が無く、切り分けられていない(ボール側の共通の効果の疑い)。
+- 測る場所: ボールの +z 側(接触点から離れる側)で測ると、球の面の傾き(1,500 m で L/R × 0.11 m ≒ 0.095 mm)が混ざる(実測で 0.094 mm 差)ので、傾きのない +x 側で測る。
+- 方式 3 は、Play Mode で約 1,100 フレームかけて階層 20 まで細分化する(`FastRefinement` 有効)。**Edit Mode のバッチでは階層 12 から進まない**ので、Edit Mode の検証(`MoonTripleValidation.Run`)は回帰に入れない(観測用)。
+- 方式 1 は、近距離で描画が欠ける(解析上の約 26%。三角形の細かさを上げると悪化する)。Omni 自身も、地表付近では単一の球を描かず、パッチで描く設計(`CosmicPlanetSurface` が球の MeshRenderer を隠す)。
+
+### 論理ニアクリップの切り替えと原子サイズの VG の球
+
+- 論理 near(`RadialCamera.nearClip`)のプリセット: 0.03 m、1 mm、1 µm、1 nm、10 pm。camera の Near は 0.3 m のまま固定し、`SetViewScale(0.3 ÷ 論理 near)`(M は最大 3e10)で切り替える。読み戻し(`EffectiveNearClip`、`EffectiveLog2ViewScale`)は、5 つとも期待値と一致した。
+- VG の Cell 選択は、論理 near を下限にして画面誤差を計算する(`OmniPlanetPlacement`)ので、原子の頂点間隔(~1e-12 m)を描くには論理 near を 1e-11 m 前後以下にする。
+- 原子(半径 1e-10 m の `PlanetTerrainSource`)は、原点の近く(x = z = 0.5 m)に置く。座標が 1 m 前後なら、camera の倍精度の位置の刻み(1e-16 m)が原子の大きさより十分小さい。
+- **同じ処理の比較**(同じ見かけの大きさ = 中心から半径の 4 倍の距離): 原子(論理 near 10 pm)と VG の月 A(論理 near 0.03 m)の単色の円を、倍精度の光線で求めた円と比べて、1 画素の帯の外で違う画素は、どちらも 0(円の画素 55,472)。
+- 修正した不具合: `PlanetLayerSource.Prefetch` が、点の向きを `Vector3.normalized`(大きさ 1e-5 以下でゼロを返す)で求めていたため、原子サイズの面の点(大きさ 1e-10)で先読みが永久に false になっていた。`float3` の `normalizesafe` に直した。
+- 限界: 格子つきの原子は未対応(`RadialMoonGrid` の格子の周期が 1 m / 10 cm / 1 cm 固定で、基準点を設定しない)。原子サイズの球の法線(`PlanetTerrainGenerate.compute`)の数値の精度は確かめていない(円の一致のみ)。普通の月(方式 1)が近距離で描画を壊すため、円の比べでは普通の月を非表示にしている。
+
+実行: `Tools/Run-PlanetRegression.ps1 -Jobs MoonTriplePlay`(約 12 分)。画像は `TestResults/Planet/MoonTripleBury/`(半分を埋めた画像と掃引)と `TestResults/Planet/MoonTripleScale/`(原子と月 A の円)。

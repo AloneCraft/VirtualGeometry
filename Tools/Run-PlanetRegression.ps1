@@ -63,7 +63,13 @@ $table = @(
     @("RealMoonPolar", "RealMoonValidation.RunPolar", "RealMoonPolar", @("on")),
     @("SyntheticPolar", "RealMoonValidation.RunPolarSynthetic", "SyntheticPolar", @("on")),
     @("PlaneSink", "PlaneSinkValidation.Run", "PlaneSink", @("on")),
-    @("PlaneSinkPlay", "PlaneSinkPlaySmoke.Run", "PlaneSinkPlay", @("on"))
+    @("PlaneSinkPlay", "PlaneSinkPlaySmoke.Run", "PlaneSinkPlay", @("on")),
+    @("PlaneSeam", "PlaneSeamValidation.Run", "PlaneSeam", @("on")),
+    @("PlaneSeamPlay", "PlaneSeamPlaySmoke.Run", "PlaneSeamPlay", @("on")),
+    # MoonTripleValidation.Run(Edit Mode のバッチ)は、回帰に入れない: 方式 3(PlanetSurface の月)が Edit Mode では階層 12 から細分化されず、普通の月(方式 1)は近距離で描画が欠けるため、
+    # 常に FAILED になる(観測用。Assets/VirtualizedGeometrySample/MoonTriple/README.md の「既知の問題」)。Play Mode のスモークが、その代わり(キー・テレポート・スケール切り替え・
+    # 細分化・半分を埋めた画像・掃引・mm 未満の掃引・原子と月 A の円の比較)を確かめる。約 12 分。
+    @("MoonTriplePlay", "MoonTriplePlaySmoke.Run", "MoonTriplePlay", @("on"))
 )
 $knownJobs = $table | ForEach-Object { $_[0] }
 $knownModes = @("on", "forced", "off")

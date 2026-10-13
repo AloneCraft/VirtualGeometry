@@ -79,6 +79,7 @@ namespace VirtualGeometry.World{
         private readonly List<PlanetCellKey> scratch=new List<PlanetCellKey>();
         private readonly LogicalScalar logicalRadius;
         private readonly PlanetHeightShiftProvider heightShift;
+        private readonly bool plane;
 
         public float Radius{get;}
         public LogicalScalar LogicalRadius=>this.logicalRadius;
@@ -92,18 +93,41 @@ namespace VirtualGeometry.World{
         public float Hysteresis{get;set;}=0.1f;
 
         /// <param name="heightShift">Cell の原点を持ち上げる高さの供給元。null なら持ち上げない(原点は半径 R の球面上)。</param>
-        public PlanetCellSelector(float radius,float heightAmplitude,int cellQuads,int maximumLevel,float skirtQuads,PlanetHeightShiftProvider heightShift=null){
+        public PlanetCellSelector(float radius,float heightAmplitude,int cellQuads,int maximumLevel,float skirtQuads,PlanetHeightShiftProvider heightShift=null):this(radius,heightAmplitude,cellQuads,maximumLevel,skirtQuads,heightShift,false){
+        }
+
+        // plane が true のとき、radius は平面の一辺 extent(m)。
+        private PlanetCellSelector(float radius,float heightAmplitude,int cellQuads,int maximumLevel,float skirtQuads,PlanetHeightShiftProvider heightShift,bool plane){
+            if(plane){radius*=0.5f;}
             if(!(radius>0)||float.IsInfinity(radius)){throw new ArgumentOutOfRangeException(nameof(radius));}
-            if(!(heightAmplitude>=0)||heightAmplitude>=radius){throw new ArgumentOutOfRangeException(nameof(heightAmplitude));}
+            if(!(heightAmplitude>=0)||(!plane&&heightAmplitude>=radius)){throw new ArgumentOutOfRangeException(nameof(heightAmplitude));}
             if(cellQuads<1){throw new ArgumentOutOfRangeException(nameof(cellQuads));}
             if(maximumLevel<0||maximumLevel>PlanetCellFrame.MaximumLevel){throw new ArgumentOutOfRangeException(nameof(maximumLevel));}
             if(!LogicalScalar.TryFromFloat(radius,out this.logicalRadius)){throw new ArgumentOutOfRangeException(nameof(radius));}
             this.Radius=radius;this.HeightAmplitude=heightAmplitude;this.CellQuads=cellQuads;this.MaximumLevel=maximumLevel;this.SkirtQuads=skirtQuads;
-            this.heightShift=heightShift;
+            this.heightShift=heightShift;this.plane=plane;
         }
 
-        /// <summary>この階層の1 quad の弧長(面の中央の値。等角写像なので面の中でほぼ一定)。親の半分。</summary>
+        /// <summary>平面の root の面(<see cref="CubeSphere"/> の +Y の面と同じ向き: X が +x、Y が +z、法線 +Y)。</summary>
+        public const int PlaneFace=2;
+
+        /// <summary>
+        /// 一辺 extent(m)の正方形の平面を、球の代わりに分ける選択。root は 1 つ(<see cref="PlaneFace"/>)で、局所座標の XZ の原点が正方形の中心。
+        /// 球と違い、地平線で落とさず、Cell の原点は持ち上げず、1 quad の長さは extent·2^-L/N。<see cref="Radius"/> は extent の半分(正方形に外接しない、大きさの目安)。
+        /// 平面の root の縁の <see cref="PlanetCellKey.Neighbor"/> は別の面の Key を返すが、その Key は選ばれないので 2:1 の均しには影響しない。
+        /// </summary>
+        public static PlanetCellSelector CreatePlane(float extent,float heightAmplitude,int cellQuads,int maximumLevel,float skirtQuads){
+            return new PlanetCellSelector(extent,heightAmplitude,cellQuads,maximumLevel,skirtQuads,null,true);
+        }
+
+        /// <summary>平面の選択か(球の選択なら false)。</summary>
+        public bool IsPlane=>this.plane;
+        /// <summary>平面の一辺(m)。球では 0。</summary>
+        public float Extent=>this.plane?this.Radius*2f:0f;
+
+        /// <summary>この階層の1 quad の弧長(面の中央の値。等角写像なので面の中でほぼ一定)。親の半分。平面では 1 quad の長さ。</summary>
         public float QuadArc(int level){
+            if(this.plane){return this.Radius*2f*MathF.Pow(2f,-level)/this.CellQuads;}
             return this.Radius*(Mathf.PI*0.5f)*MathF.Pow(2f,-level)/this.CellQuads;
         }
 
@@ -124,6 +148,12 @@ namespace VirtualGeometry.World{
         /// </summary>
         public PlanetCellFrame Frame(in PlanetCellKey key){
             if(this.frames.TryGetValue(key,out PlanetCellFrame frame)){return frame;}
+            if(this.plane){
+                if(!LogicalScalar.TryScaleByPowerOfTwo(in this.logicalRadius,1,out LogicalScalar extent)||!PlanetCellFrame.TryCreatePlane(in key,in extent,out frame)){throw new InvalidOperationException("Cell の中心を求められません: "+key);}
+                if(this.frames.Count>=FrameCacheLimit){this.frames.Clear();}
+                this.frames.Add(key,frame);
+                return frame;
+            }
             if(!PlanetCellFrame.TryCreate(in key,in this.logicalRadius,out frame)){throw new InvalidOperationException("Cell の中心を求められません: "+key);}
             if(this.heightShift!=null&&this.heightShift(in frame,out float shift)&&shift!=0f&&Mathf.Abs(shift)<this.Radius&&frame.TryWithHeightShift(shift,out PlanetCellFrame lifted)){
                 frame=lifted;
@@ -146,11 +176,26 @@ namespace VirtualGeometry.World{
         /// Cell の解析的な bounds。中心は Cell の原点からの相対位置。粗い階層は <see cref="SampledBounds"/>、細かい階層は <see cref="FrameBounds"/>。
         /// </summary>
         public void Bounds(in PlanetCellKey key,out Vector3 offset,out float radius){
+            if(this.plane){
+                this.PlaneBounds(in key,out offset,out radius);
+                return;
+            }
             if(key.Level>=FrameBoundsLevel){
                 this.FrameBounds(in key,out offset,out radius);
             }else{
                 this.SampledBounds(in key,out offset,out radius);
             }
+        }
+
+        /// <summary>
+        /// 平面の Cell の bounds。Cell の原点(平面上の中心)から、高さの幅(−skirt〜+振幅)の中間を中心にして、一辺 size の正方形と高さの幅を囲む球。
+        /// </summary>
+        public void PlaneBounds(in PlanetCellKey key,out Vector3 offset,out float radius){
+            float size=this.Radius*2f*MathF.Pow(2f,-key.Level);
+            float skirt=this.SkirtDepth(key.Level);
+            offset=new Vector3(0,0.5f*(this.HeightAmplitude-skirt),0);
+            float half=size*0.5f;float height=0.5f*(this.HeightAmplitude+skirt);
+            radius=Mathf.Sqrt(2f*half*half+height*height);
         }
 
         /// <summary>
@@ -201,7 +246,11 @@ namespace VirtualGeometry.World{
             if(output==null){throw new ArgumentNullException(nameof(output));}
             if(refined==null){throw new ArgumentNullException(nameof(refined));}
             output.Clear();refined.Clear();this.selected.Clear();this.stack.Clear();
-            for(int face=CubeSphere.FaceCount-1;face>=0;face--){this.stack.Push(PlanetCellKey.Root(face));}
+            if(this.plane){
+                this.stack.Push(PlanetCellKey.Root(PlaneFace));
+            }else{
+                for(int face=CubeSphere.FaceCount-1;face>=0;face--){this.stack.Push(PlanetCellKey.Root(face));}
+            }
             while(this.stack.Count>0){
                 PlanetCellKey key=this.stack.Pop();
                 this.Visit(in key,in view,residency,previouslyRefined,refined);
@@ -307,7 +356,7 @@ namespace VirtualGeometry.World{
                     if(view.CullPlanes[i].GetDistanceToPoint(cullCenter)< -cullRadius){return true;}
                 }
             }
-            if(view.HorizonCulling&&!view.Orthographic){
+            if(view.HorizonCulling&&!view.Orthographic&&!this.plane){
                 // 遮る球は R−Hmax、地形の一番外は R+Hmax。カメラから見える最も遠い点までの距離を超える bounds は見えない。
                 // d−Ro はカメラの高さ(Logical で求めた値)から作り、d と Ro が近いときの桁落ちを避ける。
                 float occluder=this.Radius-this.HeightAmplitude;
