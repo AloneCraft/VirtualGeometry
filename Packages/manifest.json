@@ -1,19 +1,21 @@
 {
   "dependencies": {
-    "com.virtualgeometry.core": "file:com.virtualgeometry.core",
-    "com.virtualgeometry.world": "file:com.virtualgeometry.world",
-    "com.virtualgeometry.omni": "file:com.virtualgeometry.omni",
-    "com.virtualgeometry.object": "file:com.virtualgeometry.object",
     "com.omni.rendering": "file:D:/Unity/6.6/OmniDist/wiring-fix2/Omni-0.1.0.tgz",
+    "com.unity.ai.assistant": "2.20.0-pre.2",
     "com.unity.ai.navigation": "2.0.12",
     "com.unity.collab-proxy": "2.12.4",
     "com.unity.ide.rider": "3.0.38",
     "com.unity.ide.visualstudio": "2.0.26",
     "com.unity.inputsystem": "1.19.0",
+    "com.unity.pipeline": "0.8.0-exp.1",
     "com.unity.render-pipelines.universal": "17.6.0",
     "com.unity.test-framework": "1.8.0",
     "com.unity.timeline": "6.6.0",
     "com.unity.ugui": "2.6.0",
-    "com.unity.visualscripting": "1.9.11"
+    "com.unity.visualscripting": "1.9.11",
+    "com.virtualgeometry.core": "file:com.virtualgeometry.core",
+    "com.virtualgeometry.object": "file:com.virtualgeometry.object",
+    "com.virtualgeometry.omni": "file:com.virtualgeometry.omni",
+    "com.virtualgeometry.world": "file:com.virtualgeometry.world"
   }
 }
