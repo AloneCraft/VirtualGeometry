@@ -133,3 +133,7 @@ GPU では、`Select` カーネルの index コピーが 1 thread で直列だ�
   - VG の位置量子化(Mesh の bounds で 16 bit)で、模様は最大 ±2.2 cm ずれる(広場)。
   - 粗い LOD では模様がわずかに動く。
 - Import.unity は URP の Lighting サンプルのスタジオ照明のまま。FBX の太陽とカメラを取り込まなくしたので、そこではエレベーターが暗く見える。確認は `SpaceElevator.unity` で行う。
+
+## 実行して見る
+
+`Import.unity` は、space_elevator を含む照明の sample scene で、Play すると、カメラがモデル全体の見える位置から始まる(`VirtualGeometrySampleCameraController` の frameOnStart)。W/S/A/D/Q/E で移動、Shift で加速、右ボタンを押している間はマウスで向きを変える。`M0.unity` は四角形 2 枚だけの検証用 scene で、複雑なモデルは無い。

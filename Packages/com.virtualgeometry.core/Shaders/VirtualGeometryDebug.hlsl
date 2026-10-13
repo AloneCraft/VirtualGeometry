@@ -16,7 +16,15 @@ half3 VGTriangleColor(uint primitiveId)
 }
 half3 VGDebugColor(float4 data)
 {
-    if(_VGDebugMode==2){return frac(float3(0.17,0.41,0.73)*(data.y+1));}
+    // LodLevel: Levelが上がる(粗くなる)ほど、青(最詳細)→緑→黄→赤へ連続して変える。12段以上は赤。
+    if(_VGDebugMode==2)
+    {
+        float t=saturate(data.y/12.0)*3.0;
+        float3 blue=float3(0,0.4,1);float3 green=float3(0,0.85,0.25);float3 yellow=float3(1,0.9,0);float3 red=float3(1,0.1,0);
+        if(t<1.0){return lerp(blue,green,t);}
+        if(t<2.0){return lerp(green,yellow,t-1.0);}
+        return lerp(yellow,red,t-2.0);
+    }
     if(_VGDebugMode==3){float error=saturate(data.z/max(_VGDebugTargetError,0.0001)/2);return lerp(half3(0,0.5,1),half3(1,0,0),error);}
     if(_VGDebugMode==5){return _VGLoadingCount>0?half3(1,0.6,0):half3(0,0.8,0.2);}
     if(_VGDebugMode==6){return half3(0,0.8,0.2);}

@@ -50,10 +50,10 @@ namespace VirtualizedGeometry{
             var result=new VirtualGeometryInstanceMetrics{GeometryKey=this.meshAsset?.ContentHash,ResourceKey=this.SharedResourceKey,InputTriangles=this.meshAsset?.InputTriangleCount??0,UniqueTriangles=this.meshAsset?.LeafTriangleCount??0,
                 GpuGeometryBytes=this.DiagnosticGeometryAllocatedBytes,GpuMetadataBytes=this.DiagnosticMetadataAllocatedBytes,GpuSelectionBytes=this.DiagnosticSelectionAllocatedBytes,CpuCacheBytes=this.StreamingStatistics?.CpuBytes??0};
             var state=camera==null?this.lastSelection:(this.cameraSelections.TryGetValue(camera,out var selected)?selected:null);
-            if(state!=null&&!this.IsFallbackVisible){var snapshot=state.Readback();result.SelectedClusters=snapshot.CullingStatistics[0];for(int i=0;i<snapshot.Arguments.Length;i+=4){result.DrawnTriangles+=snapshot.Arguments[i]/3;if(snapshot.Arguments[i]>0){result.DrawCalls++;}}}
+            if(state!=null&&!this.IsFallbackVisible){var snapshot=state.Readback();result.SelectedClusters=snapshot.CullingStatistics[0];result.VisibleClusters=snapshot.CullingStatistics[3];for(int i=0;i<snapshot.Arguments.Length;i+=4){result.DrawnTriangles+=snapshot.Arguments[i]/3;if(snapshot.Arguments[i]>0){result.DrawCalls++;}}}
             else if(!this.IsFallbackVisible&&this.gpuPage?.ArgumentsBuffer!=null){
                 var arguments=new uint[this.gpuPage.ArgumentsBuffer.count];this.gpuPage.ArgumentsBuffer.GetData(arguments);
-                result.SelectedClusters=(uint)this.gpuPage.ClusterBuffer.count;
+                result.SelectedClusters=(uint)this.gpuPage.ClusterBuffer.count;result.VisibleClusters=result.SelectedClusters;
                 for(int i=0;i<arguments.Length;i+=4){result.DrawnTriangles+=arguments[i]/3;if(arguments[i]>0){result.DrawCalls++;}}
             }
             else if(this.IsFallbackVisible&&this.meshAsset!=null){result.DrawnTriangles=this.meshAsset.ProxyTriangleCount;result.DrawCalls=this.meshAsset.MaterialCount;}

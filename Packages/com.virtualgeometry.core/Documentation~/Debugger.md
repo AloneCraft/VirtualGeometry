@@ -8,7 +8,7 @@ UE5 の viewport toolbar(View Mode ▸ Nanite Visualization、Show、stat Nanite
 
 VG Stats panel では対象 camera を指定します。空欄では各 instance の直近 camera の状態を使います。診断 readback は GPU 同期を含むため既定で無効で、有効時も「診断を更新」を押したときだけ取得します。panel を閉じると診断を無効に戻します。通常性能の測定中は有効にしません。
 
-Triangles は描画中の三角形ごとに色を変えます。debug buffer を使わず、近づくと三角形が細かくなる様子を確認できます。色は compaction 後の三角形番号から作るため、cut が変わると色の割り当ても変わります。Clusters / LodLevel / ScreenError / ResidentPages は実際の選択結果から色を生成します。Loading は queued + loading + uploading の値を使い、Culling は選択・棄却した bounds を使います。未描画の page を resident の固定色として扱いません。debug buffer を必要とする mode では通常時より追加メモリを使います。
+Triangles は描画中の三角形ごとに色を変えます。debug buffer を使わず、近づくと三角形が細かくなる様子を確認できます。色は compaction 後の三角形番号から作るため、cut が変わると色の割り当ても変わります。Clusters / LodLevel / ScreenError / ResidentPages は実際の選択結果から色を生成します。LodLevel は、Level が上がる(粗くなる)ほど青→緑→黄→赤へ連続して変わります(12 段以上は赤)。Clusters の塊の大きさは、画面上の誤差を一定に保つ階層が選ばれるため距離で変わりにくいので、LOD の変化は LodLevel の色と、VG Stats の visible clusters / drawn triangles(「自動更新」で 0.5 秒ごとに更新)で見てください。Loading は queued + loading + uploading の値を使い、Culling は選択・棄却した bounds を使います。未描画の page を resident の固定色として扱いません。debug buffer を必要とする mode では通常時より追加メモリを使います。
 
 入力 source triangles と unique leaf triangles は asset 単位、instance triangles は配置数込み、drawn triangles は実際の indirect arguments から数えます。geometry / metadata / CPU cache は共有資源単位、選択 buffer は instance × camera で合計します。nonempty draws、considered / frustum / HZB / visible、I/O、miss、queue overflow、quality target miss、eviction を別に表示します。
 

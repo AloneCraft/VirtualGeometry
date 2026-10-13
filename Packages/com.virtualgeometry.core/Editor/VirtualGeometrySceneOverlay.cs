@@ -158,6 +158,17 @@ namespace VirtualizedGeometry.Editor{
             this.enabledDiagnostics.RegisterValueChangedCallback(change=>VirtualGeometryDiagnostics.Enabled=change.newValue);
             this.enabledDiagnostics.schedule.Execute(()=>this.enabledDiagnostics.SetValueWithoutNotify(VirtualGeometryDiagnostics.Enabled)).Every(500);
             root.Add(this.enabledDiagnostics);
+            // 自動更新: 0.5秒ごとに同じ同期readbackで更新する(GPU同期を含むので、必要なときだけ入れる)。
+            var autoRefresh=new Toggle("自動更新（0.5秒ごと。GPU同期あり）");
+            autoRefresh.schedule.Execute(()=>{if(autoRefresh.value){this.Refresh();}}).Every(500);
+            root.Add(autoRefresh);
+            // LODの目標誤差(px)を全rendererへ一時的に適用する。大きくすると粗い階層が選ばれ、LOD Level表示とcluster数の変化が見やすくなる(保存はしない。2が既定)。
+            var errorSlider=new Slider("LOD目標誤差(px)",0.5f,128f){showInputField=true,value=2f};
+            errorSlider.RegisterValueChangedCallback(change=>{
+                foreach(VirtualGeometryRenderer renderer in VirtualGeometrySceneToolbar.Renderers()){renderer.SetLodSettings(change.newValue,renderer.LodHysteresis);}
+                InternalEditorUtility.RepaintAllViews();
+            });
+            root.Add(errorSlider);
             this.camera=new ObjectField("対象camera（空欄は各instanceの直近camera）"){objectType=typeof(Camera),allowSceneObjects=true};root.Add(this.camera);
             root.Add(new Button(this.Refresh){text="診断を更新"});
             this.values=new Label("診断は無効です。");this.values.style.whiteSpace=WhiteSpace.Normal;
@@ -185,7 +196,7 @@ namespace VirtualizedGeometry.Editor{
             }
             var total=VirtualGeometryDebugMetrics.Aggregate(rows);
             this.values.text="入力(unique source)="+total.InputTriangles+" / unique triangles="+total.UniqueTriangles+" / instance triangles="+total.InstanceTriangles+
-                "\nselected clusters="+total.SelectedClusters+" / drawn triangles="+total.DrawnTriangles+" / nonempty draws="+total.DrawCalls+
+                "\nclusters: considered(culling前)="+total.SelectedClusters+" / visible(描いた)="+total.VisibleClusters+" / drawn triangles="+total.DrawnTriangles+" / nonempty draws="+total.DrawCalls+
                 "\nGPU geometry="+total.GpuGeometryBytes+" / metadata="+total.GpuMetadataBytes+" / instance×camera selection="+total.GpuSelectionBytes+" B\nCPU cache="+total.CpuCacheBytes+" B / I/O="+io+" B"+
                 "\nqueued/loading/uploading/resident/failed="+queued+"/"+loading+"/"+uploading+"/"+resident+"/"+failed+
                 "\nmiss="+miss+" / quality target miss="+quality+" / overflow="+overflow+" / eviction="+evictions+
