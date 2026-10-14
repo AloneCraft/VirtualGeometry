@@ -1281,63 +1281,27 @@ Omni の `SV_Depth` で、近い 2 つの面を前後に分けられる最小の
 - 平面の一辺は 2^25 m で、D=10^7 m の左の面(±10^7 m)より広いが、無限ではない。端の線は解析にも入れた
 - 実際のキーボード・マウスから Input System を通る経路と、HUD の文字(IMGUI)は確かめていない(§16 と同じ)
 
-## 23. 描き方の違う 3 つの月とサッカーボール、論理ニアクリップの切り替えと原子サイズの VG(MoonTriple)
+## 23. 4 枚の平面とサッカーボール(MoonTriple)
 
-目的: 同じ半径(1,737.4 km)の 3 つの月を、**描き方(方式)を変えて**並べ、1 点で接触させて、サッカーボール(半径 0.11 m)で面の高さの誤差を比べる。後で方式を入れ替えたときの差を比べるため。
-併せて、論理ニアクリップを近づけて、原子サイズの VG の球(半径 1e-10 m)と、巨大な VG の月を、同じ処理で描く。
-実装は `Packages/com.virtualgeometry.omni`(`MoonTripleDemo`、`MoonTripleLayout`、`MoonTripleSceneBuilder`、`MoonTriplePlaySmoke`)、使い方は `Assets/VirtualizedGeometrySample/MoonTriple/README.md`。
+目的: 角が原点で接する 4 枚の平面(VG の面、Standard100Km、Standard1000Km、手動分割 1000m)に、サッカーボール(半径 0.11 m)を置き、面の高さのずれを比べる。
+実装は `Packages/com.virtualgeometry.omni`(`MoonTripleDemo`、`MoonTripleLayout`、`MoonTripleKeys`、`MoonTripleSceneBuilder`、`MoonTriplePlaySmoke`、`MoonTripleEditModeCheck`)。単体テストは `Tests/Editor/MoonTripleLayoutTests.cs`、使い方は `Assets/VirtualizedGeometrySample/MoonTriple/README.md`。
 
-### 画面の呼び名
+### 配置(Decision)
+- 4 面は y=0。角が原点(x=0, z=0)で接し、各面は原点から外側へ広がる(PlaneSeam と同じ考え方)。
+- 象限: VG(−x,−z)、Standard100Km(−x,+z)、Standard1000Km(+x,+z)、手動分割(+x,−z)。シーンの配置と同じ。
+- 大きさは名前どおり。10 m の基準に倍率 N を掛ける。N は `MoonTripleLayout` のパラメータ(`ScaleStandard100Km`、`ScaleStandard1000Km`、`ScaleVg`、`TilesPerSide`)。既定は Standard100Km = 10^4(100 km)、Standard1000Km = 10^5(1000 km)、VG = 10^5(1000 km)、手動分割 = 10 m の 100×100 枚(1000 m、10,000 枚)。
+- VG の最大階層は自動: 一辺 ÷ 2^階層 が 10 m 以下になる最小の階層。1000 km なら 17(セル約 7.6 m)。
 
-画面(HUD・ボタン)では、方式の番号を出さず、**分割しない面**(方式 1。青。旧: 普通の月・拡大した月)/ **VG の面**(方式 2。緑。旧: VG の月 A)/ **手動分割した面**(方式 3。紫。旧: PlanetSurface の月 B)と呼ぶ。近くで見ると平らで、「月」と呼ぶと球と誤解されるため、「面」と呼ぶ。以下の「普通の月」「VG の月 A」「PlanetSurface の月 B」は、同じ面の旧称。ボタンは 1 ボタン = 1 機能(見出しで区切り、キーの番号を `[n]` で先頭に付ける)。Hierarchy のオブジェクト名も日本語。
-色は材質の `_BaseColor`(シーン生成時に保存)で、赤系にしない(ボールの赤い線の検出に混ざらないように)。方向光だけだと、平らな面の陰影が一様で、距離や食い込みが見えないので、シェーダーに、**ボールの球の影**(解析的。縁は画素幅で滑らか)と**接触の暗がり**(球による環境遮蔽)を足している。Omni の面(`_CosmicBallLight`、`_CosmicKeyLight`)と VG の面(`_PlanetBallLight`、`_PlanetKeyLight`)は同じ式(主光源の拡散は Lommel-Seeliger と Lambert の混合)で、方式の差に光の違いが混ざらない。ボールの点光源(減衰 `1/(1+(d/0.4 m)²)`)は、影の中の補助光。VG の面の格子の線はエミッシブ。URP の影の地図・Point Light は、物理座標の float 精度と範囲外の間引きで使えない。
+### 設計の理由(Why)
+- 球の式(接触距離、たるみ、接触点)は平面では使わない。ボールの食い込みは、面の高さのずれだけで決まる。そのため、接触点・「半分を埋める」の 1500 m 移動・隙間の調整は、面の選択と面の高さの操作に置き換えた。
+- 原子(VG の球、半径 1e-10 m)は外した。平面用の `PlanarTerrainSource` は一辺の最小が 1 m で、原子を平面で作れないため。
+- 素の面(Standard、手動分割)は `Omni/RadialScaledPlane`(PlaneSeam と同じ材質)を使う。格子の原点 `_GridOriginOS` と倍率 `_ObjectScale` は材質に書く。VG の格子シェーダーは VG の pass が要るため、素の面では使えない。
+- 既知の差: ボールの影と接触の暗がりは、VG の面だけが描く(`_CosmicBallLight` / `_PlanetBallLight` は VG の面と、ボールの点光源のみ)。素の面は影を描かない。
 
-### 3 つの方式
+### 操作
+- 1: ボールを原点へ。2: 選ぶ面を次へ。5: ボールの中心を、選んだ面の高さに置く(半分埋まる)。[ ]: 選んだ面の高さを ±1 mm(Shift で 10 mm、Ctrl で 0.1 mm)。7・8: 論理ニアクリップ。R: 初期化。矢印・WASD・PageUp/PageDown・C は従来どおり。
 
-| 方式 | 月 | 作り方 |
-|---|---|---|
-| 1. 単純な巨大化 | 普通の月(下) | Omni の単位球メッシュ(CosmicSphere、512×256)を、直径 2R の 1 つの物体に拡大する |
-| 2. VG | VG の月 A(中) | `PlanetTerrainSource`(cube-sphere の Cell、Cell の原点は Logical) |
-| 3. PlanetSurface | 月 B(上) | Omni の分割した地面(`PlanetSurfaceLod` のパッチ)。Omni のデモの PlanetSurface のランタイムを `Runtime/OmniPlanetSurface/` に複製して使う |
-
-### 確認(Play Mode、`MoonTriplePlaySmoke`、2026-10-13、DX12、RTX 4060 Ti)
-
-面の高さの誤差は、ボールの半分を面に埋め、ボールの赤道の赤い線(ボールの中心の高さ)の見える太さが、ボールの y のずれで変わる量から読む(線の太さが全体の半分になる y が、面の高さの理想との差)。
-
-| 方式 | 接触点から 1,500 m での面の高さの理想との差 |
-|---|---|
-| 1. 単純な巨大化 | 面が近距離で描かれず、ずれを測れない(5 mm 以上)。数値の計算(三角形の補間)では、618 m の位置で約 3.7 m 低い。極(頂点)の周りの面が傾いている(表面は約 θ/2・L だけ下がる。θ は極から 1 段目の緯度の角度) |
-| 2. VG | 理想の高さ ±0.06 mm 以内(−0.040 mm(見下ろし 8°)、−0.055 mm(15°)) |
-| 3. PlanetSurface | 理想の高さ ±0.06 mm 以内(+0.040 mm(8°)、+0.055 mm(15°)。細分化が階層 20 に届いた状態) |
-
-- 測定の分解能: 1 画素 ≒ 0.023 mm(画角 5°、1280×960、カメラはボールから 0.35 m)。方式 2 と 3 の差は、この分解能でゼロ。
-- 残る ±0.04〜0.055 mm は、2 つの方式で同じ値・同じ向き。赤い線の重みの閾値を変えても 0.003 mm 以下しか動かない。第 3 の基準が無く、切り分けられていない(ボール側の共通の効果の疑い)。
-- 測る場所: ボールの +z 側(接触点から離れる側)で測ると、球の面の傾き(1,500 m で L/R × 0.11 m ≒ 0.095 mm)が混ざる(実測で 0.094 mm 差)ので、傾きのない +x 側で測る。
-- 方式 3 は、Play Mode で約 1,100 フレームかけて階層 20 まで細分化する(`FastRefinement` 有効)。**Edit Mode のバッチでは階層 12 から進まない**ので、Edit Mode の検証(`MoonTripleValidation.Run`)は回帰に入れない(観測用)。
-- 方式 1 は、近距離で描画が欠ける(解析上の約 26%。三角形の細かさを上げると悪化する)。Omni 自身も、地表付近では単一の球を描かず、パッチで描く設計(`CosmicPlanetSurface` が球の MeshRenderer を隠す)。
-
-### 論理ニアクリップの切り替えと原子サイズの VG の球
-
-- 論理 near(`RadialCamera.nearClip`)のプリセット: 0.03 m、1 mm、1 µm、1 nm、10 pm。camera の Near は 0.3 m のまま固定し、`SetViewScale(0.3 ÷ 論理 near)`(M は最大 3e10)で切り替える。読み戻し(`EffectiveNearClip`、`EffectiveLog2ViewScale`)は、5 つとも期待値と一致した。
-- VG の Cell 選択は、論理 near を下限にして画面誤差を計算する(`OmniPlanetPlacement`)ので、原子の頂点間隔(~1e-12 m)を描くには論理 near を 1e-11 m 前後以下にする。
-- 原子(半径 1e-10 m の `PlanetTerrainSource`)は、原点の近く(x = z = 0.5 m)に置く。座標が 1 m 前後なら、camera の倍精度の位置の刻み(1e-16 m)が原子の大きさより十分小さい。
-- **同じ処理の比較**(同じ見かけの大きさ = 中心から半径の 4 倍の距離): 原子(論理 near 10 pm)と VG の月 A(論理 near 0.03 m)の単色の円を、倍精度の光線で求めた円と比べて、1 画素の帯の外で違う画素は、どちらも 0(円の画素 55,472)。
-- 修正した不具合: `PlanetLayerSource.Prefetch` が、点の向きを `Vector3.normalized`(大きさ 1e-5 以下でゼロを返す)で求めていたため、原子サイズの面の点(大きさ 1e-10)で先読みが永久に false になっていた。`float3` の `normalizesafe` に直した。
-- 限界: 格子つきの原子は未対応(`RadialMoonGrid` の格子の周期が 1 m / 10 cm / 1 cm 固定で、基準点を設定しない)。原子サイズの球の法線(`PlanetTerrainGenerate.compute`)の数値の精度は確かめていない(円の一致のみ)。普通の月(方式 1)が近距離で描画を壊すため、円の比べでは普通の月を非表示にしている。
-
-### Edit Mode(Play していない状態)の表示
-
-- 原因: シーンに保存された Logical.Transform は位置 0・倍率 1 のままで、配置は Play 中の `MoonTripleDemo.Update` が初めて置いていた。Play を止めると、全部が原点に重なり、camera は月の内側になって、Game View が黒、Scene View が空になった。
-- 対応: (1) シーン生成が、`Initialize()` で配置を scene に焼き込む。(2) `MoonTripleDemo` を `[ExecuteAlways]` にし、Edit Mode では `EditorApplication.update` から初期化と再描画の要求を行う(Play のキー・ボタンは Play のときだけ)。(3) `OmniPlanetPlacement` に `[ExecuteAlways]` を付ける(外部描画経路の登録と配置を、Edit Mode でも有効にする)。
-- 確認: `MoonTripleEditModeCheck`(batchmode、Play なし): Game camera の画像が Play 開始の絵になる(明るい画素の割合 0.289、ボールの赤い線の画素 4,643)。実際に開いた Editor の Game View・Scene View は未確認。Scene View は、Omni のオーバーレイの「位置を同期」と「向きを合わせる」で Game camera に合わせる。
-
-### 「半分を埋める」と、手動分割した月の更新が止まる件(2026-10-13、Editor の実機の確認で判明)
-
-- 「ボールの半分を上の月に埋める」が、接触点ちょうど(z = 0)で効かなかった。接触点では、下の月の上面も上の月の下面も、接触点の高さで、y が動かない。対応: 接触点の近く(2 つの面の間の幅が 0.5 m 未満)で押したときは、接触点から 1,500 m(隙間 約 1.3 m)へ移し(先読みを待つ)、ボールの中心を理想の面の高さに置き、camera を 15° 見下ろし(上の月は 15° 見上げ、光を下から)にする。
-- 手動分割した月が、Play で細分化されず、HUD が `階層 0 / 要求 0 葉 6` のままだった(ユーザーの Editor の実機。原因は、Enter Play Mode Options で「シーンを再読み込みしない」設定のとき、と推定。ユーザーの設定は未確認)。この設定の Play を `MoonTriplePlaySmoke.RunNoSceneReload` で再現した: Play に入ると、`CosmicPlanetSurface` は作り直され(`m_Lod = null`)、`Start` の `Begin(false)` が分割処理を初期化する(`init = True`)が、**Edit Mode で作った隠れた(`hideFlags = HideAndDontSave`)`PlanetSurfaceLod` を `GetComponent` が再利用し、そのコンポーネントは Play で更新(`Update`)が回らず**、`LastUpdateMilliseconds` が 0 のまま、階層 0/0・葉 6 で止まる。当初の推定(「Play に入る時の `OnDisable` で Shutdown されたまま残る」)は、ログで否定された(`PlanetSurfaceLod.OnDisable` は呼ばれていなかった)。対応: `CosmicPlanetSurface.Begin` が、Play(`editMode = false`)では、隠れた分割処理を `DestroyImmediate` で破棄して、作り直す(`DisallowMultipleComponent` のため即時)。確認: 同じ設定の Play で、階層 20 まで進む(`lastUpdateMs = 1.677`、`hideFlags = None`)。通常の Play(再読み込みする)では、隠れた分割処理が無いので、何も変わらない。
-
-### 論理 near の設定の注意
-
-`RadialCamera.SetViewScale(M)` は `Camera.nearClipPlane` を読む。Omni は描画中にこの値を写像後の値(log2(1+0.3) ≒ 0.378)へ書き換え、描画後に戻すので、描画の途中の値を読むと M がずれる(Editor の HUD で 0.37 が読めた)。MoonTriple は、論理 near を `nearClip` に直接代入する。スモークの期待値は、定数 0.3 から計算し、`Camera.nearClipPlane == 0.3` を確かめる(同じ `nearClipPlane` から期待値を出すと食い違いを見逃す)。
-
-実行: `Tools/Run-PlanetRegression.ps1 -Jobs MoonTripleEdit,MoonTriplePlay`(約 13 分)。画像は `TestResults/Planet/MoonTripleBury/`(半分を埋めた画像と掃引)と `TestResults/Planet/MoonTripleScale/`(原子と月 A の円)。
+### 確認の状態(2026-10-14 時点)
+- 配置の数値(大きさ、最大階層 17、象限の中心、角が原点に接すること、手動分割の位置)は、`MoonTripleLayoutTests` と同じ式の独立の検算で確認した(すべて一致)。
+- Unity の EditMode テスト、シーンの再生成(`Build Scene`)、Edit Mode の確認(`MoonTripleEditModeCheck`)、Play スモーク(`MoonTriplePlaySmoke`)は未実行。Unity Editor がこのプロジェクトを開いたままだったため(バッチは同じプロジェクトを開けない)。
+- C# のコンパイルは、Omni のランタイム・Editor・テストのソースを Library のアセンブリを参照して csc で確認し、MoonTriple の本体にはエラーが無い(テストの NUnit 参照の警告を除く)。

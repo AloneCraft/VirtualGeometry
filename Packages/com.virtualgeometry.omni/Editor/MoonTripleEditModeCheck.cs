@@ -10,7 +10,7 @@ using VirtualizedGeometry.Editor;
 
 namespace VirtualGeometry.Omni.Editor{
     /// <summary>
-    /// Play していない Edit Mode で、MoonTriple シーンが、Play 開始と同じ絵(接触点 0、ボールと camera の既定の視点)を Game camera に出すかを確かめる(batchmode)。
+    /// Play していない Edit Mode で、MoonTriple シーンが、Play 開始と同じ絵(原点のボールと camera の既定の視点)を Game camera に出すかを確かめる(batchmode)。
     /// シーンを開き(Play しない)、<see cref="MoonTripleDemo"/> の Edit Mode の更新(EditModeTick)が初期化するのを待ち、VG の Cell の生成が進むよう数十 frame 回して、Main Camera を撮って判定する。
     /// 判定: 画像が黒一色でない(明るい画素の割合)、ボールの赤い線(赤道の線)の画素が一定数以上。画像は TestResults/Planet/MoonTripleEdit に保存する。
     /// 実行: -batchmode -force-d3d12 -executeMethod VirtualGeometry.Omni.Editor.MoonTripleEditModeCheck.Run
@@ -93,13 +93,10 @@ namespace VirtualGeometry.Omni.Editor{
             }
             double litFraction=(double)lit/pixels.Length;
             UnityEngine.Object.DestroyImmediate(image);
-            report.Add("camera position="+demo.CameraPosition+" contact="+demo.ContactIndex+" scalePreset="+demo.ScalePreset);
+            report.Add("camera position="+demo.CameraPosition+" selectedFace="+demo.SelectedFace+" scalePreset="+demo.ScalePreset);
             report.Add("lit pixel fraction="+litFraction.ToString("F3",CultureInfo.InvariantCulture)+" (min "+MinimumLitFraction.ToString("F2",CultureInfo.InvariantCulture)+") red pixels="+red+" (min "+MinimumRedPixels+")");
-            report.Add("PlanetSurface moon B: leaves="+demo.MoonB.Lod.Diagnostics.LeafCount+" deepestLevel="+demo.MoonB.Lod.Diagnostics.DeepestLevel+" desiredLevel="+demo.MoonB.Lod.Diagnostics.DesiredLevel);
-            report.Add("VG moon A: pending="+demo.MoonA.PendingGeneration+" used="+demo.MoonA.UsedSlots+"/"+demo.MoonA.PoolCapacity+" lastError="+(demo.MoonA.LastError??"(none)"));
             if(litFraction<MinimumLitFraction){failures.Add("Edit Mode の Game camera の画像がほぼ黒です(明るい画素 "+litFraction.ToString("F3",CultureInfo.InvariantCulture)+")。");}
             if(red<MinimumRedPixels){failures.Add("ボールの赤い線が写っていません(赤い画素 "+red+")。");}
-            if(demo.MoonA.LastError!=null){failures.Add("VG の月 A の設定エラー: "+demo.MoonA.LastError);}
         }
 
         private static void Destroy(this Texture2D image){

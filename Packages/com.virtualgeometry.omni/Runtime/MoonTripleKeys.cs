@@ -13,14 +13,24 @@ namespace VirtualGeometry.Omni{
         Frame,
         /// <summary>量の修飾(Shift で 10 倍、Ctrl で 1/10)。</summary>
         Coarse,Fine,
-        /// <summary>接触点 0(普通 - VG)・接触点 1(VG - VG)へテレポート、ボールが両側の面に接する距離へ、接触点そのものへ。</summary>
-        Contact0,Contact1,Touch,Exact,
-        /// <summary>ボールの中心を、今の接触点の下の月 / 上の月の理想の面に置く(ボールの半分がその月に埋まる)。</summary>
-        BuryLower,BuryUpper,
-        /// <summary>論理ニアクリップのプリセットを、一段細かく(7)/ 粗く(8)。原子サイズの VG の球へテレポート(9)。</summary>
-        ScaleFiner,ScaleCoarser,TeleportAtom,
-        /// <summary>今の接触点の隙間を小さく / 大きく(1mm。Shift で 10mm、Ctrl で 0.1mm)、初期化。</summary>
-        GapDown,GapUp,Reset,
+        /// <summary>ボールを 4 面の角(原点)へ置く。</summary>
+        Corner,
+        /// <summary>選ぶ面を次の面へ(VG → Standard100Km → Standard1000Km → 手動分割 → VG)。</summary>
+        SelectFace,
+        /// <summary>ボールの中心を、選んだ面の高さに置く(ボールの半分がその面に埋まる)。</summary>
+        Bury,
+        /// <summary>見ている点(camera の中心線と選んだ面の交点)へ、ボールを選んだ面の高さに置く。</summary>
+        BuryAim,
+        /// <summary>ドリブルの開始 / 停止(キー 4)。</summary>
+        Dribble,
+        /// <summary>操作パネル(HUD とボタン)を隠す / 出す(キー H)。</summary>
+        Panel,
+        /// <summary>論理ニアクリップのプリセットを、一段細かく(7)/ 粗く(8)。</summary>
+        ScaleFiner,ScaleCoarser,
+        /// <summary>選んだ面の高さを下げる / 上げる(1mm。Shift で 10mm、Ctrl で 0.1mm)。</summary>
+        FaceDown,FaceUp,
+        /// <summary>初期化。</summary>
+        Reset,
     }
 
     /// <summary>
@@ -91,17 +101,16 @@ namespace VirtualGeometry.Omni{
                 case MoonTripleKey.Frame:return keyboard.cKey;
                 case MoonTripleKey.ZoomIn:return keyboard.homeKey;
                 case MoonTripleKey.ZoomOut:return keyboard.endKey;
-                case MoonTripleKey.Contact0:return keyboard.digit1Key;
-                case MoonTripleKey.Contact1:return keyboard.digit2Key;
-                case MoonTripleKey.Touch:return keyboard.digit3Key;
-                case MoonTripleKey.Exact:return keyboard.digit4Key;
-                case MoonTripleKey.BuryLower:return keyboard.digit5Key;
-                case MoonTripleKey.BuryUpper:return keyboard.digit6Key;
+                case MoonTripleKey.Corner:return keyboard.digit1Key;
+                case MoonTripleKey.SelectFace:return keyboard.digit2Key;
+                case MoonTripleKey.BuryAim:return keyboard.digit3Key;
+                case MoonTripleKey.Dribble:return keyboard.digit4Key;
+                case MoonTripleKey.Panel:return keyboard.hKey;
+                case MoonTripleKey.Bury:return keyboard.digit5Key;
                 case MoonTripleKey.ScaleFiner:return keyboard.digit7Key;
                 case MoonTripleKey.ScaleCoarser:return keyboard.digit8Key;
-                case MoonTripleKey.TeleportAtom:return keyboard.digit9Key;
-                case MoonTripleKey.GapDown:return keyboard.leftBracketKey;
-                case MoonTripleKey.GapUp:return keyboard.rightBracketKey;
+                case MoonTripleKey.FaceDown:return keyboard.leftBracketKey;
+                case MoonTripleKey.FaceUp:return keyboard.rightBracketKey;
                 case MoonTripleKey.Reset:return keyboard.rKey;
             }
             return null;

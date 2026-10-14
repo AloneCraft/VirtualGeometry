@@ -3,7 +3,6 @@ using System.Globalization;
 using Unity.Mathematics;
 using UnityEngine;
 using VirtualGeometry.World;
-using CosmicPlanetSurface=Omni.CosmicScale.CosmicPlanetSurface;
 using RadialCamera=Omni.RadialCamera;
 using LogicalQuaternion=Omni.Logical.Quaternion;
 using LogicalScalar=Omni.Logical.Scalar;
@@ -13,22 +12,14 @@ using LogicalVector3=Omni.Logical.Vector3;
 
 namespace VirtualGeometry.Omni{
     /// <summary>
-    /// 3 つの月を y 軸(上向き)に積んで 1 点で接触させ、接触点にサッカーボールを置いて、面の位置の誤差(食い込み)を見るデモ(Omni の Radial 対数描画)。
-    /// 3 つの月は、描き方が違う: 下から、方式 1 = 単純な巨大化(普通の月)、方式 2 = VG(VG の月 A)、方式 3 = PlanetSurface(Omni の分割した地面。月 B)。
-    /// 普通の月は、単位球のメッシュ(CosmicScale の CosmicSphere)を直径 2R(R = 1,737.4 km)に拡大した 1 つの物体。物体空間の float の分解能が 0.2 m 前後になり、面の位置・深度が量子化される
-    /// (Omni の COSMIC-PRECISION-001)。VG の月は <see cref="PlanetTerrainSource"/> の cube-sphere の Cell で、Cell の原点は Logical、頂点は Cell の原点からの相対位置なので、誤差は mm 以下。
-    /// PlanetSurface の月は、Omni の PlanetSurfaceLod(カメラに追従して cube-sphere を分割するパッチ)で、頂点はパッチの中心からの差で持つ。
-    /// 接触点では 2 つの面が接平面(y 一定)に接し、接触点から距離 d 離れると、面の間の幅は d²/R ほど開く。ボール(半径 0.11 m)は接触点では両側の面に食い込み、
-    /// 幅が 0.22 m になる距離(<see cref="MoonTripleLayout.TouchDistance"/>、約 618 m)で両側の面に接する。片方の面が y 方向に δ ずれていると、この距離が変わる。
-    /// camera は自由に飛べる(位置と向きを独立に持つ)。ボールは接触点からの 0.1mm 単位のずれで動き、camera はボールに付いて動かない(C でボールに向け直す)。
-    /// 位置はすべて Logical のまま計算する。テレポートと隙間の変更は IMGUI のボタン(<see cref="TeleportTo"/>、<see cref="AdjustGap"/>)。
-    /// この component は camera の GameObject(Logical.Transform と RadialCamera を持つ)に付ける。
-    /// 操作(Input System): ↑↓ ボールを y(上の月/下の月へ)、←→ x、PageUp/PageDown z(Shift で 10 倍、Ctrl で 1/10)、
-    ///   W S A D 前後左右に飛ぶ、Q E 上下、Home End とホイール 向いている方向へ、右ドラッグ 向き、C ボールに向け直す、
-    ///   1 接触点 0 へ 2 接触点 1 へ(ボールが両側の面に接する距離)、3 接触点そのもの、[ ] 今の接触点の隙間を 1mm 小さく/大きく、R 初期化
+    /// 4 枚の平面(角が原点で接する)に、サッカーボールを置いて、面の高さのずれを見るデモ(Omni の Radial 対数描画)。
+    /// 4 枚は、VG の面(<see cref="PlanarTerrainSource"/>、一辺 1000 km)、Standard100Km(10 m の Plane を 10^4 倍)、Standard1000Km(10 m の Plane を 10^5 倍)、
+    /// 手動分割 1000m(10 m の Plane を 100×100 枚並べた面)。すべて y=0 に置き、角(x=0, z=0)で接する(<see cref="MoonTripleLayout"/>)。
+    /// 操作: 面を選び(2)、その面の高さを 1mm ずつ動かす([ ])。ボールは 1(原点へ)、5(選んだ面の高さに置く = 半分埋まる)。
+    /// 位置はすべて Logical で計算する。この component は camera の GameObject(Logical.Transform と RadialCamera を持つ)に付ける。
     /// </summary>
-    // [ExecuteAlways]: Play を止めた Edit Mode でも、Play 開始と同じ絵(接触点 0、ボールと camera の既定の視点)を Game View に出す。
-    // Edit Mode では、初期化と配置(Logical の位置・倍率・camera)だけを行い、キー・ボタンの操作とテレポートは Play のときだけ(Update の先頭と OnGUI で止める)。
+    // [ExecuteAlways]: Play を止めた Edit Mode でも、Play 開始と同じ絵(ボールと camera の既定の視点)を Game View に出す。
+    // Edit Mode では、初期化と配置(Logical の位置・倍率・camera)だけを行い、キー・ボタンの操作は Play のときだけ(Update の先頭と OnGUI で止める)。
     [ExecuteAlways]
     [DisallowMultipleComponent]
     public sealed class MoonTripleDemo:MonoBehaviour{
@@ -38,125 +29,118 @@ namespace VirtualGeometry.Omni{
         public const float FrameDistance=0.35f;
         /// <summary>飛ぶ速さ(m/s)。Shift で 10 倍、Ctrl で 1/10。</summary>
         public const double FlySpeed=0.3;
-        // 先読みの待ち時間(frame)。これを超えたら準備ができていなくても移る。
-        private const int PrefetchLimit=900;
-        /// <summary>論理ニアクリップのプリセット(m)。通常(0.03)、1 mm、1 µm、1 nm、10 pm。camera の Near は 0.3 のままで、View Scale M = 0.3 ÷ 論理 near にする(<c>RadialCamera.SetViewScale</c>)。</summary>
+        /// <summary>論理ニアクリップのプリセット(m)。通常(0.03)、1 mm、1 µm、1 nm、10 pm。camera の Near は 0.3 のままで、View Scale M = 0.3 ÷ 論理 near にする。</summary>
         public static readonly double[] ScaleNearMeters={0.03,1e-3,1e-6,1e-9,1e-11};
         public static readonly string[] ScaleNames={"通常 0.03 m","1 mm","1 µm","1 nm","10 pm"};
+        /// <summary>面の呼び名(<see cref="MoonTripleFace"/> の順)。</summary>
+        public static readonly string[] FaceNames={"VG の面","Standard100Km","Standard1000Km","手動分割 1000m"};
         /// <summary>
-        /// 画面(HUD・ボタン)に出す、3 つの面の呼び名(平らに見える面を「月」と呼ぶと球と誤解されるため、「面」と呼ぶ)。
-        /// 方式 1 = 分割しない面(単位球メッシュを拡大した 1 つの物体)、方式 2 = VG の面(VG の Cell)、方式 3 = 手動分割した面(Omni の PlanetSurface。カメラの距離で分割するパッチ)。
+        /// 面の色(材質の _BaseColor。MoonTripleSceneBuilder がシーン生成時に保存する)。画面の見出しも同じ色相にする。赤系にしないのは、ボールの赤い線の検出(赤さ = r − (g+b)/2)に、面の色が混ざらないようにするため。
         /// </summary>
-        public const string NameScaled="分割しない面";
-        public const string NameVg="VG の面";
-        public const string NameSplit="手動分割した面";
-        /// <summary>方式ごとの面の色: 分割しない面 = 青、VG の面 = 緑、手動分割した面 = 紫(材質の _BaseColor。MoonTripleSceneBuilder がシーン生成時に保存する)。画面の見出し・HUD の名前も同じ色相にする。赤系にしないのは、ボールの赤い線の検出(赤さ = r − (g+b)/2)に、面の色が混ざらないようにするため。</summary>
-        public static readonly Color ColorScaled=new Color(0.25f,0.40f,0.75f,1);
-        public static readonly Color ColorVg=new Color(0.30f,0.60f,0.25f,1);
-        public static readonly Color ColorSplit=new Color(0.62f,0.36f,0.72f,1);
-        /// <summary>面 body(0 = 分割しない面、1 = VG の面、2 = 手動分割した面)の呼び名。</summary>
-        public static string SurfaceName(int body){return body==0?NameScaled:(body==1?NameVg:NameSplit);}
-        /// <summary>接触点 contact(0 = 分割しない面と VG の面、1 = VG の面と手動分割した面)の、下の面・上の面の呼び名。</summary>
-        public static string LowerSurfaceName(int contact){return SurfaceName(contact);}
-        public static string UpperSurfaceName(int contact){return SurfaceName(contact+1);}
-        // 画面の文字に使う色(材質の色は暗いので、白へ寄せる)。リッチテキストの <color=#RRGGBB>。
-        private static Color BodyColor(int body){return body==0?ColorScaled:(body==1?ColorVg:ColorSplit);}
-        private static Color UiColor(int body){return Color.Lerp(BodyColor(body),Color.white,0.4f);}
-        private static string Tint(int body){return Tint(SurfaceName(body),body);}
-        private static string Tint(string text,int body){return "<color=#"+ColorUtility.ToHtmlStringRGB(UiColor(body))+">"+text+"</color>";}
+        public static readonly Color[] FaceColors={new Color(0.30f,0.60f,0.25f,1),new Color(0.25f,0.40f,0.75f,1),new Color(0.55f,0.55f,0.55f,1),new Color(0.62f,0.36f,0.72f,1)};
         /// <summary>ボールの点光源の強さ(Omni の面は <c>_CosmicBallLight</c>、VG の面は <c>_PlanetBallLight</c> の w)。減衰は 1 / (1 + (d / 0.4 m)²)。0 で消す。</summary>
         public const float BallLightIntensity=0.35f;
         private static readonly int CosmicBallLightId=Shader.PropertyToID("_CosmicBallLight");
         private static readonly int PlanetBallLightId=Shader.PropertyToID("_PlanetBallLight");
-        /// <summary>「半分を埋める」で、ボールを置く、接触点からの横の距離(m)。隙間が約 1.3 m で、ボールと camera が入る。</summary>
-        public const double BuryLateralMeters=1500;
-        // 「半分を埋める」を押した位置の、2 つの面の間の幅(m)がこれ未満なら、BuryLateralMeters へ移してから埋める(接触点の近くでは、上下の面の高さがほぼ同じで、埋められない)。
-        private const double BuryMinimumWidthMeters=0.5;
-        /// <summary>通常の論理 near(m)。飛ぶ速さ・ホイールの量は、論理 near のこの比に比例する(原子の近くでは小さな動きにする)。</summary>
+        /// <summary>
+        /// VG の面の細かさ(<see cref="PlanarTerrainSource.TargetPixels"/>。大きいほど粗く、選ぶ Cell が減る)。Editor で、カメラを水平に向けたときの実測(Game View 最大化): 2 = 約 500 個の Cell で VG の面だけで約 14 ms、
+        /// 6 = 270 個で 57 fps、12 = 144 個で 76 fps、24 = 83 個で 88 fps。面は平らなので、粗くしても形は変わらない(最大階層 17 は変えない)。
+        /// MoonTripleSceneBuilder も、この値を VG の面の設定に書く。
+        /// </summary>
+        public const float VgTargetPixels=16f;
+        /// <summary>通常の論理 near(m)。飛ぶ速さ・ホイールの量は、論理 near のこの比に比例する。</summary>
         public const double DefaultNearMeters=0.03;
-        /// <summary>原子へのテレポートで、原子の中心から camera までの距離(原子の半径の倍数)。</summary>
-        public const double AtomFrameRadii=4;
-        // Omni の CosmicPlanetLit(ボール・月)は URP のライトを使わず、_CosmicKeyLight(画面に向かう光の向き、強さ)で照らす。
-        // 向きは MoonTripleSceneBuilder の太陽(travel = (-0.7, -0.55, -0.25))の逆(光は +x 側の斜め上から。ボールの影が、camera の既定の向き(+z 側からボールを見る)で、ボールの横に見える)、強さは太陽の 1.3。
+        /// <summary>camera の Near の設定値(m)。論理 near を変えても 0.3 のまま(View Scale M = この値 ÷ 論理 near)。</summary>
+        public const float DefaultCameraNearMeters=0.3f;
+        /// <summary>面の高さを 1 回で動かす量(0.1mm 単位。10 = 1 mm)。</summary>
+        private const long FaceStepUnits=10;
+        // Omni の CosmicPlanetLit(ボール)は URP のライトを使わず、_CosmicKeyLight(画面に向かう光の向き、強さ)で照らす。
+        // 向きは MoonTripleSceneBuilder の太陽(travel = (-0.7, -0.55, -0.25))の逆、強さは太陽の 1.3。VG の面にも同じ値を渡す(_PlanetKeyLight)。
         private static readonly int CosmicKeyLightId=Shader.PropertyToID("_CosmicKeyLight");
-        private static readonly Vector4 CosmicKeyLight=new Vector4(0.7f,0.55f,0.25f,1.3f);
-        // VG の面(RadialMoonGrid)の照明にも同じ向き・強さを渡す(_PlanetKeyLight)。Omni の面と同じ式で照らして、方式を入れ替えたときの差に光の違いが混ざらないようにする。
         private static readonly int PlanetKeyLightId=Shader.PropertyToID("_PlanetKeyLight");
+        private static readonly Vector4 KeyLight=new Vector4(0.7f,0.55f,0.25f,1.3f);
 
         [SerializeField] private MoonTripleLayout layout=MoonTripleLayout.Default;
-        [SerializeField] private GameObject plainMoon;
-        [SerializeField] private PlanetTerrainSource moonA;
-        // 月 B は方式 3(PlanetSurface。Omni の分割した地面)。
-        [SerializeField] private CosmicPlanetSurface moonB;
-        // ボールは Omni のサッカーボール(通常の MeshRenderer、CosmicPlanetLit。VG ではない)。
+        // 4 枚の面の根(MoonTripleFace の順)。VG と Standard は、この物体が Logical の面。手動分割は、子の 10,000 枚が Logical の面(子の順が TileCenter の (i, j))。
+        [SerializeField] private GameObject[] faces=new GameObject[4];
+        // ボール(Omni のサッカーボール。通常の MeshRenderer、CosmicPlanetLit)。
         [SerializeField] private GameObject ball;
-        // 原子サイズ(半径 1e-10 m)の VG の球。月 A と同じ PlanetTerrainSource の処理で描く(無ければ、原子の機能は使えない)。
-        [SerializeField] private PlanetTerrainSource atom;
         [SerializeField] private bool showHud=true;
 
-        private LogicalTransform plainLogical,aLogical,bLogical,ballLogical,cameraLogical,atomLogical;
+        private PlanarTerrainSource vg;
+        private LogicalTransform ballLogical,cameraLogical;
+        // 面ごとの Logical の物体(手動分割は 10,000 枚)。Initialize で集める。
+        private LogicalTransform[][] faceLogical;
         private RadialCamera radial;
         private Camera unityCamera;
         // 論理ニアクリップのプリセットの番号(<see cref="ScaleNearMeters"/>)。
         private int scalePreset;
-        // camera を原子の周りに置いているか(C でボールではなく原子に向け直す)。
-        private bool atomView;
-        private bool pendingAtom;
-        // 「半分を埋める」の待ち(0 = なし、1 = 下の月、2 = 上の月)。接触点から離れた位置へ移すとき、先読みが済んでから埋める。
-        private int pendingBury;
-        // 「半分を埋める」で最後に行ったことの説明(HUD に 1 行出す)。他のテレポートで消える。
-        private string buryNote;
+        // 選んでいる面(<see cref="MoonTripleFace"/> の番号)と、各面の高さのずれ(0.1mm 単位)。
+        private int selectedFace;
+        private readonly long[] faceOffsetUnits=new long[4];
         // camera の Near の実測を、描画の外(Update)で見た結果(OnGUI で読むと、Omni が描画中に書き換えた値が読めて、誤警告になる)。
         private bool cameraNearSampled;
         private bool cameraNearWarned;
         private bool initialized;
         private string failure;
-        private int contact;
-        // ボールの接触点からのずれ(0.1mm 単位の整数): x=+x 方向、y=上向き(上の月へ)、z=+z 方向。
+        // ボールの中心の、原点からのずれ(0.1mm 単位の整数): x=+x 方向、y=上向き、z=+z 方向。
         private long offsetX,offsetY,offsetZ;
-        private long gap01Units,gap12Units;
         private float cameraYaw=180f,cameraPitch=10f;
         private Quaternion cameraRotation=Quaternion.identity;
         private double3 cameraPosition;
-        // テレポートの待ち(先読みが終わるまで、今の状態のまま)。
-        private bool pending;
-        private int pendingFrames;
-        private int pendingContact;
-        private long pendingX,pendingY,pendingZ;
         private float repeatX,repeatY,repeatZ;
+        private float repeatFace;
+        // 見ている点へ埋めたときの結果(<see cref="BuryAtAim"/>)。
+        private string aimNote;
+        // ドリブル(ボールの高さの動き)。中は、ボールの前後左右をカメラの前 FrameDistance に固定する。
+        // ドリブルは Unity の物理エンジン(独立した物理シーン)で動かす。物理シーンは、最初に始めたときに作る。
+        private readonly MoonTripleDribble dribble=new MoonTripleDribble();
+        // ドリブルの速さの倍率(1 = 普通。小さいほどゆっくり)。
+        private float dribbleSpeed=1f;
+        // ボタンと説明の背景の高さ(前の描画で求めた値)。
+        private float controlsHeight=560f;
+        // 操作パネル(HUD とボタン)を出しているか(キー H)。
+        private bool showPanel=true;
+        // HUD の文字(0.1 秒ごとに作り直す)と、その高さ・幅・次に作り直す時刻。
+        private const float HudRefreshSeconds=0.1f;
+        private string hudText;
+        private float hudHeight;
+        private float hudWidthUsed;
+        private float hudRefreshTime;
         private GUIStyle style;
+        private GUIStyle noteStyle;
         private GUIStyle buttonStyle;
         private IMoonTripleKeys keys=MoonTripleKeyboard.Instance;
 
         public bool IsInitialized=>this.initialized;
         public string Failure=>this.failure;
         public MoonTripleLayout Layout=>this.layout;
-        public int ContactIndex=>this.contact;
+        public int SelectedFace=>this.selectedFace;
         public long OffsetX=>this.offsetX;
         public long OffsetY=>this.offsetY;
         public long OffsetZ=>this.offsetZ;
-        public long Gap01Units=>this.gap01Units;
-        public long Gap12Units=>this.gap12Units;
+        /// <summary>面の高さのずれ(0.1mm 単位)。</summary>
+        public long FaceOffsetUnits(int face){return this.faceOffsetUnits[face];}
         public float CameraYaw=>this.cameraYaw;
         public float CameraPitch=>this.cameraPitch;
         public Quaternion CameraRotation=>this.cameraRotation;
         public double3 CameraPosition=>this.cameraPosition;
-        /// <summary>テレポートの先読みを待っている間は true。</summary>
-        public bool IsPending=>this.pending;
-        public GameObject PlainMoon{get=>this.plainMoon;set=>this.plainMoon=value;}
-        public PlanetTerrainSource MoonA{get=>this.moonA;set=>this.moonA=value;}
-        public CosmicPlanetSurface MoonB{get=>this.moonB;set=>this.moonB=value;}
+        /// <summary>ドリブル中か。</summary>
+        public bool IsDribbling=>this.dribble.Running;
+        /// <summary>ドリブルの速さの下限(倍率)。</summary>
+        public const float MinimumDribbleSpeed=0.05f;
+        /// <summary>ドリブルの速さの倍率(1 = 普通、小さいほどゆっくり)。時間の進みだけを変えるので、最高の高さ 1 m は変わらない。<see cref="MinimumDribbleSpeed"/> 〜 1 に収める。</summary>
+        public float DribbleSpeed{
+            get=>this.dribbleSpeed;
+            set=>this.dribbleSpeed=Mathf.Clamp(value,MinimumDribbleSpeed,1f);
+        }
+        public GameObject[] Faces{get=>this.faces;set=>this.faces=value;}
         public GameObject Ball{get=>this.ball;set=>this.ball=value;}
-        public PlanetTerrainSource Atom{get=>this.atom;set=>this.atom=value;}
         /// <summary>論理ニアクリップのプリセットの番号。</summary>
         public int ScalePreset=>this.scalePreset;
-        /// <summary>camera を原子の周りに置いているか。</summary>
-        public bool IsAtomView=>this.atomView;
         /// <summary>飛ぶ速さ・ホイールの量にかける倍率 = 今の論理 near ÷ 通常の論理 near。</summary>
         public double ScaleFactor=>ScaleNearMeters[this.scalePreset]/DefaultNearMeters;
-        /// <summary>
-        /// 論理 near を Omni から読み戻した値(m)。<see cref="RadialCamera.EffectiveNearClip"/>。読めなければ NaN。
-        /// </summary>
+        /// <summary>論理 near を Omni から読み戻した値(m)。読めなければ NaN。</summary>
         public double LogicalNearMeters{
             get{
                 if(this.radial==null){return double.NaN;}
@@ -166,8 +150,6 @@ namespace VirtualGeometry.Omni{
         }
         /// <summary>View Scale M の log2 を Omni から読み戻した値。</summary>
         public float LogicalLog2ViewScale{get{if(this.radial==null){return float.NaN;}return this.radial.EffectiveLog2ViewScale;}}
-        /// <summary>camera の設定の Near(m)。MoonTripleSceneBuilder が設定する値で、プリセットを変えても 0.3 のまま。View Scale M = この値 ÷ 論理 near。</summary>
-        public const float DefaultCameraNearMeters=0.3f;
         /// <summary>
         /// 今の <c>Camera.nearClipPlane</c>(m)。Omni は描画中にこの値を写像後の値(log2(1+0.3) ≒ 0.378)へ書き換えて、描画後に戻すので、
         /// 描画の外で読めば <see cref="DefaultCameraNearMeters"/> のはず。違うときは、戻し漏れ(描画の例外など)の手がかり。
@@ -175,14 +157,17 @@ namespace VirtualGeometry.Omni{
         public float CameraNearPlane{get{if(this.unityCamera==null){return float.NaN;}return this.unityCamera.nearClipPlane;}}
         /// <summary><see cref="CameraNearPlane"/> が設定の Near と違うか(描画の途中の値が残っている)。</summary>
         public bool CameraNearRewritten{get{return !float.IsNaN(this.CameraNearPlane)&&Mathf.Abs(this.CameraNearPlane-DefaultCameraNearMeters)>1e-4f;}}
-        /// <summary>camera から原子の中心までの距離(m)。原子が無ければ NaN。</summary>
-        public double DistanceToAtom{get{if(this.atom==null){return double.NaN;}return math.length(this.cameraPosition-this.layout.AtomCenter);}}
         /// <summary>キーの入力元(既定は Input System。null を入れると既定に戻る)。</summary>
         public IMoonTripleKeys Keys{
             get=>this.keys;
             set{
                 if(value==null){this.keys=MoonTripleKeyboard.Instance;}else{this.keys=value;}
             }
+        }
+
+        // ドリブルの物理シーンを片付ける。
+        private void OnDestroy(){
+            this.dribble.Dispose();
         }
 
         private void OnEnable(){
@@ -197,7 +182,7 @@ namespace VirtualGeometry.Omni{
             UnityEditor.EditorApplication.update-=this.EditModeTick;
         }
 
-        // Edit Mode の更新(EditorApplication.update): 初期化(配置、_CosmicKeyLight、基準点)と、camera・ボールの配置を、1 回ずつ行う。
+        // Edit Mode の更新(EditorApplication.update): 初期化(配置、_CosmicKeyLight)と、camera・ボールの配置を、1 回ずつ行う。
         // その後は、VG の Cell の生成が進むよう、数 tick に 1 回、プレイヤーループと全 View の再描画を要求する(Edit Mode では Time.frameCount が進まず、生成が止まりやすい)。
         // シーンの dirty は、配置の書き込み(Logical.Transform の SyncUnityTransform)で立つので、Edit Mode の更新のたびに元へ戻す(開いただけで「保存しますか」と聞かれないように)。
         private int editModeTicks;
@@ -231,7 +216,7 @@ namespace VirtualGeometry.Omni{
 #endif
 
         private void Update(){
-            // Edit Mode(ExecuteAlways)の Update では、キー入力・テレポート待ちを動かさない(初期化と配置は EditModeTick が行う)。
+            // Edit Mode(ExecuteAlways)の Update では、キー入力を動かさない(初期化と配置は EditModeTick が行う)。
             if(!Application.isPlaying){return;}
             this.SampleCameraNear();
             if(this.initialized&&!this.MoonsReady()){
@@ -243,12 +228,12 @@ namespace VirtualGeometry.Omni{
                 if(!this.Initialize()){return;}
             }
             this.ReadKeys();
-            this.UpdatePending();
+            this.UpdateDribble(Time.deltaTime);
             this.Apply();
         }
 
-        // Camera.nearClipPlane を、描画の外(Update)で見る。OnGUI で読むと、Omni が描画中に書き換えた値が読めて、誤警告になる(Editor の HUD で 0.37 が読めた)。
-        // Update でも設定の 0.3 と違えば、Omni の書き換えが戻っていない(描画の例外など)ので、初回だけ Console に警告を出す(原因調査の手がかり)。
+        // Camera.nearClipPlane を、描画の外(Update)で見る。OnGUI で読むと、Omni が描画中に書き換えた値が読めて、誤警告になる。
+        // Update でも設定の 0.3 と違えば、Omni の書き換えが戻っていない(描画の例外など)ので、初回だけ Console に警告を出す。
         private void SampleCameraNear(){
             if(this.unityCamera==null){return;}
             this.cameraNearSampled=this.CameraNearRewritten;
@@ -258,199 +243,216 @@ namespace VirtualGeometry.Omni{
             }
         }
 
-        /// <summary>方式 2(VG の月)の Selector と、方式 3(手動分割した月。Omni の PlanetSurface)の分割した地面が使える状態か。</summary>
+        /// <summary>VG の面の Selector が使える状態か(面の物体が揃っているか)。</summary>
         public bool MoonsReady(){
-            if(this.atom!=null&&this.atom.Selector==null){return false;}
-            return this.moonA!=null&&this.moonB!=null&&this.moonA.Selector!=null&&this.moonB.Lod!=null;
+            if(this.faces==null||this.faces.Length!=4){return false;}
+            for(int i=0;i<this.faces.Length;i++){
+                if(this.faces[i]==null){return false;}
+            }
+            PlanarTerrainSource source=this.faces[(int)MoonTripleFace.Vg].GetComponent<PlanarTerrainSource>();
+            return source!=null&&source.Selector!=null;
         }
 
-        /// <summary>3 つの月を置き、ボールと camera を接触点 0 へ置く。VG の月 A の Selector と PlanetSurface の月 B の分割した地面が使えるようになってから呼ぶ。</summary>
+        /// <summary>4 枚の面とボールと camera を置く。VG の面の Selector が使えるようになってから呼ぶ。</summary>
         public bool Initialize(){
             this.initialized=false;
-            if(this.plainMoon==null||this.moonA==null||this.moonB==null||this.ball==null){return this.Fail("分割しない面・VG の面・手動分割した面・ボールが必要です。");}
-            // PlanetSurface の月 B は 1 フレーム 1 段ずつ分割する。予算が残る限り同じフレームで次の分割まで続け、要求の階層(最大 20)へ早く届かせる。
-            this.moonB.Lod.FastRefinement=true;
-            this.plainLogical=this.plainMoon.GetComponent<LogicalTransform>();
-            this.aLogical=this.moonA.GetComponent<LogicalTransform>();
-            this.bLogical=this.moonB.GetComponent<LogicalTransform>();
+            if(!this.MoonsReady()||this.ball==null){return this.Fail("4 枚の面とボールが必要です。");}
+            this.vg=this.faces[(int)MoonTripleFace.Vg].GetComponent<PlanarTerrainSource>();
+            this.vg.TargetPixels=VgTargetPixels;
             this.ballLogical=this.ball.GetComponent<LogicalTransform>();
             this.cameraLogical=this.GetComponent<LogicalTransform>();
-            if(this.plainLogical==null||this.aLogical==null||this.bLogical==null||this.ballLogical==null||this.cameraLogical==null){
-                return this.Fail("3 つの面・ボール・camera に Omni の Logical.Transform が必要です。");
-            }
-            if(this.atom!=null){
-                this.atomLogical=this.atom.GetComponent<LogicalTransform>();
-                if(this.atomLogical==null){return this.Fail("原子の VG の球に Omni の Logical.Transform が必要です。");}
+            if(this.ballLogical==null||this.cameraLogical==null){return this.Fail("ボールと camera に Omni の Logical.Transform が必要です。");}
+            // 面ごとの Logical を集める。手動分割は子の 10,000 枚(子の順が (i, j))、それ以外は根の物体。
+            this.faceLogical=new LogicalTransform[4][];
+            for(int f=0;f<4;f++){
+                if(f==(int)MoonTripleFace.Manual){
+                    int count=this.faces[f].transform.childCount;
+                    this.faceLogical[f]=new LogicalTransform[count];
+                    for(int k=0;k<count;k++){
+                        this.faceLogical[f][k]=this.faces[f].transform.GetChild(k).GetComponent<LogicalTransform>();
+                        if(this.faceLogical[f][k]==null){return this.Fail("手動分割の 1 枚に Omni の Logical.Transform が必要です。");}
+                    }
+                }else{
+                    this.faceLogical[f]=new[]{this.faces[f].GetComponent<LogicalTransform>()};
+                    if(this.faceLogical[f][0]==null){return this.Fail(FaceNames[f]+" に Omni の Logical.Transform が必要です。");}
+                }
             }
             // 論理ニアクリップの切り替えは、camera の RadialCamera に SetViewScale で行う(camera の Near は 0.3 のまま)。
             this.radial=this.GetComponent<RadialCamera>();
             this.unityCamera=this.GetComponent<Camera>();
             if(this.radial==null||this.unityCamera==null){return this.Fail("camera に RadialCamera と Camera が必要です。");}
-            this.atomView=false;this.pendingAtom=false;
+            this.selectedFace=0;
+            this.dribble.Stop();
+            Array.Clear(this.faceOffsetUnits,0,this.faceOffsetUnits.Length);
             this.SetScalePreset(0);
-            this.gap01Units=0;this.gap12Units=0;
-            this.layout.Gap01=0;this.layout.Gap12=0;
-            this.WriteKeyLight(false);
+            this.WriteKeyLight();
             // ボールの直径(Omni の CosmicSphere は直径 1 の単位球なので、直径 2·BallRadius へ拡大する)。
             if(!LogicalScalar.TryFromDouble(2*MoonTripleLayout.BallRadius,out LogicalScalar ballDiameter)){return this.Fail("ボールの大きさを Logical にできません。");}
             this.ballLogical.LocalScale=new LogicalVector3(in ballDiameter,in ballDiameter,in ballDiameter);
             this.ballLogical.SyncUnityTransform();
-            if(!this.ApplyLayout()){return false;}
+            this.ApplyFaces();
             this.initialized=true;
-            this.SetState(0,0,0,(long)Math.Round(this.layout.TouchDistance(0)/UnitMeters),180f,10f,0.35f);
-            return this.failure==null;
-        }
-
-        // 月の位置と、VG の月の格子の基準点・軸。接触点 0、1 の位置は隙間で変わる。
-        private bool ApplyLayout(){
-            this.layout.Gap01=this.gap01Units*UnitMeters;this.layout.Gap12=this.gap12Units*UnitMeters;
-            double radius=this.layout.Radius;
-            if(!(radius>0)){return this.Fail("面の元の球の半径は正である必要があります。");}
-            if(this.moonA.Radius!=(float)radius||Math.Abs(this.moonB.RadiusMeters-radius)>1e-6*radius){
-                return this.Fail("面の元の球の半径(VG の面 "+this.moonA.Radius.ToString("G7",CultureInfo.InvariantCulture)+" m、手動分割した面 "+this.moonB.RadiusMeters.ToString("G7",CultureInfo.InvariantCulture)+" m)と、配置の半径("+radius.ToString("G7",CultureInfo.InvariantCulture)+" m)が違います。");
-            }
-            if(!LogicalScalar.TryFromDouble(2*radius,out LogicalScalar diameter)){return this.Fail("分割しない面の倍率を Logical にできません。");}
-            if(!TryFromDouble3(new double3(0,this.layout.CenterPlain,0),out LogicalVector3 plain)||!TryFromDouble3(new double3(0,this.layout.CenterA,0),out LogicalVector3 a)||
-                !TryFromDouble3(new double3(0,this.layout.CenterB,0),out LogicalVector3 b)){
-                return this.Fail("面の位置を Logical にできません。");
-            }
-            this.plainLogical.LocalScale=new LogicalVector3(in diameter,in diameter,in diameter);
-            this.plainLogical.LocalPosition=plain;
-            this.plainLogical.LocalRotation=LogicalQuaternion.Identity;
-            this.plainLogical.SyncUnityTransform();
-            this.aLogical.LocalPosition=a;this.aLogical.LocalRotation=LogicalQuaternion.Identity;this.aLogical.SyncUnityTransform();
-            this.bLogical.LocalPosition=b;this.bLogical.LocalRotation=LogicalQuaternion.Identity;this.bLogical.SyncUnityTransform();
-            if(this.atom!=null){
-                if(this.atom.Radius!=(float)MoonTripleLayout.AtomRadius){
-                    return this.Fail("原子の半径("+this.atom.Radius.ToString("G7",CultureInfo.InvariantCulture)+" m)と、配置の半径("+MoonTripleLayout.AtomRadius.ToString("G7",CultureInfo.InvariantCulture)+" m)が違います。");
-                }
-                // 原子の中心(x = z = 0.5 m、y = 接触点 0 の隙間の中央)。座標が 1 m 前後なので、camera の倍精度の刻み(1e-16 m)は原子の大きさ(1e-10 m)より十分小さい。
-                if(!TryFromDouble3(this.layout.AtomCenter,out LogicalVector3 atomCenter)){return this.Fail("原子の位置を Logical にできません。");}
-                this.atomLogical.LocalPosition=atomCenter;this.atomLogical.LocalRotation=LogicalQuaternion.Identity;this.atomLogical.SyncUnityTransform();
-            }
-            this.SetReferences();
-            return true;
+            this.offsetX=0;this.offsetY=0;this.offsetZ=0;
+            this.FrameBall(180f,10f,FrameDistance);
+            return this.Apply()&&this.failure==null;
         }
 
         /// <summary>
-        /// 論理ニアクリップのプリセットを選ぶ(<see cref="ScaleNearMeters"/>)。camera の Near(0.3 m)を論理 near で割った View Scale M を <c>RadialCamera.SetViewScale</c> に渡す。
-        /// 論理 near より手前は描かれず、VG の Cell の細分化も、この論理 near を下限にして画面誤差を計算する(OmniPlanetPlacement)ので、
-        /// 原子の頂点間隔(~1e-12 m)を描くには、論理 near を 1e-11 m 前後以下にする。
+        /// 4 枚の面を、大きさと位置(角を原点に接する)へ置く。Standard は一辺 N 倍(Logical の倍率)、VG と手動分割は倍率 1。
+        /// 面の高さのずれ(<see cref="faceOffsetUnits"/>)は、位置の y に足す。面の色と格子の値は MoonTripleSceneBuilder が材質に書いている。
         /// </summary>
+        private bool ApplyFaces(){
+            for(int f=0;f<4;f++){
+                var face=(MoonTripleFace)f;
+                double y=this.faceOffsetUnits[f]*UnitMeters;
+                double standardScale=this.layout.StandardScale(face);
+                double scale=standardScale>0?standardScale:1;
+                if(!LogicalScalar.TryFromDouble(scale,out LogicalScalar s)){return this.Fail(FaceNames[f]+" の倍率を Logical にできません。");}
+                LogicalTransform[] list=this.faceLogical[f];
+                for(int k=0;k<list.Length;k++){
+                    double3 center=face==MoonTripleFace.Manual?this.layout.TileCenter(k%this.layout.TilesPerSide,k/this.layout.TilesPerSide):this.layout.FaceCenter(face);
+                    if(!TryFromDouble3(new double3(center.x,center.y+y,center.z),out LogicalVector3 position)){return this.Fail(FaceNames[f]+" の位置を Logical にできません。");}
+                    list[k].LocalScale=new LogicalVector3(in s,in s,in s);
+                    list[k].LocalPosition=position;
+                    list[k].LocalRotation=LogicalQuaternion.Identity;
+                    list[k].SyncUnityTransform();
+                }
+            }
+            return true;
+        }
+
+        /// <summary>論理ニアクリップのプリセットを選ぶ(<see cref="ScaleNearMeters"/>)。camera の Near(0.3 m)を論理 near で割った View Scale M を、論理 near を直接代入して決める。</summary>
         public bool SetScalePreset(int index){
             if(this.radial==null||this.unityCamera==null){return false;}
             this.scalePreset=Math.Max(0,Math.Min(ScaleNearMeters.Length-1,index));
             // 論理 near を直接代入する(SetViewScale は camera.nearClipPlane を読むが、Omni は描画中にこの値を写像後の値(約 0.378)へ書き換えて描画後に戻すので、
-            // 描画の途中の値を読むと M がずれる)。論理 near を決めれば M(= camera の設定 Near ÷ 論理 near)は Omni が求める。
+            // 描画の途中の値を読むと M がずれる)。論理 near を決めれば M は Omni が求める。
             if(!LogicalScalar.TryFromDouble(ScaleNearMeters[this.scalePreset],out LogicalScalar near)){return false;}
             this.radial.nearClip=(LogicalScalarField)near;
             return true;
         }
 
-        // 格子の基準点は、今の接触点の、VG の月 A の面の点(月の中心からの位置)。格子の軸は接平面(x、z)。
-        // PlanetSurface の月 B は、格子の基準点を持たない(Omni の分割した地面が、カメラの位置から自分で分割する)。
-        private void SetReferences(){
-            double radius=this.layout.Radius;
-            // 接触点 0 では A の下端、接触点 1 では A の上端。
-            double ay=-radius;
-            if(this.contact==1){ay=radius;}
-            if(TryFromDouble3(new double3(0,ay,0),out LogicalVector3 aSpot)){this.moonA.SetReferencePoint(in aSpot);}
-            Material material=this.moonA.Material;
-            if(material!=null){
-                material.SetVector("_GridAxisU",new Vector4(1,0,0,0));
-                material.SetVector("_GridAxisV",new Vector4(0,0,1,0));
+        /// <summary>ドリブルを止め、ボールを 4 枚の角(原点)へ置き、camera を既定の向きで置く。</summary>
+        public void TeleportToCorner(){
+            if(!this.initialized){return;}
+            this.dribble.Stop();
+            this.offsetX=0;this.offsetY=0;this.offsetZ=0;
+            this.FrameBall(180f,10f,FrameDistance);
+        }
+
+        /// <summary>
+        /// ボールの中心の (x, z)(m)の下にある面の高さ(m)。面の境界(x=0 または z=0)の上では、いま操作している面。
+        /// 面の広がりは見ない(手動分割は一辺 1 km なので、その外では面が無いが、象限の面の高さを使う)。
+        /// </summary>
+        public double GroundHeight(double x,double z){
+            MoonTripleFace face=MoonTripleLayout.FaceAt(x,z,(MoonTripleFace)this.selectedFace);
+            return this.faceOffsetUnits[(int)face]*UnitMeters;
+        }
+
+        /// <summary>
+        /// ドリブル中の、ボールからカメラまでの水平の距離(m)。2.5 m(最高 1 m の跳ねが全部画面に入る)の 1/4。
+        /// 近いので、カメラの高さ <see cref="DribbleCameraHeight"/> を中心に、上下 ±0.29 m(視野角 50°)の外は画面に入らない(Q E でカメラの高さを変えられる)。
+        /// </summary>
+        public const double DribbleDistance=0.625;
+        /// <summary>ドリブルを始めるときの、カメラの高さ(地面から。m)。水平に向けて、地面から 1 m の高さまでが画面に入る。</summary>
+        public const double DribbleCameraHeight=0.6;
+
+        /// <summary>
+        /// ドリブルを始める。ボールは、いまの (x, z) の下の面の高さ(ボールの半分が埋まった高さ)から跳ね始める。
+        /// 跳ねるボールが画面に入るよう、カメラを、いまの向き(yaw)のまま、ボールから <see cref="DribbleDistance"/> 後ろ、地面から <see cref="DribbleCameraHeight"/> の高さへ置き、水平に向ける。
+        /// </summary>
+        public void StartDribble(){
+            if(!this.initialized){return;}
+            double x=this.offsetX*UnitMeters;
+            double z=this.offsetZ*UnitMeters;
+            double ground=this.GroundHeight(x,z);
+            this.dribble.Start(ground);
+            this.offsetY=(long)Math.Round(this.dribble.Height/UnitMeters);
+            this.aimNote=null;
+            double yaw=this.cameraYaw*Math.PI/180.0;
+            this.cameraPitch=0f;
+            this.cameraPosition=new double3(x-Math.Sin(yaw)*DribbleDistance,ground+DribbleCameraHeight,z-Math.Cos(yaw)*DribbleDistance);
+        }
+
+        /// <summary>ドリブルを止める(ボールはその場の高さで止まる)。</summary>
+        public void StopDribble(){
+            this.dribble.Stop();
+        }
+
+        /// <summary>ドリブルの開始 / 停止を切り替える。</summary>
+        public void ToggleDribble(){
+            if(this.dribble.Running){
+                this.StopDribble();
+            }else{
+                this.StartDribble();
             }
         }
 
-        /// <summary>
-        /// 接触点 index(0 = 普通の月(方式 1) - VG の月 A(方式 2)、1 = VG の月 A(方式 2) - PlanetSurface の月 B(方式 3))へテレポートする。touchRing が true なら、ボールが両側の面に接する距離(接触点から +z へ。camera は外側から接触点を向く)、false なら接触点そのもの。
-        /// 移動先の VG の月の Cell が生成されるまで(先読み)、今の状態のまま待つ。IMGUI のボタンとキーから同じ入口を使う。
-        /// </summary>
-        public void TeleportTo(int index,bool touchRing){
+        // ドリブル中だけ: ボールの (x, z) をカメラの前 DribbleDistance(向いている水平の方向)に置き、高さ y をドリブルで進める。
+        private void UpdateDribble(double seconds){
+            if(!this.dribble.Running){return;}
+            double yaw=this.cameraYaw*Math.PI/180.0;
+            double x=this.cameraPosition.x+Math.Sin(yaw)*DribbleDistance;
+            double z=this.cameraPosition.z+Math.Cos(yaw)*DribbleDistance;
+            this.dribble.Step(seconds*this.dribbleSpeed,this.GroundHeight(x,z));
+            this.offsetX=(long)Math.Round(x/UnitMeters);
+            this.offsetY=(long)Math.Round(this.dribble.Height/UnitMeters);
+            this.offsetZ=(long)Math.Round(z/UnitMeters);
+        }
+
+        /// <summary>ボールの中心を、選んだ面の高さに置く(今の横の位置 x、z のまま)。ボールの半分がその面に埋まり、赤い線(ボールの中心の高さ)と面の境界のずれが、面の高さの誤差になる。</summary>
+        public void BuryBall(){
             if(!this.initialized){return;}
-            this.pendingContact=Math.Max(0,Math.Min(1,index));
-            this.pendingX=0;this.pendingY=0;
-            this.pendingZ=0;
-            if(touchRing){this.pendingZ=(long)Math.Round(this.layout.TouchDistance(this.pendingContact)/UnitMeters);}
-            this.pendingAtom=false;this.pendingBury=0;
-            this.pending=true;this.pendingFrames=0;
+            this.offsetY=this.faceOffsetUnits[this.selectedFace];
+            this.FrameBall(180f,15f,FrameDistance);
         }
 
         /// <summary>
-        /// 原子サイズの VG の球(半径 1e-10 m)へテレポートする。移動先の Cell が生成されるまで(先読み)、今の状態のまま待ち、移るときに、論理ニアクリップを最小のプリセット(10 pm)にして、
-        /// camera を原子の中心から半径の 4 倍の距離に置く。ボールの側へ戻るテレポートは、論理 near を通常に戻す。
+        /// 見ている点へ埋める: camera の中心線と、選んだ面の高さの平面との交点へ、ボールの中心を置く(x、z は交点、y は選んだ面の高さ)。
+        /// camera は動かさないので、ボールは画面の中央に出る。下を見ていない、交点が camera の前に無い、交点が選んだ面の外のときは置かず、理由を <see cref="AimNote"/> に残す。
         /// </summary>
-        public void TeleportToAtom(){
-            if(!this.initialized||this.atom==null){return;}
-            this.pendingAtom=true;this.pendingBury=0;
-            this.pending=true;this.pendingFrames=0;
-        }
-
-        /// <summary>
-        /// ボールの中心を、今の接触点の下の月(lowerMoon)または上の月の、理想の球の面に置く(今の横の位置 x、z のまま)。ボールの半分がその月に埋まる。
-        /// ボールの赤道の線と、月の面の境界が一致すれば、その月の面は理想の位置にある。ずれが、面の高さの誤差になる。
-        /// </summary>
-        public void BuryBall(bool lowerMoon){
-            if(!this.initialized){return;}
-            double x=this.offsetX*UnitMeters;double z=this.offsetZ*UnitMeters;
-            double lateral=Math.Sqrt(x*x+z*z);
-            if(this.layout.WidthAt(this.contact,lateral)<BuryMinimumWidthMeters){
-                // 接触点の近くでは、上下の面の高さがほぼ同じで、ボールの半分を埋められない(接触点ちょうどでは y が動かない)。接触点から離れた位置へ移してから埋める。
-                // 移動先の VG の月の Cell が生成されるまで(先読み)待つ。
-                this.pendingContact=this.contact;
-                this.pendingX=0;this.pendingY=0;
-                this.pendingZ=(long)Math.Round(BuryLateralMeters/UnitMeters);
-                this.pendingAtom=false;
-                this.pendingBury=lowerMoon?1:2;
-                this.pending=true;this.pendingFrames=0;
-                return;
+        public bool BuryAtAim(){
+            if(!this.initialized){return false;}
+            double3 forward=ForwardOf(this.cameraYaw,this.cameraPitch);
+            if(forward.y>-1e-9){
+                this.aimNote="下を見ていないので、面との交点がありません(見下ろしてから押してください)";
+                return false;
             }
-            this.PlaceBury(lowerMoon);
-        }
-
-        // ボールの中心を、今の接触点の下の月(lowerMoon)または上の月の理想の面の高さに置き(今の横の位置のまま)、camera をボールの中心から FrameDistance、
-        // 下の月は 15 度見下ろし、上の月は 15 度見上げる位置に置く(yaw 180)。上の月の下面は太陽光の反対側を向いて暗いので、光を下から当てる。
-        private void PlaceBury(bool lowerMoon){
-            double x=this.offsetX*UnitMeters;double z=this.offsetZ*UnitMeters;
-            double lateral=Math.Sqrt(x*x+z*z);
-            double surface;
-            if(lowerMoon){surface=this.layout.LowerSurfaceY(this.contact,lateral);}else{surface=this.layout.UpperSurfaceY(this.contact,lateral);}
-            this.offsetY=(long)Math.Round((surface-this.layout.ContactY(this.contact))/UnitMeters);
-            this.atomView=false;
-            this.FrameBall(180f,lowerMoon?15f:-15f,FrameDistance);
-            this.SetKeyLightFromBelow(!lowerMoon);
-            string moon=lowerMoon?LowerSurfaceName(this.contact):UpperSurfaceName(this.contact);
-            this.buryNote="ボールの半分を「"+Tint(moon,lowerMoon?this.contact:this.contact+1)+"」に埋めました(接触点から "+lateral.ToString("N0",CultureInfo.InvariantCulture)+" m の位置。接触点の近くでは、上下の面の高さが同じで埋められないため、離れた位置で行います)";
-            this.Apply();
-        }
-
-        // 光の向き: 通常は上から。上の月の下面を見るときは下から(CosmicPlanetLit は _CosmicKeyLight で照らす)。
-        /// <summary>光の向き: 通常は上から。上の面の下面を見るときは下から(Omni の面・VG の面の両方)。</summary>
-        public void SetKeyLightFromBelow(bool fromBelow){this.WriteKeyLight(fromBelow);}
-
-        // 主光源の向き・強さを、Omni の面(_CosmicKeyLight)と VG の面(_PlanetKeyLight)に書く。
-        private void WriteKeyLight(bool fromBelow){
-            var light=new Vector4(CosmicKeyLight.x,fromBelow?-CosmicKeyLight.y:CosmicKeyLight.y,CosmicKeyLight.z,CosmicKeyLight.w);
-            Shader.SetGlobalVector(CosmicKeyLightId,light);
-            Shader.SetGlobalVector(PlanetKeyLightId,light);
-        }
-
-        /// <summary>接触点 index の隙間を units(0.1mm 単位。正で離す、負で食い込ませる)だけ変える。ボールは接触点からのずれのまま、新しい接触点に付いて動く。</summary>
-        public void AdjustGap(int index,long units){
-            if(!this.initialized){return;}
-            if(index==0){this.gap01Units+=units;}else{this.gap12Units+=units;}
-            this.ApplyLayout();
-            this.Apply();
-        }
-
-        /// <summary>接触点・ボールのずれ・camera を一度に決める(検証用)。camera はボールの周り(yaw、pitch、ボールから distance)に置く。先読みは待たない。</summary>
-        public bool SetState(int contactIndex,long x,long y,long z,float yaw,float pitch,float distance){
-            this.pending=false;this.pendingAtom=false;this.pendingBury=0;this.atomView=false;this.buryNote=null;
-            this.contact=Math.Max(0,Math.Min(1,contactIndex));
-            this.offsetX=x;this.offsetY=y;this.offsetZ=z;
-            this.SetReferences();
-            this.FrameBall(yaw,pitch,distance);
+            long height=this.faceOffsetUnits[this.selectedFace];
+            double t=(height*UnitMeters-this.cameraPosition.y)/forward.y;
+            if(t<=0){
+                this.aimNote="面との交点が camera の前にありません";
+                return false;
+            }
+            double3 hit=this.cameraPosition+forward*t;
+            var face=(MoonTripleFace)this.selectedFace;
+            double3 center=this.layout.FaceCenter(face);
+            double half=this.layout.FaceSize(face)*0.5;
+            if(Math.Abs(hit.x-center.x)>half||Math.Abs(hit.z-center.z)>half){
+                this.aimNote="見ている点が「"+FaceNames[this.selectedFace]+"」の外です(面の内側を見てください)";
+                return false;
+            }
+            this.offsetX=(long)Math.Round(hit.x/UnitMeters);
+            this.offsetY=height;
+            this.offsetZ=(long)Math.Round(hit.z/UnitMeters);
+            this.aimNote="見ている点("+hit.x.ToString("0.000",CultureInfo.InvariantCulture)+", "+hit.z.ToString("0.000",CultureInfo.InvariantCulture)+" m)へ、ボールを「"+FaceNames[this.selectedFace]+"」の高さに置きました";
             return this.Apply();
+        }
+
+        /// <summary>見ている点へ埋めたときの結果(HUD に出す 1 行。成功・失敗の理由)。まだ押していなければ null。</summary>
+        public string AimNote=>this.aimNote;
+
+        /// <summary>選ぶ面を次の面へ(VG → Standard100Km → Standard1000Km → 手動分割 → VG)。</summary>
+        public void SelectNextFace(){
+            this.selectedFace=(this.selectedFace+1)%4;
+        }
+
+        /// <summary>選んだ面の高さを units(0.1mm 単位。正で上げる)だけ変える。ボールは動かさない(面だけが動く)。</summary>
+        public void AdjustFace(int face,long units){
+            if(!this.initialized){return;}
+            this.faceOffsetUnits[face]+=units;
+            this.ApplyFaces();
+            this.WriteKeyLight();
         }
 
         /// <summary>camera を、ボールの中心から distance だけ離れた、yaw・pitch の向きの位置に置く(ボールの中心を向く)。</summary>
@@ -459,16 +461,15 @@ namespace VirtualGeometry.Omni{
             this.cameraPosition=this.BallCenterDouble()-ForwardOf(yaw,pitch)*distance;
         }
 
-        /// <summary>camera を、原子の中心から distance(m)だけ離れた、yaw・pitch の向きの位置に置く(原子の中心を向く)。座標が 1 m 前後なので、倍精度で原子の大きさ(1e-10 m)を十分に表せる。</summary>
-        public void FrameAtom(float yaw,float pitch,double distance){
-            this.cameraYaw=yaw;this.cameraPitch=pitch;
-            this.cameraPosition=this.layout.AtomCenter-ForwardOf(yaw,pitch)*distance;
-            this.atomView=true;
-        }
-
-        /// <summary>camera の位置と向き(yaw、pitch)を直接決める(検証用。ボールの中心以外の点を狙うとき)。</summary>
+        /// <summary>camera の位置と向き(yaw、pitch)を直接決める(検証用)。</summary>
         public bool PlaceCamera(double3 position,float yaw,float pitch){
             this.cameraYaw=yaw;this.cameraPitch=pitch;this.cameraPosition=position;
+            return this.Apply();
+        }
+
+        /// <summary>ボールの位置を直接決める(検証用。0.1mm 単位。原点からのずれ)。</summary>
+        public bool SetBallOffset(long x,long y,long z){
+            this.offsetX=x;this.offsetY=y;this.offsetZ=z;
             return this.Apply();
         }
 
@@ -478,31 +479,18 @@ namespace VirtualGeometry.Omni{
             return new double3(Math.Sin(y)*Math.Cos(p),-Math.Sin(p),Math.Cos(y)*Math.Cos(p));
         }
 
-        /// <summary>隙間を決める(検証用。0.1mm 単位)。</summary>
-        public bool SetGaps(long gap01,long gap12){
-            this.gap01Units=gap01;this.gap12Units=gap12;
-            if(!this.ApplyLayout()){return false;}
-            return this.Apply();
-        }
-
-        /// <summary>ボールの中心(Logical)= 接触点 + (x, y, z)。</summary>
-        public bool TryGetBallCenter(out LogicalVector3 center){
-            center=default;
-            if(!this.initialized){return false;}
-            return TryFromDouble3(new double3(this.offsetX*UnitMeters,this.layout.ContactY(this.contact)+this.offsetY*UnitMeters,this.offsetZ*UnitMeters),out center);
-        }
-
-        /// <summary>ボールの中心(倍精度。検証の解析用)。</summary>
+        /// <summary>ボールの中心(倍精度。原点からのずれ)。</summary>
         public double3 BallCenterDouble(){
-            return new double3(this.offsetX*UnitMeters,this.layout.ContactY(this.contact)+this.offsetY*UnitMeters,this.offsetZ*UnitMeters);
+            return new double3(this.offsetX*UnitMeters,this.offsetY*UnitMeters,this.offsetZ*UnitMeters);
         }
 
         /// <summary>ボールと camera を、今の状態に合わせて置く。失敗したら理由を <see cref="Failure"/> に残す。</summary>
         public bool Apply(){
             if(!this.initialized){return false;}
             this.failure=null;
-            if(!this.TryGetBallCenter(out LogicalVector3 center)){return this.Fail("ボールの位置を求められません。");}
-            this.ballLogical.LocalPosition=center;
+            double3 center=this.BallCenterDouble();
+            if(!TryFromDouble3(center,out LogicalVector3 position)){return this.Fail("ボールの位置を Logical にできません。");}
+            this.ballLogical.LocalPosition=position;
             this.ballLogical.LocalRotation=LogicalQuaternion.Identity;
             this.ballLogical.SyncUnityTransform();
             bool applied=this.ApplyCamera();
@@ -510,17 +498,21 @@ namespace VirtualGeometry.Omni{
             return applied;
         }
 
-        // ボールの点光源の位置を、面のシェーダーへ渡す(Shader.SetGlobalVector。シーンの BRG にも届く)。
-        // Omni の面: ボールの中心のカメラからの相対位置(Logical の世界軸)。VG の面: ボールの中心 − 格子の基準点(惑星のローカル座標。基準点は SetReferences の位置)。
-        // どちらも倍精度で引いてから float にする(月の中心は 1.7e6 m 離れているが、差は mm の精度で残る)。原子の周りでは、ボールが遠いので消す。
+        // 主光源の向き・強さを、Omni の面(_CosmicKeyLight)と VG の面(_PlanetKeyLight)に書く。光は常に上から。
+        private void WriteKeyLight(){
+            Shader.SetGlobalVector(CosmicKeyLightId,KeyLight);
+            Shader.SetGlobalVector(PlanetKeyLightId,KeyLight);
+        }
+
+        // ボールの点光源の位置を、面のシェーダーへ渡す(Shader.SetGlobalVector)。
+        // Omni の面: ボールの中心のカメラからの相対位置。VG の面: ボールの中心 − VG の面の高さ(VG の面の基準点は、VG の角の y)。
+        // どちらも倍精度で引いてから float にする。原子の周りはもう無いので、強さは常に BallLightIntensity。
         private void SetBallLight(){
             double3 ball=this.BallCenterDouble();
-            float intensity=this.atomView?0f:BallLightIntensity;
             double3 relative=ball-this.cameraPosition;
-            Shader.SetGlobalVector(CosmicBallLightId,new Vector4((float)relative.x,(float)relative.y,(float)relative.z,intensity));
-            // VG の面 A の基準点: 接触点 0 では A の下端、接触点 1 では A の上端(SetReferences と同じ)。
-            double reference=this.layout.CenterA+(this.contact==1?this.layout.Radius:-this.layout.Radius);
-            Shader.SetGlobalVector(PlanetBallLightId,new Vector4((float)ball.x,(float)(ball.y-reference),(float)ball.z,intensity));
+            Shader.SetGlobalVector(CosmicBallLightId,new Vector4((float)relative.x,(float)relative.y,(float)relative.z,BallLightIntensity));
+            double reference=this.faceOffsetUnits[(int)MoonTripleFace.Vg]*UnitMeters;
+            Shader.SetGlobalVector(PlanetBallLightId,new Vector4((float)ball.x,(float)(ball.y-reference),(float)ball.z,BallLightIntensity));
         }
 
         // camera を、保存している位置と向き(yaw、pitch)に置く。位置は飛んで動くので、ボールには付けない。
@@ -537,77 +529,56 @@ namespace VirtualGeometry.Omni{
             return true;
         }
 
-        // テレポートの先読み: 移動先のボールの中心の、VG の月の面の Cell を生成させる。両方そろったら(または待ちすぎたら)移る。
-        private void UpdatePending(){
-            if(!this.pending){return;}
-            this.pendingFrames++;
-            if(this.pendingAtom){
-                // 原子へのテレポート: 原子の面の点(中心から +z に半径の分)の Cell を先読みし、camera が来る前に細かい階層を用意する。
-                bool readyAtom=true;
-                if(TryFromDouble3(new double3(0,0,MoonTripleLayout.AtomRadius),out LogicalVector3 onAtom)){
-                    readyAtom&=this.atom.Prefetch(in onAtom,(float)((AtomFrameRadii-1)*MoonTripleLayout.AtomRadius));
-                }
-                if(!readyAtom&&this.pendingFrames<PrefetchLimit){return;}
-                this.pending=false;this.pendingAtom=false;
-                this.buryNote=null;this.SetKeyLightFromBelow(false);
-                this.SetScalePreset(ScaleNearMeters.Length-1);
-                this.FrameAtom(180f,10f,AtomFrameRadii*MoonTripleLayout.AtomRadius);
-                return;
-            }
-            double radius=this.layout.Radius;
-            double x=this.pendingX*UnitMeters;double z=this.pendingZ*UnitMeters;
-            bool ready=true;
-            // 点は VG の月 A の面の上(中心からの位置)。接触点の面の点 = 中心から ±R の y 軸上、ずれ (x, z) だけ接平面に沿って動かした点(Prefetch は方向だけを使う)。
-            // PlanetSurface の月 B は先読みを持たない(カメラの位置から追従して分割する)。
-            if(TryFromDouble3(new double3(x,this.pendingContact==0?-radius:radius,z),out LogicalVector3 onA)){ready&=this.moonA.Prefetch(in onA,FrameDistance);}
-            if(!ready&&this.pendingFrames<PrefetchLimit){return;}
-            this.pending=false;
-            // 原子の周りから戻るときは、論理ニアクリップを通常に戻す。
-            if(this.atomView){this.atomView=false;this.SetScalePreset(0);}
-            this.contact=this.pendingContact;
-            this.offsetX=this.pendingX;this.offsetY=this.pendingY;this.offsetZ=this.pendingZ;
-            this.SetReferences();
-            if(this.pendingBury!=0){
-                // 「半分を埋める」で、接触点から離れた位置へ移した。先読みが済んだので、ここで埋める。
-                int bury=this.pendingBury;this.pendingBury=0;
-                this.PlaceBury(bury==1);
-                return;
-            }
-            this.buryNote=null;
-            this.SetKeyLightFromBelow(false);
-            this.FrameBall(180f,10f,FrameDistance);
-        }
-
         private void ReadKeys(){
             IMoonTripleKeys input=this.keys;
             long step=10;
             if(input.Held(MoonTripleKey.Coarse)){step=100;}
             if(input.Held(MoonTripleKey.Fine)){step=1;}
-            this.NudgeKey(input,MoonTripleKey.BallXMinus,-step,ref this.offsetX,ref this.repeatX);
-            this.NudgeKey(input,MoonTripleKey.BallXPlus,step,ref this.offsetX,ref this.repeatX);
-            this.NudgeKey(input,MoonTripleKey.BallDown,-step,ref this.offsetY,ref this.repeatY);
-            this.NudgeKey(input,MoonTripleKey.BallUp,step,ref this.offsetY,ref this.repeatY);
-            this.NudgeKey(input,MoonTripleKey.BallZMinus,-step,ref this.offsetZ,ref this.repeatZ);
-            this.NudgeKey(input,MoonTripleKey.BallZPlus,step,ref this.offsetZ,ref this.repeatZ);
+            // ドリブル中は、ボールの位置をドリブルが決めるので、矢印キーと埋める操作は効かない。
+            if(!this.dribble.Running){
+                this.NudgeKey(input,MoonTripleKey.BallXMinus,-step,ref this.offsetX,ref this.repeatX);
+                this.NudgeKey(input,MoonTripleKey.BallXPlus,step,ref this.offsetX,ref this.repeatX);
+                this.NudgeKey(input,MoonTripleKey.BallDown,-step,ref this.offsetY,ref this.repeatY);
+                this.NudgeKey(input,MoonTripleKey.BallUp,step,ref this.offsetY,ref this.repeatY);
+                this.NudgeKey(input,MoonTripleKey.BallZMinus,-step,ref this.offsetZ,ref this.repeatZ);
+                this.NudgeKey(input,MoonTripleKey.BallZPlus,step,ref this.offsetZ,ref this.repeatZ);
+            }
             this.Fly(input);
-            if(input.PressedThisFrame(MoonTripleKey.Contact0)){this.TeleportTo(0,true);}
-            if(input.PressedThisFrame(MoonTripleKey.Contact1)){this.TeleportTo(1,true);}
-            if(input.PressedThisFrame(MoonTripleKey.Touch)){this.TeleportTo(this.contact,true);}
-            if(input.PressedThisFrame(MoonTripleKey.Exact)){this.TeleportTo(this.contact,false);}
-            if(input.PressedThisFrame(MoonTripleKey.BuryLower)){this.BuryBall(true);}
-            if(input.PressedThisFrame(MoonTripleKey.BuryUpper)){this.BuryBall(false);}
+            if(input.PressedThisFrame(MoonTripleKey.Corner)){this.TeleportToCorner();}
+            if(input.PressedThisFrame(MoonTripleKey.SelectFace)){this.SelectNextFace();}
+            if(input.PressedThisFrame(MoonTripleKey.Dribble)){this.ToggleDribble();}
+            if(input.PressedThisFrame(MoonTripleKey.Panel)){this.showPanel=!this.showPanel;}
+            if(!this.dribble.Running){
+                if(input.PressedThisFrame(MoonTripleKey.Bury)){this.BuryBall();}
+                if(input.PressedThisFrame(MoonTripleKey.BuryAim)){this.BuryAtAim();}
+            }
             if(input.PressedThisFrame(MoonTripleKey.ScaleFiner)){this.SetScalePreset(this.scalePreset+1);}
             if(input.PressedThisFrame(MoonTripleKey.ScaleCoarser)){this.SetScalePreset(this.scalePreset-1);}
-            if(input.PressedThisFrame(MoonTripleKey.TeleportAtom)){this.TeleportToAtom();}
-            if(input.PressedThisFrame(MoonTripleKey.GapDown)){this.AdjustGap(this.contact,-step);}
-            if(input.PressedThisFrame(MoonTripleKey.GapUp)){this.AdjustGap(this.contact,step);}
-            if(input.PressedThisFrame(MoonTripleKey.Reset)){this.TeleportTo(this.contact,true);}
+            // 選んだ面の高さ: 押した瞬間に 1 回、押し続けると 0.4 秒後から 0.06 秒ごとに繰り返す(面を動かすのは、ここだけ)。
+            long faceStep=FaceStepUnits;
+            if(input.Held(MoonTripleKey.Coarse)){faceStep=100;}
+            if(input.Held(MoonTripleKey.Fine)){faceStep=1;}
+            this.FaceKey(input,MoonTripleKey.FaceDown,-faceStep);
+            this.FaceKey(input,MoonTripleKey.FaceUp,faceStep);
+            if(input.PressedThisFrame(MoonTripleKey.Reset)){this.ResetDemo();}
+        }
+
+        /// <summary>初期化: ボールを原点へ、面の高さのずれを 0 へ、論理 near を通常へ。</summary>
+        public void ResetDemo(){
+            if(!this.initialized){return;}
+            this.SetScalePreset(0);
+            this.selectedFace=0;
+            this.dribbleSpeed=1f;
+            Array.Clear(this.faceOffsetUnits,0,this.faceOffsetUnits.Length);
+            this.ApplyFaces();
+            this.WriteKeyLight();
+            this.TeleportToCorner();
         }
 
         // 飛ぶ: W S は向いている方向の前後、A D は左右、Q E は世界の上下。Home End とホイールは向いている方向へ。右ドラッグで向きを変え、C でボールに向け直す。
         // 斜めに押したときも速さは同じ(正規化する)。Shift で 10 倍、Ctrl で 1/10。
         private void Fly(IMoonTripleKeys input){
-            // 飛ぶ速さ・ホイールの量は、論理ニアクリップに比例して小さくなる(原子の近く(論理 near 10 pm)では、通常の 3e-10 倍)。
+            // 飛ぶ速さ・ホイールの量は、論理ニアクリップに比例して小さくなる(論理 near 10 pm では、通常の 3e-10 倍)。
             double speed=FlySpeed*this.ScaleFactor;
             if(input.Held(MoonTripleKey.Coarse)){speed*=10;}
             if(input.Held(MoonTripleKey.Fine)){speed*=0.1;}
@@ -632,8 +603,10 @@ namespace VirtualGeometry.Omni{
             this.cameraYaw+=look.x*0.2f;this.cameraPitch-=look.y*0.2f;
             this.cameraPitch=Mathf.Clamp(this.cameraPitch,-89f,89f);
             if(input.PressedThisFrame(MoonTripleKey.Frame)){
-                if(this.atomView){this.FrameAtom(this.cameraYaw,this.cameraPitch,AtomFrameRadii*MoonTripleLayout.AtomRadius);}
-                else{this.FrameBall(this.cameraYaw,this.cameraPitch,FrameDistance);}
+                // ドリブル中は、ボールが付いてくる距離(DribbleDistance)に合わせる。
+                float distance=FrameDistance;
+                if(this.dribble.Running){distance=(float)DribbleDistance;}
+                this.FrameBall(this.cameraYaw,this.cameraPitch,distance);
             }
         }
 
@@ -644,6 +617,16 @@ namespace VirtualGeometry.Omni{
             }else if(input.Held(key)){
                 timer-=Time.deltaTime;
                 if(timer<=0){value+=delta;timer=0.06f;}
+            }
+        }
+
+        // 選んだ面の高さを、押した瞬間と繰り返しで動かす(NudgeKey と同じ間隔)。
+        private void FaceKey(IMoonTripleKeys input,MoonTripleKey key,long delta){
+            if(input.PressedThisFrame(key)){
+                this.AdjustFace(this.selectedFace,delta);this.repeatFace=0.4f;
+            }else if(input.Held(key)){
+                this.repeatFace-=Time.deltaTime;
+                if(this.repeatFace<=0){this.AdjustFace(this.selectedFace,delta);this.repeatFace=0.06f;}
             }
         }
 
@@ -662,109 +645,191 @@ namespace VirtualGeometry.Omni{
         private void OnGUI(){
             if(!this.showHud){return;}
             if(this.style==null){
-                this.style=new GUIStyle(GUI.skin.label){fontSize=15,richText=true};
+                this.style=new GUIStyle(GUI.skin.label){fontSize=15,richText=true,wordWrap=true};
+                this.noteStyle=new GUIStyle(GUI.skin.label){fontSize=13,richText=true,wordWrap=true};
+                this.noteStyle.normal.textColor=new Color(0.78f,0.78f,0.78f,1f);
                 this.buttonStyle=new GUIStyle(GUI.skin.button){fontSize=15,richText=true};
             }
-            string hud=this.BuildHudText();
-            var rect=new Rect(12,10,1500,100);
+            // 操作パネル(HUD とボタン)を隠す・出すボタン(キー H)。隠すと、ボールの高さとドリブルの状態の 1 行だけが残る(パネルがボールを覆うので)。
+            float top=10;
+            if(Application.isPlaying){
+                string panelLabel="[H] 操作パネルを隠す";
+                if(!this.showPanel){panelLabel="[H] 操作パネルを出す";}
+                if(GUI.Button(new Rect(12,top,240,26),panelLabel,this.buttonStyle)){this.showPanel=!this.showPanel;}
+                if(!this.showPanel){
+                    if(this.initialized){
+                        string dribbleState="止まっている";
+                        if(this.dribble.Running){dribbleState="中";}
+                        Color before=GUI.color;
+                        GUI.color=new Color(0,0,0,0.6f);GUI.DrawTexture(new Rect(258,top,420,26),Texture2D.whiteTexture);GUI.color=Color.white;
+                        GUI.Label(new Rect(264,top+2,410,24),"ボールの高さ "+Height(this.offsetY)+"   ドリブル: "+dribbleState,this.style);
+                        GUI.color=before;
+                    }
+                    return;
+                }
+                top+=32;
+            }
+            // HUD の文字と高さは、0.1 秒ごとにだけ作り直す。ボールの高さが毎フレーム変わると、11 行の文字の組み直し(影の分も入れて 1 フレームに何度も)が重く、fps が約 3 割下がった(Editor で実測)。
+            // 組み直しは Layout イベントだけで行い、同じフレームの Layout と Repaint で中身を変えない。
+            float hudWidth=Mathf.Min(1500f,Screen.width-24f);
+            if(this.hudText==null||this.hudWidthUsed!=hudWidth||(Event.current.type==EventType.Layout&&Time.unscaledTime>=this.hudRefreshTime)){
+                this.hudText=this.BuildHudText();
+                this.hudHeight=this.style.CalcHeight(new GUIContent(this.hudText),hudWidth);
+                this.hudWidthUsed=hudWidth;
+                this.hudRefreshTime=Time.unscaledTime+HudRefreshSeconds;
+            }
+            var rect=new Rect(12,top,hudWidth,this.hudHeight);
             Color old=GUI.color;
-            // 影は色の指定を外した文字で描く(リッチテキストの色は GUI.color より優先されるため)。
-            GUI.color=Color.black;GUI.Label(new Rect(rect.x+1,rect.y+1,rect.width,rect.height),StripTags(hud),this.style);
-            GUI.color=Color.white;GUI.Label(rect,hud,this.style);
+            // 文字の後ろに暗い背景を敷く(面の模様の上でも読めるように。影の文字は、組み直しが増えるので使わない)。
+            GUI.color=new Color(0,0,0,0.6f);GUI.DrawTexture(new Rect(rect.x-6,rect.y-4,rect.width+12,rect.height+8),Texture2D.whiteTexture);
+            GUI.color=Color.white;GUI.Label(rect,this.hudText,this.style);
             GUI.color=old;
             if(!this.initialized){return;}
-            // Edit Mode では HUD の表示だけで、ボタン(テレポート・隙間・スケール・原子)は Play のときだけ。
+            // Edit Mode では HUD の表示だけで、ボタンは Play のときだけ。
             if(!Application.isPlaying){return;}
-            // 1 ボタン = 1 機能。見出しで区切り、キーの番号は [n] でラベルの先頭に付ける。面の名前は、面の色(方式ごと)で書く。
-            float x=12;float y=140;float w=640;float h=30;
-            GUI.Label(new Rect(x,y,w,h),"接触点へテレポート(2 つの面が接する所へ)",this.style);
-            y+=h;
-            if(this.ContactButton(new Rect(x,y,w,h),"[1] "+Tint(0)+" と "+Tint(1)+" の接触点へ(ボールが 2 つの面に 1 点ずつ接する位置)",0)){this.TeleportTo(0,true);}
+            // 1 ボタン = 1 機能。見出し、灰色の説明、ボタンの順に並べる。キーの番号は [n] でラベルの先頭に付ける。
+            float x=12;float y=rect.yMax+12;float w=700;float h=28;
+            bool dribbling=this.dribble.Running;
+            float panelTop=y;
+            GUI.color=new Color(0,0,0,0.6f);GUI.DrawTexture(new Rect(x-6,panelTop-4,w+12,this.controlsHeight+8),Texture2D.whiteTexture);GUI.color=old;
+            GUI.Label(new Rect(x,y,w,h),"ボールの操作",this.style);
+            y+=h-4;
+            y+=this.Note(x,y,w,"「角」は、4 枚の面が集まる中央の点です。ドリブルを始めると、カメラがボールの後ろ "+DribbleDistance.ToString("0.###",CultureInfo.InvariantCulture)+" m に下がり、ボールはカメラの前 "+DribbleDistance.ToString("0.###",CultureInfo.InvariantCulture)+" m に付いてきます(カメラを動かして進みます)。")+4;
+            if(GUI.Button(new Rect(x,y,w,h),"[1] ボールを角へ戻す",this.buttonStyle)){this.TeleportToCorner();}
             y+=h+2;
-            if(this.ContactButton(new Rect(x,y,w,h),"[2] "+Tint(1)+" と "+Tint(2)+" の接触点へ(ボールが 2 つの面に 1 点ずつ接する位置)",1)){this.TeleportTo(1,true);}
+            string dribbleLabel="[4] ドリブルを始める(ボールが 1 m の高さまで跳ねます)";
+            if(dribbling){dribbleLabel="[4] ドリブルを止める(いま: ドリブル中)";}
+            if(this.ToggleButton(new Rect(x,y,w,h),dribbleLabel,dribbling)){this.ToggleDribble();}
+            y+=h+2;
+            // ドリブルの速さのゲージ: 左ほどゆっくり(最高の 1 m は変わらない)。ドリブル中でも動かせる。
+            GUI.Label(new Rect(x,y,300,h),"ドリブルの速さ "+this.dribbleSpeed.ToString("0.00",CultureInfo.InvariantCulture)+" 倍(左ほどゆっくり)",this.style);
+            this.DribbleSpeed=GUI.HorizontalSlider(new Rect(x+310,y+8,w-310,18),this.dribbleSpeed,MinimumDribbleSpeed,1f);
+            y+=h+2;
+            y+=this.Note(x,y,w,"物理エンジンで動かしています(重力 "+MoonTripleDribble.Gravity.ToString("0.00",CultureInfo.InvariantCulture)+" m/s²、反発係数 "+MoonTripleDribble.Bounciness.ToString("0.0",CultureInfo.InvariantCulture)+")。ボールは上下だけ動きます。ボールの半分が面に埋まったところで跳ね返ります。")+4;
+            // ドリブル中は、ボールの位置をドリブルが決めるので、埋める操作は使えない(灰色)。
+            bool enabled=GUI.enabled;
+            GUI.enabled=!dribbling;
+            if(GUI.Button(new Rect(x,y,w,h),"[3] 画面の中央にボールを置く(下を向いて押す)",this.buttonStyle)){this.BuryAtAim();}
+            y+=h+2;
+            if(GUI.Button(new Rect(x,y,w,h),"[5] ボールを今の場所のまま、操作する面に半分埋める",this.buttonStyle)){this.BuryBall();}
+            y+=h+2;
+            GUI.enabled=enabled;
+            y+=this.Note(x,y,w,"[3] [5] はどちらも、ボールの中心が「操作する面」の高さになり、ボールの半分が面に埋まります。ボールの赤い線が、ボールの中心の高さです。");
+            y+=8;
+            GUI.Label(new Rect(x,y,w,h),"面の高さを動かす",this.style);
+            y+=h-4;
+            y+=this.Note(x,y,w,"「操作する面」だけが上下に動きます(ボールは動きません)。面の境目とボールの赤い線のずれで、高さの違いが見えます。")+4;
+            if(GUI.Button(new Rect(x,y,w,h),"[2] 操作する面を切り替える(いま: "+Tint(this.selectedFace)+")",this.buttonStyle)){this.SelectNextFace();}
+            y+=h+2;
+            long[] amounts={-100,-10,10,100};
+            string[] labels={"下げる 10mm","下げる 1mm","上げる 1mm","上げる 10mm"};
+            for(int i=0;i<amounts.Length;i++){
+                if(GUI.Button(new Rect(x+i*(w/4f),y,w/4f-3,h),labels[i],this.buttonStyle)){this.AdjustFace(this.selectedFace,amounts[i]);}
+            }
             y+=h+8;
-            GUI.Label(new Rect(x,y,w,h),"ボール(いまの接触点: 下の面 = "+Tint(this.contact)+"、上の面 = "+Tint(this.contact+1)+")",this.style);
-            y+=h;
-            if(GUI.Button(new Rect(x,y,w,h),"[3] ボールを、2 つの面に 1 点ずつ接する位置へ",this.buttonStyle)){this.TeleportTo(this.contact,true);}
-            y+=h+2;
-            if(GUI.Button(new Rect(x,y,w,h),"[4] ボールの中心を接触点に置く(両方の面に食い込む)",this.buttonStyle)){this.TeleportTo(this.contact,false);}
-            y+=h+2;
-            if(GUI.Button(new Rect(x,y,w,h),"[5] ボールの半分を下の面(「"+Tint(this.contact)+"」)に埋める",this.buttonStyle)){this.BuryBall(true);}
-            y+=h+2;
-            if(GUI.Button(new Rect(x,y,w,h),"[6] ボールの半分を上の面(「"+Tint(this.contact+1)+"」)に埋める",this.buttonStyle)){this.BuryBall(false);}
-            y+=h+8;
-            // 論理ニアクリップのプリセットと、原子サイズの VG の球へのテレポート。
-            GUI.Label(new Rect(x,y,w,h),"論理ニアクリップ(キー 7・8。camera の Near は 0.3 m のまま)",this.style);
-            y+=h;
+            // カメラの近づける限界(論理ニアクリップ)のプリセット。
+            GUI.Label(new Rect(x,y,w,h),"カメラの近づける限界(ニアクリップ。キー 7・8)",this.style);
+            y+=h-4;
+            y+=this.Note(x,y,w,"カメラが映す一番近い距離です。小さくすると、1 mm や 10 pm のような極端に近いものまで映せます(ボールの直径は 22 cm)。通常は 0.03 m です。")+4;
             for(int i=0;i<ScaleNames.Length;i++){
                 float bw=w/ScaleNames.Length;
-                if(this.PresetButton(new Rect(x+i*bw,y,bw-3,h),i==0?"通常":ScaleNames[i],i)){this.SetScalePreset(i);}
+                string presetLabel=ScaleNames[i];
+                if(i==0){presetLabel="通常";}
+                if(this.PresetButton(new Rect(x+i*bw,y,bw-3,h),presetLabel,i)){this.SetScalePreset(i);}
             }
-            y+=h+4;
-            if(this.atom!=null&&GUI.Button(new Rect(x,y,w,h),"[9] 原子(VG の球、半径 1e-10 m)へテレポート",this.buttonStyle)){this.TeleportToAtom();}
-            if(this.atom!=null){y+=h+8;}else{y+=4;}
-            GUI.Label(new Rect(x,y,w,h),"この接触点の隙間(キー [ ]): "+Mm(this.contact==0?this.gap01Units:this.gap12Units),this.style);
-            y+=h;
-            long[] amounts={-100,-10,10,100};
-            string[] labels={"-10mm","-1mm","+1mm","+10mm"};
-            for(int i=0;i<amounts.Length;i++){
-                if(GUI.Button(new Rect(x+i*(w/4f),y,w/4f-3,h),labels[i],this.buttonStyle)){this.AdjustGap(this.contact,amounts[i]);}
-            }
+            // 次の描画の背景の高さ(ボタンと説明の並びが変わっても合わせる)。
+            this.controlsHeight=y+h-panelTop;
         }
 
-        // 今の接触点(または今のプリセット)のボタンは、色を変えて、「いまここ」と分かるようにする。
-        private bool ContactButton(Rect rect,string label,int index){
+        // 灰色の説明の文字(幅で折り返す)。使った高さを返す。
+        private float Note(float x,float y,float width,string text){
+            float height=this.noteStyle.CalcHeight(new GUIContent(text),width);
+            GUI.Label(new Rect(x,y,width,height),text,this.noteStyle);
+            return height;
+        }
+
+        // 入り切りのボタン: 入っているときは色を変えて、「いまここ」と分かるようにする。
+        private bool ToggleButton(Rect rect,string label,bool on){
             Color old=GUI.backgroundColor;
-            if(this.contact==index&&!this.atomView){GUI.backgroundColor=new Color(0.6f,1f,0.6f,1f);}
+            if(on){GUI.backgroundColor=new Color(0.6f,1f,0.6f,1f);}
             bool pressed=GUI.Button(rect,label,this.buttonStyle);
             GUI.backgroundColor=old;
             return pressed;
         }
 
+        // 今のプリセットのボタンは、色を変えて、「いまここ」と分かるようにする。
         private bool PresetButton(Rect rect,string label,int index){
-            Color old=GUI.backgroundColor;
-            if(this.scalePreset==index){GUI.backgroundColor=new Color(0.6f,1f,0.6f,1f);}
-            bool pressed=GUI.Button(rect,label,this.buttonStyle);
-            GUI.backgroundColor=old;
-            return pressed;
+            return this.ToggleButton(rect,label,this.scalePreset==index);
         }
 
         /// <summary>
-        /// HUD に出す文字(画面に出す呼び名は <see cref="NameScaled"/>、<see cref="NameVg"/>、<see cref="NameSplit"/>。方式の番号は画面に出さない)。
-        /// OnGUI から切り出した関数(検証が、呼び名の残りと内容を確かめる)。
+        /// HUD に出す文字。OnGUI から切り出した関数(検証が、呼び名と内容を確かめる)。
         /// </summary>
         public string BuildHudText(){
             var lines=new System.Text.StringBuilder();
             if(!this.initialized){
-                string reason="VG の面の地形のルートを待っています";
+                string reason="4 枚の面の地形を待っています";
                 if(this.failure!=null){reason=this.failure;}
                 lines.AppendLine("MoonTripleDemo: "+reason);
                 return lines.ToString();
             }
-            string lower=Tint(this.contact);string upper=Tint(this.contact+1);
-            if(this.atomView){lines.AppendLine("いま: 原子(VG の球、半径 "+MoonTripleLayout.AtomRadius.ToString("G2",CultureInfo.InvariantCulture)+" m)の周り");}
-            else{lines.AppendLine("いま: 接触点 "+this.contact+"(「"+lower+"」と「"+upper+"」の接触点)   隙間 "+Mm(this.contact==0?this.gap01Units:this.gap12Units)+"   (「"+Tint(0)+"」= 単位球メッシュ × 直径 "+(2*this.layout.Radius).ToString("N0",CultureInfo.InvariantCulture)+" m)");}
-            lines.AppendLine("接触点からのボールのずれ: x "+Mm(this.offsetX)+"  y "+Mm(this.offsetY)+"  z "+Mm(this.offsetZ)+"   両側の面に接する距離(解析) "+this.layout.TouchDistance(this.contact).ToString("F3",CultureInfo.InvariantCulture)+" m");
-            lines.AppendLine("カメラ(自由飛行) x "+this.cameraPosition.x.ToString("0.000",CultureInfo.InvariantCulture)+" y "+this.cameraPosition.y.ToString("0.000",CultureInfo.InvariantCulture)+" z "+this.cameraPosition.z.ToString("0.000",CultureInfo.InvariantCulture)+
-                " m   向き yaw "+this.cameraYaw.ToString("0.0",CultureInfo.InvariantCulture)+" pitch "+this.cameraPitch.ToString("0.0",CultureInfo.InvariantCulture)+(this.pending?"   テレポート中(セルを生成しています)...":""));
-            if(this.buryNote!=null){lines.AppendLine(this.buryNote);}
-            lines.AppendLine("論理ニアクリップ: プリセット "+this.scalePreset+"「"+ScaleNames[this.scalePreset]+"」  読み戻し "+this.LogicalNearMeters.ToString("G4",CultureInfo.InvariantCulture)+" m  log2 M "+this.LogicalLog2ViewScale.ToString("G4",CultureInfo.InvariantCulture)+
-                "  camera Near(設定) "+DefaultCameraNearMeters.ToString("G3",CultureInfo.InvariantCulture)+" m"+(this.cameraNearSampled?"  [警告: Camera.nearClipPlane が設定と違う値で読めました(Omni が描画中に書き換えた値が戻っていない)]":"")+(this.atom!=null?"   原子(VG の球)までの距離 "+this.DistanceToAtom.ToString("G4",CultureInfo.InvariantCulture)+" m":""));
-            if(this.moonB!=null&&this.moonB.Lod!=null){
-                var patch=this.moonB.Lod.Diagnostics;
-                // 分割処理(PlanetSurfaceLod)の最終更新時間が 0 のままなら、更新が動いていない。
-                string state=patch.DeepestLevel<patch.DesiredLevel?"   分割中...":"";
-                if(Application.isPlaying&&this.moonB.Lod.LastUpdateMilliseconds<=0){state="   [更新が止まっています]";}
-                lines.AppendLine("「"+Tint(2)+"」: 分割の階層 "+patch.DeepestLevel+" / 要求 "+patch.DesiredLevel+"   葉 "+patch.LeafCount+state);
+            string dribbleText="止まっている";
+            if(this.dribble.Running){dribbleText="中";}
+            lines.AppendLine("ボールの高さ "+Height(this.offsetY)+"(0 mm = 4 枚の面が集まる角の高さ)   ドリブル: "+dribbleText+"   操作する面: "+Tint(this.selectedFace));
+            lines.AppendLine("ボールの場所(角から) x "+Mm(this.offsetX)+"  z "+Mm(this.offsetZ));
+            for(int f=0;f<4;f++){
+                string detail=this.FaceDetail((MoonTripleFace)f);
+                string marker="";
+                if(f==this.selectedFace){marker="   ◀ 操作する面";}
+                lines.AppendLine(Tint(f)+": "+detail+"   高さ "+Mm(this.faceOffsetUnits[f])+marker);
             }
-            lines.AppendLine("W S A D 前後左右に飛ぶ   Q E 下/上   Home End・ホイール 前後   右ドラッグ 向き   C ボール(原子の周りでは原子)を見る   Shift 10 倍、Ctrl 1/10");
-            lines.AppendLine("↑↓ ボールを y 方向(上の面/下の面へ)   ←→ x   PgUp/PgDn z   [1][2] 接触点へテレポート   [3] 2 つの面に 1 点ずつ接する位置へ   [4] 接触点に置く(両方に食い込む)   [5] 下の面に半分埋める   [6] 上の面に半分埋める(赤い線=ボールの中心の高さ)   [7][8] 論理ニアクリップを細かく/粗く   [9] 原子へ   [ ] 隙間   R 初期化");
+            lines.AppendLine("カメラの位置 x "+this.cameraPosition.x.ToString("0.000",CultureInfo.InvariantCulture)+" y "+this.cameraPosition.y.ToString("0.000",CultureInfo.InvariantCulture)+" z "+this.cameraPosition.z.ToString("0.000",CultureInfo.InvariantCulture)+" m");
+            string warning="";
+            if(this.cameraNearSampled){warning="   [警告: カメラの Near の値が設定と違います(Omni が描画中に書き換えた値が戻っていない)]";}
+            lines.AppendLine("カメラの近づける限界: "+ScaleNames[this.scalePreset]+warning);
+            lines.AppendLine("カメラ: W S A D = 前後左右 / Q E = 下・上 / 右ドラッグ = 向き / ホイール = 前後 / C = ボールを見る / Shift = 速く / Ctrl = ゆっくり");
+            lines.AppendLine("ボール: ← → = x 方向 / PageUp PageDown = z 方向 / ↑ ↓ = 上下 / 4 = ドリブル / 1 = 角へ戻す / R = ぜんぶ最初に戻す");
+            lines.AppendLine("面: 2 = 操作する面を切り替える / [ ] = 操作する面を下げる・上げる / 7 8 = カメラの近づける限界 / H = この操作パネルを隠す・出す");
+            if(this.aimNote!=null){lines.AppendLine("画面の中央に置いた結果: "+this.aimNote);}
             if(this.failure!=null){lines.AppendLine("失敗: "+this.failure);}
             return lines.ToString();
         }
 
-        // リッチテキストの <color=...> / </color> を外す(HUD の影の文字用)。
-        private static string StripTags(string text){return System.Text.RegularExpressions.Regex.Replace(text,"</?color(=[^>]*)?>","");}
+        // 面ごとの説明(HUD の 1 行)。
+        private string FaceDetail(MoonTripleFace face){
+            double size=this.layout.FaceSize(face);
+            string sizeText;
+            if(size>=1000){
+                sizeText=(size/1000).ToString("0",CultureInfo.InvariantCulture)+" km";
+            }else{
+                sizeText=size.ToString("0",CultureInfo.InvariantCulture)+" m";
+            }
+            switch(face){
+                case MoonTripleFace.Vg:
+                    return "一辺 "+sizeText+"。VG の面(カメラの近くだけ細かく描く。いちばん細かい升目は "+MoonTripleLayout.TargetCellMeters.ToString("0",CultureInfo.InvariantCulture)+" m 以下、最大階層 "+this.layout.VgMaximumLevel+")";
+                case MoonTripleFace.Manual:
+                    return "一辺 "+sizeText+"。"+this.layout.BaseMeters.ToString("0",CultureInfo.InvariantCulture)+" m の板を "+this.layout.TilesPerSide+"×"+this.layout.TilesPerSide+" 枚並べた面(手で分割)";
+                default:
+                    return "一辺 "+sizeText+"。"+this.layout.BaseMeters.ToString("0",CultureInfo.InvariantCulture)+" m の板を "+this.layout.StandardScale(face).ToString("N0",CultureInfo.InvariantCulture)+" 倍に拡大しただけの面(分割しない)";
+            }
+        }
+
+        private string Tint(int face){
+            return "<color=#"+ColorUtility.ToHtmlStringRGB(UiColor(face))+">"+FaceNames[face]+"</color>";
+        }
+
+        // 画面の文字に使う色(面の色は暗いので、白へ寄せる)。
+        private static Color UiColor(int face){
+            return Color.Lerp(FaceColors[face],Color.white,0.4f);
+        }
+
+        // ボールの高さ: 1 m 未満は mm、それ以上は m で出す(ドリブルの最高点は 1 m)。
+        private static string Height(long tenthMm){
+            if(Math.Abs(tenthMm)>=10000){
+                return (tenthMm*UnitMeters).ToString("0.000",CultureInfo.InvariantCulture)+" m";
+            }
+            return Mm(tenthMm);
+        }
 
         private static string Mm(long tenthMm){
             return (tenthMm*0.1).ToString("0.0",CultureInfo.InvariantCulture)+" mm";

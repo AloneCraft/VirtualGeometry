@@ -1,90 +1,113 @@
 using System;
 using Unity.Mathematics;
+using VirtualGeometry.World;
 
 namespace VirtualGeometry.Omni{
+    /// <summary>MoonTriple の 4 枚の面。象限は、VG(−x,−z)、Standard100Km(−x,+z)、Standard1000Km(+x,+z)、手動分割(+x,−z)。</summary>
+    public enum MoonTripleFace{Vg=0,Standard100Km=1,Standard1000Km=2,Manual=3}
+
     /// <summary>
-    /// MoonTriple デモの配置。同じ半径 R の 3 つの月を y 軸(上向き)に積み、隣どうしを 1 点で接触させる(隙間 Gap で離せる)。
-    /// 下から、普通の月(単位球のメッシュを直径 2R に拡大した 1 つの物体)、VG の月 A、VG の月 B。普通の月は回転なしで、メッシュの極(+y の頂点)が接触点 0 になる
-    /// (メッシュは辺が約 21 km の多面体なので、接触点が頂点でないと面が球より数十 m 内側に入る)。
-    /// 接触点 0(普通 - VG A)は、普通の月の上端と A の下端の中間。接触点 1(VG A - VG B)は、A の上端と B の下端の中間。
-    /// 各月の中心は Logical で置く(座標は y だけが 0 でない)。接触点では 2 つの面が接平面(y 一定)に接する。
+    /// MoonTriple デモの配置。4 枚の平面を y=0 に置き、4 つの角を原点(x=0, z=0)で接する。各面は原点から外側へ広がる(PlaneSeam と同じ考え方)。
+    /// 大きさは名前どおり: Standard100Km = 100 km、Standard1000Km = 1000 km、VG = 1000 km、手動分割 = 1000 m(10 m の正方形を 100×100 枚)。
+    /// 10 m の基準の面に倍率 N を掛けて大きさを作る(Standard は 1 枚を N 倍、VG は一辺を N 倍して <see cref="PlanarTerrainSource"/> に渡す)。
+    /// 手動分割の枚数(<see cref="TilesPerSide"/>)と倍率 N は、この構造体の値で変えられる。
     /// </summary>
     [Serializable]
     public struct MoonTripleLayout{
-        /// <summary>月の半径 R(m)。</summary>
-        public double Radius;
-        /// <summary>普通の月と VG の月 A の隙間(m)。0 で 1 点接触、負なら食い込む。</summary>
-        public double Gap01;
-        /// <summary>VG の月 A と B の隙間(m)。</summary>
-        public double Gap12;
+        /// <summary>基準の面の一辺(m)。Unity の標準 Plane と同じ 10 m。手動分割の 1 枚もこの大きさ。</summary>
+        public double BaseMeters;
+        /// <summary>Standard100Km の倍率 N(大きさ = <see cref="BaseMeters"/> × N)。</summary>
+        public double ScaleStandard100Km;
+        /// <summary>Standard1000Km の倍率 N。</summary>
+        public double ScaleStandard1000Km;
+        /// <summary>VG の倍率 N(一辺 = <see cref="BaseMeters"/> × N)。</summary>
+        public double ScaleVg;
+        /// <summary>手動分割の、縦横それぞれの枚数(10 m の面を TilesPerSide × TilesPerSide 枚並べる)。</summary>
+        public int TilesPerSide;
 
-        /// <summary>月の半径(1,737.4 km)、隙間なし。</summary>
-        public static MoonTripleLayout Default=>new MoonTripleLayout{Radius=1737400,Gap01=0,Gap12=0};
+        /// <summary>VG の Cell の目標の大きさ(m)。最大階層は、Cell がこれ以下になる最小の階層(自動)。</summary>
+        public const double TargetCellMeters=10;
+
+        /// <summary>既定: 10 m の基準、Standard100Km = 10^4、Standard1000Km = 10^5、VG = 10^5(一辺 1000 km)、手動分割 100×100 枚。</summary>
+        public static MoonTripleLayout Default=>new MoonTripleLayout{BaseMeters=10,ScaleStandard100Km=1e4,ScaleStandard1000Km=1e5,ScaleVg=1e5,TilesPerSide=100};
 
         /// <summary>サッカーボールの半径(m)。</summary>
         public const double BallRadius=0.11;
 
-        /// <summary>原子サイズの VG の球の半径(m)。巨大な VG の月 A(半径 1,737.4 km)と同じ処理で描くための物。</summary>
-        public const double AtomRadius=1e-10;
-
-        /// <summary>
-        /// 原子の中心(接触点 0 のすぐ近く、x = z = 0.5 m)。原点の近くに置くのは、camera の位置(倍精度)の刻みを原子の大きさより十分小さくするため
-        /// (座標が 1 m 前後なら刻み 1e-16 m、1,500 m だと 2e-13 m)。この位置の、普通の月と VG の月 A の隙間は約 3e-7 m で、原子(2e-10 m)より十分広い。
-        /// y は接触点 0 の隙間の中央(<see cref="ContactY"/>)なので、隙間を変えても、原子は 2 つの月の間にある。
-        /// </summary>
-        public double3 AtomCenter=>new double3(0.5,this.ContactY(0),0.5);
-
-        public double CenterPlain=>-this.Radius;
-        public double CenterA=>this.Radius+this.Gap01;
-        public double CenterB=>3*this.Radius+this.Gap01+this.Gap12;
-        /// <summary>接触点 0、1 の y(m)。</summary>
-        public double ContactY(int index){
-            if(index==0){return this.Gap01*0.5;}
-            return this.Gap01+2*this.Radius+this.Gap12*0.5;
-        }
-        public double Gap(int index){
-            if(index==0){return this.Gap01;}
-            return this.Gap12;
-        }
-
-        // 接触点から横に distance(m)離れた所で、球の面が接平面(y 一定)から離れる量(m)= R − √(R²−d²)。
-        private double Sag(double distance){
-            double r=this.Radius;
-            return r-Math.Sqrt(Math.Max(0.0,r*r-distance*distance));
-        }
-
-        /// <summary>接触点 index の下の月の上面の y(m)。理想の球で、接触点から横に distance(m)離れた所。</summary>
-        public double LowerSurfaceY(int index,double distance){
-            return this.ContactY(index)-this.Gap(index)*0.5-this.Sag(distance);
-        }
-
-        /// <summary>接触点 index の上の月の下面の y(m)。理想の球で、接触点から横に distance(m)離れた所。</summary>
-        public double UpperSurfaceY(int index,double distance){
-            return this.ContactY(index)+this.Gap(index)*0.5+this.Sag(distance);
+        /// <summary>象限の符号 (sx, sz)。VG(−,−)、Standard100Km(−,+)、Standard1000Km(+,+)、手動分割(+,−)。</summary>
+        public static double2 Quadrant(MoonTripleFace face){
+            switch(face){
+                case MoonTripleFace.Vg:return new double2(-1,-1);
+                case MoonTripleFace.Standard100Km:return new double2(-1,1);
+                case MoonTripleFace.Standard1000Km:return new double2(1,1);
+                default:return new double2(1,-1);
+            }
         }
 
         /// <summary>
-        /// 接触点から接平面(y 一定)に沿って距離 d(m)離れた所の、2 つの球面の間の幅(m)= 隙間 + 2·(R − √(R²−d²))。球面は接触点で y 軸に垂直。
+        /// 位置 (x, z) の下にある面(象限で決める。面の広がりは見ない)。x=0 または z=0 の境界の上では、boundary を返す。
         /// </summary>
-        public double WidthAt(int index,double distance){
-            double r=this.Radius;
-            double sag=r-Math.Sqrt(Math.Max(0.0,r*r-distance*distance));
-            return this.Gap(index)+2*sag;
+        public static MoonTripleFace FaceAt(double x,double z,MoonTripleFace boundary){
+            if(x==0||z==0){return boundary;}
+            for(int f=0;f<4;f++){
+                double2 quadrant=Quadrant((MoonTripleFace)f);
+                if(Math.Sign(x)==quadrant.x&&Math.Sign(z)==quadrant.y){return (MoonTripleFace)f;}
+            }
+            return boundary;
+        }
+
+        /// <summary>面の一辺(m)。</summary>
+        public double FaceSize(MoonTripleFace face){
+            switch(face){
+                case MoonTripleFace.Vg:return this.BaseMeters*this.ScaleVg;
+                case MoonTripleFace.Standard100Km:return this.BaseMeters*this.ScaleStandard100Km;
+                case MoonTripleFace.Standard1000Km:return this.BaseMeters*this.ScaleStandard1000Km;
+                default:return this.BaseMeters*this.TilesPerSide;
+            }
         }
 
         /// <summary>
-        /// 幅が width(m)になる、接触点からの距離(m)。width が隙間より小さければ 0(その幅は接触点でもう超えている)。
-        /// 直径 2·BallRadius を渡すと、ボールが両側の面にちょうど接する(ボールの中心が接平面の上にあるとき)距離になる。
+        /// Standard の面の倍率 N(Unity の Plane の mesh を、Logical の倍率と物体空間の grid の倍率に使う)。VG と手動分割では使わない(0 を返す)。
         /// </summary>
-        public double DistanceForWidth(int index,double width){
-            double sag=(width-this.Gap(index))*0.5;
-            if(sag<=0){return 0;}
-            return Math.Sqrt(2*this.Radius*sag-sag*sag);
+        public double StandardScale(MoonTripleFace face){
+            switch(face){
+                case MoonTripleFace.Standard100Km:return this.ScaleStandard100Km;
+                case MoonTripleFace.Standard1000Km:return this.ScaleStandard1000Km;
+                default:return 0;
+            }
         }
 
-        /// <summary>ボールが両側の面にちょうど接する、接触点からの距離(m)。</summary>
-        public double TouchDistance(int index){
-            return this.DistanceForWidth(index,2*BallRadius);
+        /// <summary>面の中心(Logical の位置、y = 0)。角が原点に接するように、象限の側へ一辺の半分ずらす。</summary>
+        public double3 FaceCenter(MoonTripleFace face){
+            double2 q=Quadrant(face);
+            double half=this.FaceSize(face)*0.5;
+            return new double3(q.x*half,0,q.y*half);
+        }
+
+        /// <summary>手動分割の 1 枚の中心(i、j は 0 から TilesPerSide − 1)。角が原点に近いほど i、j が小さい。</summary>
+        public double3 TileCenter(int i,int j){
+            double2 q=Quadrant(MoonTripleFace.Manual);
+            return new double3(q.x*this.BaseMeters*(i+0.5),0,q.y*this.BaseMeters*(j+0.5));
+        }
+
+        /// <summary>
+        /// 面(または手動分割の 1 枚)の、原点に近い角の物体座標(mesh の座標系。±BaseMeters/2 の範囲)。
+        /// Standard は、物体座標 p の点が世界の 中心 + p × N にあるので、原点の角は p = −q × BaseMeters/2(N によらない)。
+        /// 格子の原点(RadialScaledPlane の _GridOriginOS)に使う。
+        /// </summary>
+        public double3 CornerInObject(MoonTripleFace face){
+            double2 q=Quadrant(face);
+            double half=this.BaseMeters*0.5;
+            return new double3(-q.x*half,0,-q.y*half);
+        }
+
+        /// <summary>VG の Cell の最大階層: 一辺 ÷ 2^階層 が <see cref="TargetCellMeters"/> 以下になる最小の階層(自動)。</summary>
+        public int VgMaximumLevel{
+            get{
+                double ratio=this.FaceSize(MoonTripleFace.Vg)/TargetCellMeters;
+                int level=(int)Math.Ceiling(Math.Log(ratio,2));
+                return Math.Max(0,Math.Min(PlanetLayerSource.GpuMaximumLevel,level));
+            }
         }
     }
 }
