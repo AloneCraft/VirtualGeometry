@@ -19,7 +19,7 @@ namespace VirtualGeometry.Omni{
     /// 位置はすべて Logical で計算する。この component は camera の GameObject(Logical.Transform と RadialCamera を持つ)に付ける。
     /// </summary>
     // [ExecuteAlways]: Play を止めた Edit Mode でも、Play 開始と同じ絵(ボールと camera の既定の視点)を Game View に出す。
-    // Edit Mode では、初期化と配置(Logical の位置・倍率・camera)だけを行い、キー・ボタンの操作は Play のときだけ(Update の先頭と OnGUI で止める)。
+    // Edit Mode でも操作パネルのボタンは動く(状態の書き込みは EditModeTick の Apply が配置へ反映する)。キー入力と、ドリブル(Update で進む)だけは Play のときだけ(Update の先頭と、ドリブルのボタンの灰色で止める)。
     [ExecuteAlways]
     [DisallowMultipleComponent]
     public sealed class MoonTripleDemo:MonoBehaviour{
@@ -97,15 +97,20 @@ namespace VirtualGeometry.Omni{
         private readonly MoonTripleDribble dribble=new MoonTripleDribble();
         // ドリブルの速さの倍率(1 = 普通。小さいほどゆっくり)。
         private float dribbleSpeed=1f;
-        // ボタンと説明の背景の高さ(前の描画で求めた値)。
-        private float controlsHeight=560f;
-        // 操作パネル(HUD とボタン)を出しているか(キー H)。
+        // 操作パネルを出しているか(キー H)。
         private bool showPanel=true;
-        // HUD の文字(0.1 秒ごとに作り直す)と、その高さ・幅・次に作り直す時刻。
+        /// <summary>左の操作パネルの幅(GUI の点)。画面が狭いときは、画面に合わせて縮める。</summary>
+        private const float PanelWidth=380f;
+        private static readonly string[] PanelTabNames={"ボール","面","カメラ","キー"};
+        // 開いているタブ(0 = ボール、1 = 面、2 = カメラ、3 = キー)と、そのスクロール位置・内容の高さ(前の描画で求めた値)。
+        private int panelTab;
+        private Vector2 panelScroll;
+        private float tabContentHeight;
+        // 操作パネルの文字(0.1 秒ごとに作り直す)と、その高さ・幅・次に作り直す時刻。
         private const float HudRefreshSeconds=0.1f;
-        private string hudText;
-        private float hudHeight;
-        private float hudWidthUsed;
+        private string statusText,faceListText,cameraText,keysText;
+        private float statusHeight;
+        private float textWidthUsed;
         private float hudRefreshTime;
         private GUIStyle style;
         private GUIStyle noteStyle;
@@ -650,97 +655,172 @@ namespace VirtualGeometry.Omni{
                 this.noteStyle.normal.textColor=new Color(0.78f,0.78f,0.78f,1f);
                 this.buttonStyle=new GUIStyle(GUI.skin.button){fontSize=15,richText=true};
             }
-            // 操作パネル(HUD とボタン)を隠す・出すボタン(キー H)。隠すと、ボールの高さとドリブルの状態の 1 行だけが残る(パネルがボールを覆うので)。
+            // 操作パネルは左の細い列に置く(幅 PanelWidth)。右側は何も描かず、ボールと面を見せる。
+            float x=12;float w=Mathf.Min(PanelWidth,Screen.width-24f);
             float top=10;
-            if(Application.isPlaying){
-                string panelLabel="[H] 操作パネルを隠す";
-                if(!this.showPanel){panelLabel="[H] 操作パネルを出す";}
-                if(GUI.Button(new Rect(12,top,240,26),panelLabel,this.buttonStyle)){this.showPanel=!this.showPanel;}
-                if(!this.showPanel){
-                    if(this.initialized){
-                        string dribbleState="止まっている";
-                        if(this.dribble.Running){dribbleState="中";}
-                        Color before=GUI.color;
-                        GUI.color=new Color(0,0,0,0.6f);GUI.DrawTexture(new Rect(258,top,420,26),Texture2D.whiteTexture);GUI.color=Color.white;
-                        GUI.Label(new Rect(264,top+2,410,24),"ボールの高さ "+Height(this.offsetY)+"   ドリブル: "+dribbleState,this.style);
-                        GUI.color=before;
-                    }
-                    return;
+            // Play と Edit Mode で同じ操作パネルを出す(ドリブルとキーだけは Play のときだけ動く)。
+            string panelLabel="[H] 操作パネルを隠す";
+            if(!this.showPanel){panelLabel="[H] 操作パネルを出す";}
+            if(GUI.Button(new Rect(x,top,w,26),panelLabel,this.buttonStyle)){this.showPanel=!this.showPanel;}
+            if(!this.showPanel){
+                // 隠すと、ボールの高さとドリブルの状態の 1 行だけが、ボタンの右に残る。
+                if(this.initialized){
+                    string dribbleState="止まっている";
+                    if(this.dribble.Running){dribbleState="中";}
+                    Color before=GUI.color;
+                    GUI.color=new Color(0,0,0,0.6f);GUI.DrawTexture(new Rect(x+w+6,top,420,26),Texture2D.whiteTexture);GUI.color=Color.white;
+                    GUI.Label(new Rect(x+w+12,top+2,410,24),"ボールの高さ "+Height(this.offsetY)+"   ドリブル: "+dribbleState,this.style);
+                    GUI.color=before;
                 }
-                top+=32;
+                return;
             }
-            // HUD の文字と高さは、0.1 秒ごとにだけ作り直す。ボールの高さが毎フレーム変わると、11 行の文字の組み直し(影の分も入れて 1 フレームに何度も)が重く、fps が約 3 割下がった(Editor で実測)。
-            // 組み直しは Layout イベントだけで行い、同じフレームの Layout と Repaint で中身を変えない。
-            float hudWidth=Mathf.Min(1500f,Screen.width-24f);
-            if(this.hudText==null||this.hudWidthUsed!=hudWidth||(Event.current.type==EventType.Layout&&Time.unscaledTime>=this.hudRefreshTime)){
-                this.hudText=this.BuildHudText();
-                this.hudHeight=this.style.CalcHeight(new GUIContent(this.hudText),hudWidth);
-                this.hudWidthUsed=hudWidth;
-                this.hudRefreshTime=Time.unscaledTime+HudRefreshSeconds;
+            top+=32;
+            // 文字と高さは 0.1 秒ごとにだけ作り直す(毎フレームだと fps が約 3 割下がった。Editor で実測)。組み直しは Layout イベントだけで行い、同じフレームの Layout と Repaint で中身を変えない。
+            if(this.statusText==null||this.textWidthUsed!=w||(Event.current.type==EventType.Layout&&Time.unscaledTime>=this.hudRefreshTime)){
+                this.RefreshPanelText(w);
             }
-            var rect=new Rect(12,top,hudWidth,this.hudHeight);
-            Color old=GUI.color;
-            // 文字の後ろに暗い背景を敷く(面の模様の上でも読めるように。影の文字は、組み直しが増えるので使わない)。
-            GUI.color=new Color(0,0,0,0.6f);GUI.DrawTexture(new Rect(rect.x-6,rect.y-4,rect.width+12,rect.height+8),Texture2D.whiteTexture);
-            GUI.color=Color.white;GUI.Label(rect,this.hudText,this.style);
-            GUI.color=old;
-            if(!this.initialized){return;}
-            // Edit Mode では HUD の表示だけで、ボタンは Play のときだけ。
-            if(!Application.isPlaying){return;}
-            // 1 ボタン = 1 機能。見出し、灰色の説明、ボタンの順に並べる。キーの番号は [n] でラベルの先頭に付ける。
-            float x=12;float y=rect.yMax+12;float w=700;float h=28;
-            bool dribbling=this.dribble.Running;
-            float panelTop=y;
-            GUI.color=new Color(0,0,0,0.6f);GUI.DrawTexture(new Rect(x-6,panelTop-4,w+12,this.controlsHeight+8),Texture2D.whiteTexture);GUI.color=old;
-            GUI.Label(new Rect(x,y,w,h),"ボールの操作",this.style);
-            y+=h-4;
-            y+=this.Note(x,y,w,"「角」は、4 枚の面が集まる中央の点です。ドリブルを始めると、カメラがボールの後ろ "+DribbleDistance.ToString("0.###",CultureInfo.InvariantCulture)+" m に下がり、ボールはカメラの前 "+DribbleDistance.ToString("0.###",CultureInfo.InvariantCulture)+" m に付いてきます(カメラを動かして進みます)。")+4;
-            if(GUI.Button(new Rect(x,y,w,h),"[1] ボールを角へ戻す",this.buttonStyle)){this.TeleportToCorner();}
-            y+=h+2;
-            string dribbleLabel="[4] ドリブルを始める(ボールが 1 m の高さまで跳ねます)";
-            if(dribbling){dribbleLabel="[4] ドリブルを止める(いま: ドリブル中)";}
-            if(this.ToggleButton(new Rect(x,y,w,h),dribbleLabel,dribbling)){this.ToggleDribble();}
-            y+=h+2;
-            // ドリブルの速さのゲージ: 左ほどゆっくり(最高の 1 m は変わらない)。ドリブル中でも動かせる。
-            GUI.Label(new Rect(x,y,300,h),"ドリブルの速さ "+this.dribbleSpeed.ToString("0.00",CultureInfo.InvariantCulture)+" 倍(左ほどゆっくり)",this.style);
-            this.DribbleSpeed=GUI.HorizontalSlider(new Rect(x+310,y+8,w-310,18),this.dribbleSpeed,MinimumDribbleSpeed,1f);
-            y+=h+2;
-            y+=this.Note(x,y,w,"物理エンジンで動かしています(重力 "+MoonTripleDribble.Gravity.ToString("0.00",CultureInfo.InvariantCulture)+" m/s²、反発係数 "+MoonTripleDribble.Bounciness.ToString("0.0",CultureInfo.InvariantCulture)+")。ボールは上下だけ動きます。ボールの半分が面に埋まったところで跳ね返ります。")+4;
-            // ドリブル中は、ボールの位置をドリブルが決めるので、埋める操作は使えない(灰色)。
-            bool enabled=GUI.enabled;
-            GUI.enabled=!dribbling;
-            if(GUI.Button(new Rect(x,y,w,h),"[3] 画面の中央にボールを置く(下を向いて押す)",this.buttonStyle)){this.BuryAtAim();}
-            y+=h+2;
-            if(GUI.Button(new Rect(x,y,w,h),"[5] ボールを今の場所のまま、操作する面に半分埋める",this.buttonStyle)){this.BuryBall();}
-            y+=h+2;
-            GUI.enabled=enabled;
-            y+=this.Note(x,y,w,"[3] [5] はどちらも、ボールの中心が「操作する面」の高さになり、ボールの半分が面に埋まります。ボールの赤い線が、ボールの中心の高さです。");
-            y+=8;
-            GUI.Label(new Rect(x,y,w,h),"面の高さを動かす",this.style);
-            y+=h-4;
-            y+=this.Note(x,y,w,"「操作する面」だけが上下に動きます(ボールは動きません)。面の境目とボールの赤い線のずれで、高さの違いが見えます。")+4;
-            if(GUI.Button(new Rect(x,y,w,h),"[2] 操作する面を切り替える(いま: "+Tint(this.selectedFace)+")",this.buttonStyle)){this.SelectNextFace();}
-            y+=h+2;
-            long[] amounts={-100,-10,10,100};
-            string[] labels={"下げる 10mm","下げる 1mm","上げる 1mm","上げる 10mm"};
-            for(int i=0;i<amounts.Length;i++){
-                if(GUI.Button(new Rect(x+i*(w/4f),y,w/4f-3,h),labels[i],this.buttonStyle)){this.AdjustFace(this.selectedFace,amounts[i]);}
+            // 初期化の前は、待っている理由だけを出す(操作は出さない)。
+            if(!this.initialized){
+                DrawBackground(new Rect(x-6,top-4,w+12,this.statusHeight+8));
+                GUI.Label(new Rect(x,top,w,this.statusHeight),this.statusText,this.style);
+                return;
             }
-            y+=h+8;
-            // カメラの近づける限界(論理ニアクリップ)のプリセット。
-            GUI.Label(new Rect(x,y,w,h),"カメラの近づける限界(ニアクリップ。キー 7・8)",this.style);
-            y+=h-4;
-            y+=this.Note(x,y,w,"カメラが映す一番近い距離です。小さくすると、1 mm や 10 pm のような極端に近いものまで映せます(ボールの直径は 22 cm)。通常は 0.03 m です。")+4;
-            for(int i=0;i<ScaleNames.Length;i++){
-                float bw=w/ScaleNames.Length;
-                string presetLabel=ScaleNames[i];
-                if(i==0){presetLabel="通常";}
-                if(this.PresetButton(new Rect(x+i*bw,y,bw-3,h),presetLabel,i)){this.SetScalePreset(i);}
+            // 状態(いつも出す)、タブ、タブの中身(スクロール)の順に縦に並べる。
+            float y=top;
+            DrawBackground(new Rect(x-6,y-4,w+12,this.statusHeight+8));
+            GUI.Label(new Rect(x,y,w,this.statusHeight),this.statusText,this.style);
+            y+=this.statusHeight+8;
+            int tab=GUI.Toolbar(new Rect(x,y,w,28),this.panelTab,PanelTabNames,this.buttonStyle);
+            if(tab!=this.panelTab){
+                this.panelTab=tab;
+                this.panelScroll=Vector2.zero;
             }
-            // 次の描画の背景の高さ(ボタンと説明の並びが変わっても合わせる)。
-            this.controlsHeight=y+h-panelTop;
+            y+=28+6;
+            // 内容が画面に収まらないときは、スクロールで見る(高さは画面の下まで)。
+            float viewHeight=Mathf.Max(60f,Screen.height-y-12f);
+            DrawBackground(new Rect(x-6,y-4,w+12,viewHeight+8));
+            // 内容の高さは前の描画で求めた値を使う(このフレームの高さは、描画の後でしか分からないため)。縦スクロールバーの分だけ幅を詰める。
+            float contentWidth=w-14f;
+            var inner=new Rect(0,0,contentWidth,Mathf.Max(this.tabContentHeight,viewHeight));
+            this.panelScroll=GUI.BeginScrollView(new Rect(x,y,w,viewHeight),this.panelScroll,inner);
+            float cy;
+            switch(this.panelTab){
+                case 1:cy=this.DrawFaceTab(0,contentWidth);break;
+                case 2:cy=this.DrawCameraTab(0,contentWidth);break;
+                case 3:cy=this.DrawKeysTab(0,contentWidth);break;
+                default:cy=this.DrawBallTab(0,contentWidth);break;
+            }
+            this.tabContentHeight=cy;
+            GUI.EndScrollView();
         }
 
+        // 操作パネルの文字と高さを作り直す(0.1 秒ごとと、幅が変わったとき。Layout イベントだけで行う)。
+        private void RefreshPanelText(float width){
+            this.statusText=this.BuildStatusText();
+            this.statusHeight=this.style.CalcHeight(new GUIContent(this.statusText),width);
+            this.faceListText=this.BuildFaceListText();
+            this.cameraText=this.BuildCameraText();
+            this.keysText=this.BuildKeysText();
+            this.textWidthUsed=width;
+            this.hudRefreshTime=Time.unscaledTime+HudRefreshSeconds;
+        }
+
+        // 暗い板を敷く(面の模様の上でも文字が読めるように)。
+        private static void DrawBackground(Rect rect){
+            Color old=GUI.color;
+            GUI.color=new Color(0,0,0,0.6f);GUI.DrawTexture(rect,Texture2D.whiteTexture);GUI.color=old;
+        }
+
+        // タブ「ボール」: 角へ戻す、ドリブル、埋める。
+        private float DrawBallTab(float y,float w){
+            float h=28;
+            bool enabled=GUI.enabled;
+            // ドリブルは Update で進むので、Edit Mode では動かせない(ドリブルのボタンと速さは灰色)。
+            bool playing=Application.isPlaying;
+            bool dribbling=this.dribble.Running;
+            GUI.Label(new Rect(0,y,w,h),"ボールの操作",this.style);
+            y+=h-4;
+            y+=this.Note(0,y,w,"「角」は、4 枚の面が集まる中央の点です。ドリブルを始めると、カメラがボールの後ろ "+DribbleDistance.ToString("0.###",CultureInfo.InvariantCulture)+" m に下がり、ボールはカメラの前 "+DribbleDistance.ToString("0.###",CultureInfo.InvariantCulture)+" m に付いてきます。")+4;
+            if(GUI.Button(new Rect(0,y,w,h),"[1] ボールを角へ戻す",this.buttonStyle)){this.TeleportToCorner();}
+            y+=h+2;
+            string dribbleLabel="[4] ドリブルを始める(1 m まで跳ねる)";
+            if(dribbling){dribbleLabel="[4] ドリブルを止める(いま: ドリブル中)";}
+            GUI.enabled=enabled&&playing;
+            if(this.ToggleButton(new Rect(0,y,w,h),dribbleLabel,dribbling)){this.ToggleDribble();}
+            y+=h+2;
+            // ドリブルの速さ: 左ほどゆっくり(最高の 1 m は変わらない)。ドリブル中でも動かせる。
+            GUI.Label(new Rect(0,y,w,h),"ドリブルの速さ "+this.dribbleSpeed.ToString("0.00",CultureInfo.InvariantCulture)+" 倍(左ほどゆっくり)",this.style);
+            y+=h-4;
+            this.DribbleSpeed=GUI.HorizontalSlider(new Rect(0,y+4,w,18),this.dribbleSpeed,MinimumDribbleSpeed,1f);
+            GUI.enabled=enabled;
+            y+=26;
+            string physicsText="物理エンジンで動かしています(重力 "+MoonTripleDribble.Gravity.ToString("0.00",CultureInfo.InvariantCulture)+" m/s²、反発係数 "+MoonTripleDribble.Bounciness.ToString("0.0",CultureInfo.InvariantCulture)+")。ボールは上下だけ動き、面に埋まったところで跳ね返ります。";
+            if(!playing){physicsText="Edit Mode では、ドリブルは動きません(Play で動かします)。"+physicsText;}
+            y+=this.Note(0,y,w,physicsText)+4;
+            // ドリブル中は、ボールの位置をドリブルが決めるので、埋める操作は灰色にして使えなくする。
+            GUI.enabled=enabled&&!dribbling;
+            if(GUI.Button(new Rect(0,y,w,h),"[3] 画面の中央に置く(下を向いて押す)",this.buttonStyle)){this.BuryAtAim();}
+            y+=h+2;
+            if(GUI.Button(new Rect(0,y,w,h),"[5] 今の場所で、操作する面に半分埋める",this.buttonStyle)){this.BuryBall();}
+            y+=h+2;
+            GUI.enabled=enabled;
+            y+=this.Note(0,y,w,"[3] [5] は、ボールの中心が「操作する面」の高さになり、ボールの半分が面に埋まります。ボールの赤い線が、ボールの中心の高さです。")+4;
+            if(this.aimNote!=null){y+=this.Note(0,y,w,"画面の中央に置いた結果: "+this.aimNote)+4;}
+            y+=this.Note(0,y,w,"ボールの場所(角から) x "+Mm(this.offsetX)+"  z "+Mm(this.offsetZ));
+            return y;
+        }
+
+        // タブ「面」: 操作する面を選んで、その高さを動かす。4 面の一覧。
+        private float DrawFaceTab(float y,float w){
+            float h=28;
+            GUI.Label(new Rect(0,y,w,h),"面の高さを動かす",this.style);
+            y+=h-4;
+            y+=this.Note(0,y,w,"「操作する面」だけが上下に動きます(ボールは動きません)。面の境目とボールの赤い線のずれで、高さの違いが見えます。")+4;
+            if(GUI.Button(new Rect(0,y,w,h),"[2] 面を切り替える(いま: "+Tint(this.selectedFace)+")",this.buttonStyle)){this.SelectNextFace();}
+            y+=h+4;
+            long[] amounts={-100,-10,10,100};
+            string[] labels={"下げる 10mm","下げる 1mm","上げる 1mm","上げる 10mm"};
+            float bw=w/2f;
+            for(int i=0;i<amounts.Length;i++){
+                Rect rect=new Rect((i%2)*bw,y+(i/2)*(h+2),bw-3,h);
+                if(GUI.Button(rect,labels[i],this.buttonStyle)){this.AdjustFace(this.selectedFace,amounts[i]);}
+            }
+            y+=2*(h+2)+4;
+            GUI.Label(new Rect(0,y,w,h),"4 面の一覧",this.style);
+            y+=h-4;
+            y+=this.Note(0,y,w,this.faceListText);
+            return y;
+        }
+
+        // タブ「カメラ」: 位置と、近づける限界(ニアクリップ)のプリセット。
+        private float DrawCameraTab(float y,float w){
+            float h=28;
+            GUI.Label(new Rect(0,y,w,h),"カメラ",this.style);
+            y+=h-4;
+            y+=this.Note(0,y,w,this.cameraText)+4;
+            GUI.Label(new Rect(0,y,w,h),"カメラの近づける限界(ニアクリップ。キー 7・8)",this.style);
+            y+=h-4;
+            y+=this.Note(0,y,w,"カメラが映す一番近い距離です。小さくすると、1 mm や 10 pm のような極端に近いものまで映せます(ボールの直径は 22 cm)。通常は 0.03 m です。")+4;
+            // 5 つのプリセットを 3 + 2 に並べる。
+            float bw=w/3f;
+            for(int i=0;i<ScaleNames.Length;i++){
+                string presetLabel=ScaleNames[i];
+                if(i==0){presetLabel="通常";}
+                Rect rect=new Rect((i%3)*bw,y+(i/3)*(h+2),bw-3,h);
+                if(this.PresetButton(rect,presetLabel,i)){this.SetScalePreset(i);}
+            }
+            y+=2*(h+2);
+            return y;
+        }
+
+        // タブ「キー」: キーの説明(Play のときだけ効く)。
+        private float DrawKeysTab(float y,float w){
+            float h=28;
+            GUI.Label(new Rect(0,y,w,h),"キー(Play のときだけ効く)",this.style);
+            y+=h-4;
+            y+=this.Note(0,y,w,this.keysText);
+            return y;
+        }
         // 灰色の説明の文字(幅で折り返す)。使った高さを返す。
         private float Note(float x,float y,float width,string text){
             float height=this.noteStyle.CalcHeight(new GUIContent(text),width);
@@ -763,9 +843,14 @@ namespace VirtualGeometry.Omni{
         }
 
         /// <summary>
-        /// HUD に出す文字。OnGUI から切り出した関数(検証が、呼び名と内容を確かめる)。
+        /// HUD に出す文字(状態・面の一覧・カメラ・キーのすべて)。検証(MoonTriplePlaySmoke)が、呼び名と内容を確かめる。
         /// </summary>
         public string BuildHudText(){
+            return this.BuildStatusText()+this.BuildFaceListText()+this.BuildCameraText()+this.BuildKeysText();
+        }
+
+        // 状態(左の列の一番上に、いつも出す)。初期化の前は、待っている理由だけ。
+        public string BuildStatusText(){
             var lines=new System.Text.StringBuilder();
             if(!this.initialized){
                 string reason="4 枚の面の地形を待っています";
@@ -775,26 +860,44 @@ namespace VirtualGeometry.Omni{
             }
             string dribbleText="止まっている";
             if(this.dribble.Running){dribbleText="中";}
-            lines.AppendLine("ボールの高さ "+Height(this.offsetY)+"(0 mm = 4 枚の面が集まる角の高さ)   ドリブル: "+dribbleText+"   操作する面: "+Tint(this.selectedFace));
-            lines.AppendLine("ボールの場所(角から) x "+Mm(this.offsetX)+"  z "+Mm(this.offsetZ));
+            lines.AppendLine("ボールの高さ "+Height(this.offsetY)+"(0 mm = 4 枚の面が集まる角の高さ)   ドリブル: "+dribbleText);
+            lines.AppendLine("操作する面: "+Tint(this.selectedFace));
+            if(this.failure!=null){lines.AppendLine("失敗: "+this.failure);}
+            return lines.ToString();
+        }
+
+        // 4 面の一覧(呼び名・大きさ・作り方・高さ)。操作する面に印を付ける。
+        public string BuildFaceListText(){
+            var lines=new System.Text.StringBuilder();
+            if(!this.initialized){return lines.ToString();}
             for(int f=0;f<4;f++){
                 string detail=this.FaceDetail((MoonTripleFace)f);
                 string marker="";
                 if(f==this.selectedFace){marker="   ◀ 操作する面";}
                 lines.AppendLine(Tint(f)+": "+detail+"   高さ "+Mm(this.faceOffsetUnits[f])+marker);
             }
+            return lines.ToString();
+        }
+
+        // カメラの位置と、近づける限界(警告は、Near の実測が設定と違うとき)。
+        public string BuildCameraText(){
+            var lines=new System.Text.StringBuilder();
+            if(!this.initialized){return lines.ToString();}
             lines.AppendLine("カメラの位置 x "+this.cameraPosition.x.ToString("0.000",CultureInfo.InvariantCulture)+" y "+this.cameraPosition.y.ToString("0.000",CultureInfo.InvariantCulture)+" z "+this.cameraPosition.z.ToString("0.000",CultureInfo.InvariantCulture)+" m");
             string warning="";
             if(this.cameraNearSampled){warning="   [警告: カメラの Near の値が設定と違います(Omni が描画中に書き換えた値が戻っていない)]";}
             lines.AppendLine("カメラの近づける限界: "+ScaleNames[this.scalePreset]+warning);
-            lines.AppendLine("カメラ: W S A D = 前後左右 / Q E = 下・上 / 右ドラッグ = 向き / ホイール = 前後 / C = ボールを見る / Shift = 速く / Ctrl = ゆっくり");
-            lines.AppendLine("ボール: ← → = x 方向 / PageUp PageDown = z 方向 / ↑ ↓ = 上下 / 4 = ドリブル / 1 = 角へ戻す / R = ぜんぶ最初に戻す");
-            lines.AppendLine("面: 2 = 操作する面を切り替える / [ ] = 操作する面を下げる・上げる / 7 8 = カメラの近づける限界 / H = この操作パネルを隠す・出す");
-            if(this.aimNote!=null){lines.AppendLine("画面の中央に置いた結果: "+this.aimNote);}
-            if(this.failure!=null){lines.AppendLine("失敗: "+this.failure);}
             return lines.ToString();
         }
 
+        // キーの説明(Play のときだけ効く)。
+        public string BuildKeysText(){
+            var lines=new System.Text.StringBuilder();
+            lines.AppendLine("カメラ: W S A D = 前後左右 / Q E = 下・上 / 右ドラッグ = 向き / ホイール = 前後 / C = ボールを見る / Shift = 速く / Ctrl = ゆっくり");
+            lines.AppendLine("ボール: ← → = x 方向 / PageUp PageDown = z 方向 / ↑ ↓ = 上下 / 4 = ドリブル / 1 = 角へ戻す / R = ぜんぶ最初に戻す");
+            lines.AppendLine("面: 2 = 操作する面を切り替える / [ ] = 操作する面を下げる・上げる / 7 8 = カメラの近づける限界 / H = この操作パネルを隠す・出す");
+            return lines.ToString();
+        }
         // 面ごとの説明(HUD の 1 行)。
         private string FaceDetail(MoonTripleFace face){
             double size=this.layout.FaceSize(face);
